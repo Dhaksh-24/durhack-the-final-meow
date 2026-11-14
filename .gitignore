@@ -1,0 +1,9 @@
+# model weights -- auto-downloaded on first run, keep them out of git
+*.pt
+weights/
+
+# python
+__pycache__/
+*.pyc
+venv/
+.venv/
