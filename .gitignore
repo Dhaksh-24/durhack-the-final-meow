@@ -1,3 +1,6 @@
+# secrets -- never commit the real one
+.env
+
 # model weights -- auto-downloaded on first run, keep them out of git
 *.pt
 weights/
@@ -7,3 +10,9 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+
+# datasets and training output -- large, re-downloadable
+data/
+runs/
+.venv-roboflow/
+test_out/
