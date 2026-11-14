@@ -16,3 +16,8 @@ data/
 runs/
 .venv-roboflow/
 test_out/
+
+# multicam.py runtime output -- regenerated every run
+memory/
+events.jsonl
+cameras.json

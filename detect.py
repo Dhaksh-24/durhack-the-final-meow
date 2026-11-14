@@ -1,4 +1,6 @@
-"""YOLO-World detector with Gemini verification (CPU).
+"""YOLO-World detector (CPU) -- used standalone AND imported by multicam.py.
+
+Standalone, with optional Gemini verification:
 
     python detect.py                          # live webcam, Esc to quit
     python detect.py bus.jpg                  # one image
@@ -12,10 +14,21 @@
 YOLO-World runs deliberately loose (CONF is low) so it rarely misses, then
 Gemini confirms or rejects each candidate crop. The API call happens on a
 background thread, so the video loop never waits on the network -- verdicts
-land a beat after the box does.
+land a beat after the box does. Put GEMINI_API_KEY in a .env file beside
+this script (see .env.example); with no key it runs unverified.
 
-Put GEMINI_API_KEY in a .env file beside this script (see .env.example).
-With no key the detector still runs, just unverified.
+Used by the tracker (multicam.py):
+
+    from detect import Detector
+    det = Detector()
+    per_frame = det.detect([frame1, frame2])   # one list per frame of
+                                               # (category, [x1, y1, x2, y2], conf)
+
+THE CONTRACT: multicam.py only ever calls Detector(conf=, imgsz=),
+Detector.detect(frames) and reads CONF and IMGSZ. Swap the model inside
+freely -- as long as detect() returns the same shape, the tracker keeps
+working. Importing this module never opens a camera; the standalone code
+only runs under `python detect.py`.
 """
 import json
 import os
@@ -34,24 +47,71 @@ VERIFY_EVERY = 2.0   # minimum seconds between Gemini calls
 MIN_CROP = 32        # px -- smaller crops are too coarse to judge
 MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3.8-flash"   # --list-models
 
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
-flags = [a for a in sys.argv[1:] if a.startswith("--")]
-show = "--no-window" not in flags
-use_gemini = "--no-verify" not in flags
-source = args[0] if args else None
 
-for a in flags:
-    if a.startswith("--classes="):
-        CLASSES = [c.strip() for c in a.split("=", 1)[1].split(",") if c.strip()]
-    if a.startswith("--frames="):
-        LIMIT = int(a.split("=", 1)[1])
-    if a.startswith("--imgsz="):
-        IMGSZ = int(a.split("=", 1)[1])
-    if a.startswith("--conf="):
-        CONF = float(a.split("=", 1)[1])
-    if a.startswith("--model="):
-        MODEL = a.split("=", 1)[1]
+# ---------------------------------------------------------------------------
+# Tracker interface, as used by multicam.py (from the adelver branch).
+# ---------------------------------------------------------------------------
 
+# category -> prompt synonyms. Synonyms are merged into ONE category, so a set
+# of keys that matches "keys" AND "keychain" is still one detection.
+PROMPTS = {
+    "keys": ["keys", "keychain", "car keys"],
+    "glasses": ["glasses", "eyeglasses", "reading glasses"],
+    "wallet": ["wallet", "purse"],
+}
+WEIGHTS = "yolov8s-worldv2.pt"
+MERGE_IOU = 0.5     # synonym boxes overlapping more than this = the same object
+
+
+def _iou(a, b):
+    ix1, iy1, ix2, iy2 = max(a[0], b[0]), max(
+        a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + \
+        (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+class Detector:
+    def __init__(self, prompts=None, conf=CONF, imgsz=IMGSZ, weights=WEIGHTS):
+        prompts = prompts or PROMPTS
+        self.conf, self.imgsz = conf, imgsz
+        self.categories = list(prompts)
+        self.flat, self.cat_of = [], []
+        for cat, words in prompts.items():
+            for w in words:
+                self.flat.append(w)
+                self.cat_of.append(cat)
+        self.model = YOLOWorld(weights)
+        print("encoding prompts:", self.flat)
+        t0 = time.perf_counter()
+        # ~6s of CLIP text encoding -- ONCE, never per frame
+        self.model.set_classes(self.flat)
+        print("ready in %.1fs" % (time.perf_counter() - t0))
+
+    def detect(self, frames):
+        """frames: one image or a list. Returns a list (one per frame) of
+        [(category, [x1, y1, x2, y2], conf), ...] with synonyms merged."""
+        single = not isinstance(frames, list)
+        results = self.model.predict(frames if not single else [frames],
+                                     imgsz=self.imgsz, conf=self.conf, verbose=False)
+        out = [self._merge(r) for r in results]
+        return out[0] if single else out
+
+    def _merge(self, r):
+        raw = [(self.cat_of[int(c)], b, float(s)) for b, c, s in
+               zip(r.boxes.xyxy.tolist(), r.boxes.cls.tolist(), r.boxes.conf.tolist())]
+        raw.sort(key=lambda d: -d[2])
+        kept = []
+        for cat, box, s in raw:  # keep the strongest box per object per category
+            if all(k[0] != cat or _iou(k[1], box) < MERGE_IOU for k in kept):
+                kept.append((cat, box, s))
+        return kept
+
+
+# ---------------------------------------------------------------------------
+# Gemini verification (standalone mode only).
+# ---------------------------------------------------------------------------
 
 def load_key():
     """GEMINI_API_KEY from the environment, else from .env beside this file."""
@@ -162,88 +222,120 @@ def draw_verdicts(img, rows):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR[state], 2)
 
 
-if "--list-models" in flags:
-    api_key = load_key()
-    if not api_key:
-        sys.exit("no GEMINI_API_KEY found (environment or .env)")
-    from google import genai
-    # Bind the client to a name: a throwaway genai.Client() is garbage
-    # collected mid-request and the call dies with "client has been closed".
-    listing_client = genai.Client(api_key=api_key)
-    for m in listing_client.models.list():
-        actions = getattr(m, "supported_actions", None)
-        if not actions or "generateContent" in actions:
-            print(m.name)
-    sys.exit()
+# ---------------------------------------------------------------------------
+# Standalone mode: python detect.py ...
+# ---------------------------------------------------------------------------
 
-verifier = None
-if use_gemini:
-    api_key = load_key()
-    if api_key:
-        verifier = Verifier(api_key, MODEL)
-        print("gemini verification on (%s)" % MODEL)
-    else:
-        print("no GEMINI_API_KEY -- running unverified (see .env.example)")
+def main():
+    # The flags tune the module-level settings, exactly as when this was a
+    # plain script. Nothing here runs when multicam.py imports the module.
+    global CLASSES, CONF, IMGSZ, LIMIT, MODEL
 
-model = YOLOWorld("yolov8s-worldv2.pt")
-print("encoding prompts:", CLASSES)
-t0 = time.perf_counter()
-model.set_classes(CLASSES)          # ~6s of CLIP text encoding -- ONCE, never per frame
-print("ready in %.1fs" % (time.perf_counter() - t0))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    show = "--no-window" not in flags
+    use_gemini = "--no-verify" not in flags
+    source = args[0] if args else None
 
-if source:
-    r = model.predict(source, imgsz=IMGSZ, conf=CONF, verbose=False)[0]
-    print("%d candidate detections in %s" % (len(r.boxes), source))
-    canvas = r.plot()
-    rows = []
-    for box in r.boxes:
-        label = r.names[int(box.cls)]
-        line = "  %-12s %.2f" % (label, float(box.conf))
-        if verifier:
-            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
-            crop = r.orig_img[y1:y2, x1:x2]
-            if min(crop.shape[:2]) < MIN_CROP:
-                line += "   (too small to verify)"
-            else:
-                ok, buf = cv2.imencode(".jpg", crop)
-                state, text = verifier.ask(buf.tobytes(), label) if ok else ("err", "encode failed")
-                line += "   -> %-3s %s" % (MARK[state], text)
-                rows.append((label, state, text))
-        print(line)
-    draw_verdicts(canvas, rows)
-    if show:
-        cv2.imshow("yolo-world", canvas)
-        cv2.waitKey(0)
-else:
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)   # DSHOW opens fast on Windows
-    if not cap.isOpened():
-        sys.exit("could not open webcam at index 0")
-    fps = 0.0
-    n = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        t = time.perf_counter()
-        r = model.predict(frame, imgsz=IMGSZ, conf=CONF, verbose=False)[0]
-        dt = time.perf_counter() - t
-        fps = 1 / dt if fps == 0 else 0.9 * fps + 0.1 / dt
-        if verifier and len(r.boxes):
-            best = max(r.boxes, key=lambda b: float(b.conf))
-            verifier.offer(frame, best.xyxy[0], r.names[int(best.cls)])
+    for a in flags:
+        if a.startswith("--classes="):
+            CLASSES = [c.strip() for c in a.split("=", 1)[1].split(",") if c.strip()]
+        if a.startswith("--frames="):
+            LIMIT = int(a.split("=", 1)[1])
+        if a.startswith("--imgsz="):
+            IMGSZ = int(a.split("=", 1)[1])
+        if a.startswith("--conf="):
+            CONF = float(a.split("=", 1)[1])
+        if a.startswith("--model="):
+            MODEL = a.split("=", 1)[1]
+
+    if "--list-models" in flags:
+        api_key = load_key()
+        if not api_key:
+            sys.exit("no GEMINI_API_KEY found (environment or .env)")
+        from google import genai
+        # Bind the client to a name: a throwaway genai.Client() is garbage
+        # collected mid-request and the call dies with "client has been closed".
+        listing_client = genai.Client(api_key=api_key)
+        for m in listing_client.models.list():
+            actions = getattr(m, "supported_actions", None)
+            if not actions or "generateContent" in actions:
+                print(m.name)
+        sys.exit()
+
+    verifier = None
+    if use_gemini:
+        api_key = load_key()
+        if api_key:
+            verifier = Verifier(api_key, MODEL)
+            print("gemini verification on (%s)" % MODEL)
+        else:
+            print("no GEMINI_API_KEY -- running unverified (see .env.example)")
+
+    model = YOLOWorld(WEIGHTS)
+    print("encoding prompts:", CLASSES)
+    t0 = time.perf_counter()
+    model.set_classes(CLASSES)          # ~6s of CLIP text encoding -- ONCE, never per frame
+    print("ready in %.1fs" % (time.perf_counter() - t0))
+
+    if source:
+        r = model.predict(source, imgsz=IMGSZ, conf=CONF, verbose=False)[0]
+        print("%d candidate detections in %s" % (len(r.boxes), source))
         canvas = r.plot()
-        cv2.putText(canvas, "%4.1f fps | %s" % (fps, ", ".join(CLASSES)), (10, 28),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        if verifier:
-            draw_verdicts(canvas, verifier.recent())
+        rows = []
+        for box in r.boxes:
+            label = r.names[int(box.cls)]
+            line = "  %-12s %.2f" % (label, float(box.conf))
+            if verifier:
+                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+                crop = r.orig_img[y1:y2, x1:x2]
+                if min(crop.shape[:2]) < MIN_CROP:
+                    line += "   (too small to verify)"
+                else:
+                    ok, buf = cv2.imencode(".jpg", crop)
+                    state, text = (verifier.ask(buf.tobytes(), label) if ok
+                                   else ("err", "encode failed"))
+                    line += "   -> %-3s %s" % (MARK[state], text)
+                    rows.append((label, state, text))
+            print(line)
+        draw_verdicts(canvas, rows)
         if show:
             cv2.imshow("yolo-world", canvas)
-            if cv2.waitKey(1) == 27:
+            cv2.waitKey(0)
+    else:
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)   # DSHOW opens fast on Windows
+        if not cap.isOpened():
+            sys.exit("could not open webcam at index 0")
+        fps = 0.0
+        n = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
                 break
-        n += 1
-        if LIMIT and n >= LIMIT:
-            print("%d frames, %.1f fps" % (n, fps))
-            break
-    cap.release()
+            t = time.perf_counter()
+            r = model.predict(frame, imgsz=IMGSZ, conf=CONF, verbose=False)[0]
+            dt = time.perf_counter() - t
+            fps = 1 / dt if fps == 0 else 0.9 * fps + 0.1 / dt
+            if verifier and len(r.boxes):
+                best = max(r.boxes, key=lambda b: float(b.conf))
+                verifier.offer(frame, best.xyxy[0], r.names[int(best.cls)])
+            canvas = r.plot()
+            cv2.putText(canvas, "%4.1f fps | %s" % (fps, ", ".join(CLASSES)), (10, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            if verifier:
+                draw_verdicts(canvas, verifier.recent())
+            if show:
+                cv2.imshow("yolo-world", canvas)
+                if cv2.waitKey(1) == 27:
+                    break
+            n += 1
+            if LIMIT and n >= LIMIT:
+                print("%d frames, %.1f fps" % (n, fps))
+                break
+        cap.release()
 
-cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
