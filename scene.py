@@ -37,13 +37,33 @@ frame into one JSON-ready dict and write_json() saves it.
 
 Boxes are [x1, y1, x2, y2] in pixels of an image.width x image.height frame,
 origin top-left. "det_conf" is how sure the detector was that the thing is
-there; "confidence" is how sure we are about WHERE it is.
+there; "confidence" is how sure we are about WHERE it is. "guess" is true
+when det_conf is under CONFIG["guess_below"] -- treat those as maybes.
+
+For a stream instead of a snapshot, detections() gives one flat dict per
+detected item and emit() writes them as JSON lines:
+
+    out = claim_stdout()                 # stdout now carries JSON only
+    emit(out, mapper.detections(frame.shape, items, descs, "lounge"))
+
+    {"time": "2026-11-14T12:00:00.000+00:00", "camera_id": "lounge",
+     "image_w": 1280, "image_h": 854, "item": "keys",
+     "box": [593.8, 465.5, 701.8, 549.3], "det_conf": 0.412,
+     "support": {"rel": "on", "anchor": "table_1"},
+     "near": [{"anchor": "sofa_1", "dir": "next to", "dist": 0.055}],
+     "confidence": 0.71, "guess": false}
+
+Every line from one frame shares the same "time". The anchor ids it refers
+to are resolved against the fixed furniture list -- save_anchors() and
+load_anchors() -- which live_scene.py --setup writes once per room.
 """
 import datetime
 import hashlib
 import json
+import logging
 import math
 import os
+import sys
 import time
 
 import cv2
@@ -94,6 +114,10 @@ CONFIG = {
 
     # --- confidence ---
     "det_conf_full": 0.30,   # detector conf at which we stop discounting
+
+    # --- guesses ---
+    "guess_below": 0.30,     # item detections under this are marked "guess"
+    "drop_guesses": False,   # True: discard them instead of marking them
 
     # --- gemini (only used if you call gemini_review explicitly) ---
     # Confirmed against models.list() on 2026-11-14. There is no
@@ -293,9 +317,12 @@ class SceneMapper:
         if self._item_model is None or self._item_prompts != list(names):
             self._item_model = self._load(list(names))
             self._item_prompts = list(names)
-        return self._merge_items(self._detect(self._item_model, frame,
-                                              self.cfg["item_conf"],
-                                              self.cfg["item_imgsz"]))
+        found = self._merge_items(self._detect(self._item_model, frame,
+                                               self.cfg["item_conf"],
+                                               self.cfg["item_imgsz"]))
+        if self.cfg["drop_guesses"]:
+            found = [d for d in found if d["conf"] >= self.cfg["guess_below"]]
+        return found
 
     _item_prompts = None
 
@@ -327,7 +354,8 @@ class SceneMapper:
         conf = score * (0.5 + 0.5 * min(1.0, det / self.cfg["det_conf_full"]))
 
         out = {"item": name, "support": support, "near": near,
-               "confidence": round(conf, 2)}
+               "confidence": round(conf, 2),
+               "guess": det < self.cfg["guess_below"]}
         if covered:
             out["flag"] = "possibly under the %s" % self.friendly(covered)
         return out, self.sentence(out)
@@ -432,7 +460,8 @@ class SceneMapper:
     def sentence(self, desc):
         """One plain sentence a person would actually say."""
         name = desc["item"]
-        verb = "are" if _plural(name) else "is"
+        # A weak detection is worded as a possibility, not a fact.
+        verb = "might be" if desc.get("guess") else ("are" if _plural(name) else "is")
         rel, anchor = desc["support"]["rel"], desc["support"]["anchor"]
 
         if rel == "on the floor":
@@ -487,8 +516,7 @@ class SceneMapper:
 
         return {
             "version": 1,
-            "timestamp": datetime.datetime.now(datetime.timezone.utc)
-                                 .isoformat(timespec="milliseconds"),
+            "timestamp": _now(),
             "camera": camera,
             "image": {"width": int(w), "height": int(h)},
             "anchors": [{"id": a["id"], "cls": a["cls"],
@@ -497,6 +525,33 @@ class SceneMapper:
                          "conf": round(a["conf"], 3)} for a in anchors],
             "items": out_items,
         }
+
+    def detections(self, shape, items, descs, camera_id="default"):
+        """One flat JSON-ready dict per detected item, for a line-per-
+        detection stream. items and descs line up as in payload().
+
+        The same facts as payload() minus the anchor list: that is fixed, so
+        a reader loads it once from the anchors file rather than getting it
+        again on every line. All lines from one frame share one "time".
+        """
+        h, w = shape[:2]
+        now = _now()
+        out = []
+        for it, desc in zip(items, descs):
+            line = {"time": now, "camera_id": camera_id,
+                    "image_w": int(w), "image_h": int(h),
+                    "item": desc["item"],
+                    "box": [round(v, 1) for v in it["box"]],
+                    "det_conf": round(float(it.get("conf", 1.0)), 3)}
+            line.update({k: v for k, v in desc.items() if k != "item"})
+            out.append(line)
+        return out
+
+    def renumber(self, anchors):
+        """Fresh ids for a trimmed list, so it reads table_1, table_2 with
+        no gaps left by the pieces that were deleted."""
+        return self._assign_ids([{k: v for k, v in a.items() if k != "id"}
+                                 for a in anchors])
 
     # -- optional Gemini pass ---------------------------------------------
 
@@ -606,6 +661,72 @@ def write_json(path, data):
     except PermissionError:
         return False
     return True
+
+
+def _now():
+    """UTC, ISO 8601, to the millisecond."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def claim_stdout():
+    """Reserve stdout for JSON lines. Returns the stream to write them to.
+
+    Call it before anything prints. From then on print() goes to stderr, and
+    so does ultralytics' logger (which writes to stdout by default), so a
+    program reading the pipe sees JSON and nothing else.
+    """
+    out = sys.stdout
+    sys.stdout = sys.stderr
+    from ultralytics.utils import LOGGER
+    for handler in LOGGER.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setStream(sys.stderr)
+    return out
+
+
+def emit(stream, records):
+    """Write one JSON object per line and flush, so a reader gets each frame
+    as it happens. Returns False once the reader has gone away."""
+    try:
+        for record in records:
+            stream.write(json.dumps(record) + "\n")
+        stream.flush()
+    except OSError:              # BrokenPipeError, or EINVAL on Windows
+        return False
+    return True
+
+
+def save_anchors(path, anchors, shape, camera_id="default"):
+    """Save the confirmed furniture as the fixed list for this camera."""
+    h, w = shape[:2]
+    return write_json(path, {
+        "version": 1,
+        "saved": _now(),
+        "camera_id": camera_id,
+        "image_w": int(w), "image_h": int(h),
+        "anchors": [{"id": a["id"], "cls": a["cls"],
+                     "box": [round(v, 1) for v in a["box"]],
+                     "conf": round(a["conf"], 3)} for a in anchors],
+    })
+
+
+def load_anchors(path, shape=None):
+    """The fixed furniture list written by save_anchors().
+
+    Boxes are in pixels of the frame they were confirmed on. Pass the
+    current frame's shape and they are rescaled if the camera now delivers a
+    different resolution.
+    """
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    anchors = data["anchors"]
+    if shape is not None and data.get("image_w") and data.get("image_h"):
+        sx, sy = shape[1] / data["image_w"], shape[0] / data["image_h"]
+        if (sx, sy) != (1.0, 1.0):
+            for a in anchors:
+                x1, y1, x2, y2 = a["box"]
+                a["box"] = [x1 * sx, y1 * sy, x2 * sx, y2 * sy]
+    return anchors
 
 
 ANCHOR_COLOR = (180, 180, 180)
