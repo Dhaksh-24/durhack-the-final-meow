@@ -53,6 +53,20 @@ as a webcam; if the laptop's own camera is 0, the phone is usually 1.
 Stop with Ctrl+C in each terminal. `events.jsonl` keeps growing across runs (it's git-ignored);
 delete it between demo runs if you want a clean start (`Remove-Item events.jsonl`).
 
+## Two pages: the front end and the analytics
+
+- **http://localhost:8000/** is `trace.html`, the proper front end (mascot, "Hey Trace", voice).
+  Its questions go to `POST /api/ask` and are answered by the guide below.
+- **http://localhost:8000/sim** is `trace-sim/index.html`, the live analytics (3D room, probability
+  columns, metrics). It also runs the model: in **Real events** mode it posts its belief for every
+  item to the server about once a second, and that is what the front end's answers come from.
+
+So for the demo, keep `/sim` open in Real events mode (Connect live, or a loaded recording), e.g.
+on the big screen, and talk to Trace in `/`. If `/sim` isn't running, the server answers 503 and
+`trace.html` falls back to its own built-in replies. "not there", "found it" and "again" in
+`trace.html` are handled by the server without the LLM; each item's search is remembered there for
+15 minutes. `GET /api/model` shows what the server currently holds.
+
 ## The guide: ask Trace by voice or text (branch `demo`)
 
 ```powershell

@@ -266,3 +266,186 @@ def ask(bundle, utterance, mode="default", llm=None):
         errors.append("word: %s: %s" % (type(exc).__name__, exc))
     res["ms"] = int((time.time() - t0) * 1000)
     return res
+
+
+# ================================================================== the proper front end
+# trace.html sends {"message", "history"} and wants {"reply", "item_id", "state"}. It has no model
+# of its own: the analytics page (trace-sim, in Real events mode) posts the model's belief for each
+# item to /api/model, and the conversation's checks live here, per item, applied with the same
+# exact update (SPEC 4.4) on top of whatever the model believes now.
+SESSION_IDLE = 15 * 60       # forget a search after this long without a word about it
+ITEM_ALIASES = {"keys": r"\b(keys?|keyring)\b", "wallet": r"\b(wallet|purse|cards?)\b",
+                "glasses": r"\b(glasses|specs|spectacles)\b"}
+AGAIN = re.compile(r"^(again|repeat|repeat that|say (that|it) again|what|pardon|sorry what)$")
+NOT_THERE = re.compile(r"^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$")
+FOUND_IT = re.compile(r"^(yes |yay |great )?(i )?(found|got|have) (it|them)( now)?$|^found$")
+
+
+class NoModel(Exception):
+    """No model state has been posted (open the analytics page in Real events mode)."""
+
+
+def item_in(text):
+    t = _norm(text)
+    return next((k for k, rx in ITEM_ALIASES.items() if re.search(rx, t)), None)
+
+
+def where_text(r):
+    if r["zone"] == "person":
+        return "your pockets and hands"
+    if r["zone"] == "outside":
+        return "outside the room, in the car or your bag"
+    return ("under things on the " if r["covered"] else "the ") + r["name"].lower()
+
+
+def template(bundle, plan, tries):
+    """The page's own sentence (trace-sim sentence()), in Python: what Trace says without the LLM."""
+    name, plural = bundle.get("item_name") or "item", bool(bundle.get("item_plural"))
+    names = {p["id"]: p["name"].lower() for p in places_of(bundle)}
+    if not plan:
+        return "I don't have a good idea where %s." % ("they are" if plural else "it is")
+    if not tries and bundle.get("visible_now"):
+        return "The %s phone can see your %s right now." % (names.get(bundle["visible_now"], bundle["visible_now"]), name)
+    s = "Not there. " if tries else ""
+    ls = bundle.get("last_seen")
+    if not tries:
+        s += ("Your %s %s last seen on the %s %s. " % (name, "were" if plural else "was", names.get(ls["zone"], ls["zone"]), ls.get("ago", ""))
+              if ls else "No phone has seen your %s today. " % name)
+    r0 = plan[0]
+    s += "Check %s %s: %s there, about %s seconds." % (where_text(r0), "next" if tries else "first", r0["word"], r0["seconds"])
+    if len(plan) > 1:
+        s += " If not, try %s (%s)." % (where_text(plan[1]), plan[1]["word"])
+    return s
+
+
+WORDS = ("very likely", "probably", "might be", "possibly")
+TIME_RX = re.compile(r"\b(\d{1,2}[:.]\d{2}|\d{1,2} ?(?:am|pm)|(?:about |around )?(?:a|an|one|two|three|four|five|ten|fifteen|twenty|thirty|forty|\d+) (?:minute|minutes|hour|hours) ago|half an hour ago)\b")
+
+
+def validate_say(say, places_said, plan, all_places, tried, facts):
+    """SPEC 5.2, the same rules as validateSay in trace-sim. Returns (ok, why)."""
+    s = str(say or "").strip()
+    low, fx = s.lower(), str(facts or "").lower()
+    if not s:
+        return False, "empty"
+    if len(s) > 400:
+        return False, "too long"
+    if re.search(r"\b(definitely|certainly|for sure|guaranteed?|no doubt|without a doubt)\b", low):
+        return False, "says it is certain"
+    if re.search(r"\b(it is|it's|its|they are|they're) (right |still |now )?(there|here|on|in|under|inside|at|behind)\b", low):
+        return False, "says where it is as a fact"
+    if re.search(r"\d+(\.\d+)? ?(%|percent|per cent)", low):
+        return False, "gives a number instead of a word"
+    if (re.search(r"\b(someone|somebody|he|she|your (mum|mom|dad|husband|wife|son|daughter|partner|carer|flatmate|roommate))\b[^.!?]*\b(moved|took|put|left|hid|dropped|grabbed)\b", low)
+            or re.search(r"\b(mum|mom|dad|husband|wife|partner|carer|flatmate|roommate) (moved|took|put|left|hid|dropped|grabbed)\b", low)):
+        return False, "says who moved it"
+    in_plan = {r["zone"]: r for r in plan}
+    done = [str(t).lower() for t in tried or []]
+    aliases = zone_aliases(all_places)
+    for sentence in re.split(r"(?<=[.!?])\s+", low):
+        rest, said = " " + re.sub(r"[^a-z' ]+", " ", sentence) + " ", []
+        for name, zid in aliases:
+            rx = r"\b%s\b" % re.escape(name)
+            if re.search(rx, rest):
+                if zid not in said:
+                    said.append(zid)
+                rest = re.sub(rx, " ", rest)
+        for zid in said:
+            nm = next((p["name"].lower() for p in all_places if p["id"] == zid), zid)
+            if zid not in in_plan and not any(t.startswith(nm) for t in done):
+                return False, "mentions %s, which isn't in the plan" % nm
+        w, used = " " + sentence + " ", []
+        for word in WORDS:
+            while word in w:
+                used.append(word)
+                w = w.replace(word, " ", 1)
+        if re.search(r"\blikely\b", re.sub(r"\bunlikely\b", "", w)):
+            return False, "says 'likely' instead of the word from the plan"
+        allowed = {in_plan[z]["word"] for z in said if z in in_plan}
+        for word in used:
+            if word not in allowed:
+                return False, "'%s' doesn't match the plan" % word
+    for pc in places_said or []:
+        r = in_plan.get(pc.get("zone"))
+        if not r:
+            return False, "place %s isn't in the plan" % pc.get("zone")
+        if pc.get("label") in WORDS and pc["label"] != r["word"]:
+            return False, "label for %s doesn't match the plan" % r["name"]
+    for m in TIME_RX.finditer(low):
+        t = re.sub(r"^(about|around) ", "", m.group(0))
+        if t not in fx:
+            return False, "gives a time ('%s') that isn't from the model" % m.group(0)
+    return True, ""
+
+
+def chat(message, history, model, sessions, mode="default", llm=None, now=None):
+    """One turn of trace.html's conversation. model: {"items": {id: bundle}} posted by the analytics
+    page. sessions: a dict the server keeps between turns. Returns
+    {"reply", "item", "state": "searching"|"found"|"idle", "chirp", "evidence", "source", "why"}."""
+    now = time.time() if now is None else now
+    bundles = (model or {}).get("items") or {}
+    if not bundles:
+        raise NoModel()
+    for k in [k for k, s in sessions.items() if now - s["used"] > SESSION_IDLE or s.get("found")]:
+        del sessions[k]
+    said = str(message or "").strip()
+    n = re.sub(r"\s+", " ", re.sub(r"[^a-z' ]+", " ", said.lower())).strip()
+    current = max(sessions, key=lambda k: sessions[k]["used"]) if sessions else None
+    want = item_in(said) or current
+    if not want:
+        for h in reversed(history or []):
+            if h.get("role") == "user" and item_in(h.get("content", "")):
+                want = item_in(h["content"])
+                break
+    if not want or want not in bundles:
+        return {"reply": "Which one should I look for: your keys, your wallet or your glasses?", "item": None,
+                "state": "idle", "chirp": None, "evidence": [], "source": "page", "why": ""}
+    bundle = bundles[want]
+    S = bundle.get("search") or {"vis": 0.95, "cov": 0.75, "person": 0.95, "out": 0.8}
+    ses = sessions.get(want)
+    if ses is None or (item_in(said) and re.search(r"\bwhere\b", n)):
+        ses = sessions[want] = {"evidence": [], "tried": [], "used": now, "last": ""}
+    ses["used"] = now
+    base = places_of(bundle)
+    plan = rank(apply_evidence(base, ses["evidence"], S), S)
+
+    def turn(reply, state="searching", evidence=(), source="page", why="", chirp=None):
+        ses["last"] = reply
+        if state == "found":
+            ses["found"] = True
+        return {"reply": reply, "item": want, "state": state, "chirp": chirp,
+                "evidence": list(evidence), "source": source, "why": why}
+
+    def found_at(zone, name):
+        return turn("Found %s: %s." % ("them" if bundle.get("item_plural") else "it", name.lower()), "found",
+                    [{"zone": zone, "part": "all", "found": True, "sure": "high"}])
+
+    # the three simple commands never need the LLM
+    if AGAIN.match(n) and ses["last"]:
+        return turn(ses["last"])
+    if NOT_THERE.match(n) and plan and ses["last"]:
+        ev = {"zone": plan[0]["zone"], "part": "all", "found": False, "sure": "high"}
+        ses["evidence"].append(ev)
+        ses["tried"].append(plan[0]["name"])
+        plan = rank(apply_evidence(base, ses["evidence"], S), S)
+        return turn(template(bundle, plan, len(ses["tried"])), evidence=[ev])
+    if FOUND_IT.match(n) and plan and ses["last"]:
+        return found_at(plan[0]["zone"], plan[0]["name"])
+
+    places = apply_evidence(base, ses["evidence"], S)
+    res = ask(dict(bundle, places=places, already_checked=list(ses["tried"])), said, mode, llm=llm)
+    for ev in res["evidence"]:
+        if ev["found"]:
+            return found_at(ev["zone"], next((p["name"] for p in base if p["id"] == ev["zone"]), ev["zone"]))
+    for ev in res["evidence"]:
+        ses["evidence"].append(ev)
+        nm = next((p["name"] for p in base if p["id"] == ev["zone"]), ev["zone"])
+        ses["tried"].append(nm + {"low": " (quick look)", "medium": " (not sure)"}.get(ev["sure"], ""))
+    plan = rank(apply_evidence(base, ses["evidence"], S), S)
+    fallback = template(bundle, plan, len(ses["tried"]))
+    if not res.get("say"):
+        return turn(fallback, evidence=res["evidence"], source=res["source"])
+    ok, why = validate_say(res["say"], res.get("places"), plan, base, ses["tried"], json.dumps(bundle) + " " + fallback)
+    if not ok:
+        return turn(fallback, evidence=res["evidence"], source=res["source"], why="answer rejected (%s), template used" % why)
+    return turn(res["say"], evidence=res["evidence"], source=res["source"], chirp=res.get("chirp"))

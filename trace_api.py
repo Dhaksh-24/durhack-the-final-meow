@@ -12,7 +12,15 @@ plus OpenCV only; no keys, and nothing leaves your network.
   GET /api/snapshots/<id>.jpg    frame it was last seen in      (memory/snapshots)
   GET /api/live/<camera>.mjpg    live video of one camera (MJPEG, about LIVE_FPS frames a second)
   GET /api/live/<camera>.jpg     the latest single frame
-  POST /api/ask {"bundle", "utterance", "mode"}
+  POST /api/ask {"message", "history"}  (trace.html, the proper front end)
+                                 -> {"reply", "item_id", "state": "searching"|"found"|"idle", ...}
+                                 answered by guide.chat from the model the analytics page posted
+                                 (below); 503 until it has, and trace.html then uses its own replies.
+  POST /api/model {"room", "items": {id: bundle}}
+                                 the analytics page (trace-sim, Real events mode) shares the
+                                 model's current belief per item, about once a second
+  GET  /api/model                what was last posted, and when
+  POST /api/ask {"bundle", "utterance", "mode"}  (trace-sim's own Ask box)
                                  the guide (guide.py, SPEC 5): parses what was said into evidence
                                  and words the answer with the LLM (two calls at most), returns
                                  {"say", "places", "evidence", "chirp", "intent", "item", "source"}.
@@ -118,6 +126,9 @@ class TraceAPI:
         # Replaced wholesale by multicam.py (one assignment), so a request never sees half a list.
         self.items = []
         self.httpd = None
+        self.model = None       # {"room", "items": {id: bundle}, "received"} from the analytics page
+        self.sessions = {}      # trace.html's searches in progress, per item (guide.chat)
+        self.lock = threading.Lock()
         self.chirps = {}        # zone -> id of the latest chirp
         self.polls = {}         # zone -> when a phone page last asked
 
@@ -189,6 +200,15 @@ class TraceAPI:
                     return self._speech(raw)
                 if p == "/api/ask":
                     return self._ask(raw)
+                if p == "/api/model":
+                    try:
+                        body = json.loads(raw or b"{}")
+                        assert isinstance(body.get("items"), dict)
+                    except (ValueError, AssertionError, AttributeError):
+                        return self._json({"error": "bad json: needs items"}, 400)
+                    body["received"] = time.time()
+                    api.model = body
+                    return self._json({"ok": True})
                 m = re.fullmatch(r"/api/chirp/([a-z0-9-]+)", p)
                 if m:
                     z = m.group(1)
@@ -199,6 +219,11 @@ class TraceAPI:
             def _ask(self, raw):
                 try:
                     body = json.loads(raw or b"{}")
+                except ValueError:
+                    return self._json({"error": "bad json"}, 400)
+                if isinstance(body, dict) and "message" in body and "bundle" not in body:
+                    return self._chat(body)
+                try:
                     bundle, said = body["bundle"], str(body.get("utterance", "")).strip()[:500]
                     mode = body.get("mode") if body.get("mode") in ("default", "blind", "dementia") else "default"
                 except (ValueError, KeyError, AttributeError, TypeError):
@@ -211,6 +236,28 @@ class TraceAPI:
                     return self._json({"error": "guide failed"}, 500)
                 for e in res.get("errors") or []:
                     print("guide:", e)
+                self._json(res)
+
+            def _chat(self, body):
+                import guide
+                message = str(body.get("message", "")).strip()[:500]
+                history = body.get("history") if isinstance(body.get("history"), list) else []
+                mode = body.get("mode") if body.get("mode") in ("default", "blind", "dementia") else "default"
+                try:
+                    with api.lock:                  # one turn at a time: the sessions are shared
+                        res = guide.chat(message, history, api.model, api.sessions, mode)
+                except guide.NoModel:
+                    return self._json({"error": "no model yet: open /sim in Real events mode"}, 503)
+                except Exception as exc:
+                    print("guide chat: %s: %s" % (type(exc).__name__, exc))
+                    return self._json({"error": "guide failed"}, 500)
+                # trace.html's own item ids come from multicam's memory: the most recent of that kind
+                same = [it for it in api.items if it.get("category") == res["item"]]
+                res["item_id"] = max(same, key=lambda it: it.get("last_time") or 0)["id"] if same else None
+                if res.get("chirp"):
+                    api.chirps[res["chirp"]] = api.chirps.get(res["chirp"], 0) + 1
+                if res.get("why"):
+                    print("guide chat:", res["why"])
                 self._json(res)
 
             def _speech(self, raw):
@@ -252,6 +299,8 @@ class TraceAPI:
                         return self._json(api.cameras())
                     if p == "/api/items":
                         return self._json(api.items)
+                    if p == "/api/model":
+                        return self._json(api.model or {})
                     if p == "/api/events":
                         q = parse_qs(url.query)
                         limit = max(1, min(200, int((q.get("limit") or ["20"])[0])))

@@ -89,5 +89,54 @@ def broken(system, user):
 res = guide.ask(BUNDLE, "I looked under the sofa", "default", llm=broken)
 check(res["source"] == "rules" and res["say"] is None and res["evidence"][0]["zone"] == "sofa" and res["errors"], "LLM down: rules parse, template sentence")
 
+print("trace.html conversation (guide.chat)")
+KEYS = dict(BUNDLE, item_plural=True, visible_now=None, last_seen={"zone": "desk", "time": "14:05", "ago": "10 minutes ago"})
+MODEL = {"items": {"keys": KEYS}}
+try:
+    guide.chat("where are my keys", [], {}, {})
+    check(False, "no model posted -> NoModel")
+except guide.NoModel:
+    check(True, "no model posted -> NoModel (the server answers 503, trace.html falls back)")
+ses = {}
+say = lambda m, **kw: guide.chat(m, [], MODEL, ses, llm=kw.get("llm", broken), now=kw.get("now", 1000))
+r1 = say("Where are my keys?")
+first = guide.rank(PLACES, S)[0]
+check(r1["state"] == "searching" and r1["item"] == "keys" and r1["reply"].startswith("Your keys were last seen on the desk 10 minutes ago.")
+      and ("first: %s there" % first["word"]) in r1["reply"], "where: template from the posted model, word from code")
+r2 = say("not there")
+check(r2["reply"].startswith("Not there.") and r2["evidence"][0]["zone"] == first["zone"] and ses["keys"]["tried"] == [first["name"]], "'not there' rules out the top place, no LLM")
+check(say("again")["reply"] == r2["reply"], "'again' repeats the last line")
+r4 = say("I had a quick look under the sofa cushions")
+check(r4["evidence"] == [{"zone": "sofa", "part": "covered", "found": False, "sure": "low"}] and "Sofa (quick look)" in ses["keys"]["tried"], "described check -> evidence, kept in the session")
+r5 = say("found it")
+check(r5["state"] == "found" and r5["reply"].startswith("Found them:"), "'found it' ends the search")
+r6 = say("where are my keys?")
+check(r6["reply"].startswith("Your keys were last seen") and ses["keys"]["tried"] == [], "a new question starts a fresh search")
+check(guide.chat("where is it?", [], MODEL, {}, llm=broken)["reply"].startswith("Which one"), "no item named and nothing to go on: asks which one")
+check(guide.chat("is it in the car?", [{"role": "user", "content": "where are my keys"}], MODEL, {}, llm=broken)["item"] == "keys", "item taken from the history")
+
+
+def llm_says(text, places=None, chirp=None):
+    def f(system, user):
+        if system is guide.PARSE_SYSTEM:
+            return {"intent": "where", "item": "keys", "evidence": []}
+        return {"say": text, "places": places or [], "chirp": chirp}
+    return f
+
+
+ses.clear()
+w = first["word"]
+good = guide.chat("where are my keys", [], MODEL, ses, llm=llm_says("They were last seen on the desk 10 minutes ago. Try %s next: %s there." % (guide.where_text(first), w)), now=2000)
+check(good["source"] == "llm" and good["reply"].startswith("They were last seen") and not good["why"], "a valid LLM answer is used as it is")
+ses.clear()
+bad = guide.chat("where are my keys", [], MODEL, ses, llm=llm_says("They are definitely on the desk."), now=2000)
+check(bad["reply"].startswith("Your keys were last seen") and "certain" in bad["why"], "'definitely' is rejected, template used")
+ses.clear()
+wrong = guide.chat("where are my keys", [], MODEL, ses, llm=llm_says("Try %s, very likely." % guide.where_text(first) if w != "very likely" else "Try %s, possibly." % guide.where_text(first)), now=2000)
+check("doesn't match the plan" in wrong["why"], "a probability word that doesn't match the plan is rejected")
+ses.clear()
+late = guide.chat("where are my keys", [], MODEL, ses, llm=llm_says("You had them on the desk about 3 minutes ago."), now=2000)
+check("time" in late["why"], "a time that isn't from the model is rejected")
+
 print("\nall checks passed" if ok else "\nSOME CHECKS FAILED")
 raise SystemExit(0 if ok else 1)
