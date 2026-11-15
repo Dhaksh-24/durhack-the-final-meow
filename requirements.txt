@@ -1,19 +1,21 @@
-# Python 3.10 - 3.12 (kokoro's spaCy dependency has no build for 3.13+)
+# Python 3.10 - 3.12 recommended (kokoro, the optional offline voice, has no build for 3.13+)
+#   pip install -r requirements.txt
+# `python run_trace.py --demo` (no cameras) needs only: websockets, opencv-python, numpy
 
-# detection and scene mapping
-ultralytics
+# the page server, the live link to the page (bridge.py), images
+websockets
 opencv-python
 numpy
-# YOLO-World's text encoder; ultralytics also installs this itself on first run
+
+# detection (multicam.py, detect.py): YOLO-World + the CLIP verifier and fingerprints
+ultralytics
 clip @ git+https://github.com/ultralytics/CLIP.git
 
-# Trace's natural voice (tts.py): Microsoft neural voices, online, no API key
+# the LLM wording (guide.py); without it, or without GEMINI_API_KEY in .env, Trace uses its own sentences
+google-genai
+
+# Trace's voice (tts.py): Microsoft neural voices, online, no API key; the browser's voice otherwise
 edge-tts>=7
 
-# Trace's offline voice (tts.py), used when there's no internet
-kokoro>=0.9.4
-soundfile
-sounddevice
-
-# optional: scene.py --gemini
-# google-genai
+# OPTIONAL offline voice. Install separately so a failure doesn't stop the rest:
+#   pip install "kokoro>=0.9.4" soundfile sounddevice

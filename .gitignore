@@ -37,3 +37,15 @@ timeline.jsonl
 room.json
 # room.py's camera places (per laptop; built by multicam.py / python room.py build)
 places.json
+
+# recordings and test videos of the room (people in them)
+*.mp4
+*.mov
+*.avi
+*.webm
+# recorded event runs (e.g. backup-run.jsonl) and every other runtime log; the scripted sample stays
+*.jsonl
+!trace-sim/sample-events.jsonl
+# multicam.py's half-written saves (atomic_write), the old one-camera chain's furniture files
+*.tmp
+anchors.json
