@@ -1,7 +1,7 @@
-"""bridge.py -- stream new lines of events.jsonl to the page over a WebSocket.
+"""bridge.py -- stream new lines of trace-events.jsonl to the page over a WebSocket.
 
     pip install websockets
-    python bridge.py                      # tails events.jsonl, serves ws://localhost:8765
+    python bridge.py                      # tails trace-events.jsonl, serves ws://localhost:8765
     python bridge.py --file other.jsonl --port 8765
     python bridge.py --history            # also send what was already in the file
 
@@ -110,8 +110,8 @@ class Bridge:
 
 
 async def main():
-    ap = argparse.ArgumentParser(description="Serve new lines of events.jsonl on a WebSocket")
-    ap.add_argument("--file", default="events.jsonl", help="file to tail (default events.jsonl)")
+    ap = argparse.ArgumentParser(description="Serve new lines of trace-events.jsonl on a WebSocket")
+    ap.add_argument("--file", default="trace-events.jsonl", help="file to tail (default trace-events.jsonl)")
     ap.add_argument("--host", default="localhost", help="address to listen on (default localhost only)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--history", action="store_true", help="also send lines already in the file")

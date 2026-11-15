@@ -142,8 +142,28 @@ ul.feed li b { font-family: var(--mono); font-weight: 600; margin-right: 6px; co
 [hidden] { display: none !important; }   /* author rules like canvas{display:block} must not un-hide things */
 /* Presentation view: only the room, the cameras, where Trace thinks it is, and Ask Trace */
 body.present header p, body.present .card:not(.keep), body.present .full { display: none !important; }
-body.present .grid { grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); }
+body.present .grid { grid-template-columns: minmax(0, 1.6fr) minmax(360px, 1fr); }
 body.present #controls3d, body.present .legend, body.present #roomLead { display: none; }
+/* Readable from the back of a room: full width, bigger type, no simulator-only controls or fine print */
+body.present { font-size: 17px; }
+body.present .wrap { max-width: none; padding: 14px 22px 22px; }
+body.present header { margin-bottom: 10px; }
+body.present header h1 { font-size: 30px; }
+body.present .clock { font-size: 16px; }
+body.present .card { padding: 14px 18px; }
+body.present .card h2 { font-size: 22px; }
+body.present .card .lead, body.present #questionLine, body.present #askCard .askbar + .askbar, body.present .barrow.tiny { display: none; }
+body.present #play, body.present #speed, body.present #skip, body.present #reset, body.present label.check:has(#truth), body.present #replayNote { display: none; }
+body.present .barrow { font-size: 18px; }
+body.present .barrow .pct { font-size: 18px; font-weight: 600; }
+body.present .barrow .track { height: 10px; }
+body.present .lastseen { font-size: 18px; color: var(--ink); }
+body.present .trail { font-size: 16px; }
+body.present ul.feed { font-size: 16px; }
+body.present ul.feed li:nth-child(n+4) { display: none; }
+body.present .lbl { font-size: 14px; }
+body.present .lbl b { font-size: 16px; }
+body.present .say { font-size: 18px; }
 .progress { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .askbar input[type="text"] { flex: 1 1 220px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
 .askbar select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
@@ -1202,7 +1222,9 @@ function beginReal() {
 }
 function liveNote(msg) { $("#replayNote").textContent = msg; }
 function connectLive() {
-  const url = new URLSearchParams(location.search).get("ws") || ("ws://" + (/^https?:$/.test(location.protocol) && location.hostname ? location.hostname : "localhost") + ":8765");
+  // the bridge sits on the page server's port + 765 (8000 -> 8765; run_trace.py --port moves both)
+  const served = /^https?:$/.test(location.protocol) && location.hostname, pagePort = served && location.port ? +location.port : 0;
+  const url = new URLSearchParams(location.search).get("ws") || ("ws://" + (served ? location.hostname : "localhost") + ":" + (pagePort && pagePort !== 80 ? pagePort + 765 : 8765));
   beginReal(); replay.name = "live";
   let ws;
   try { ws = new WebSocket(url); } catch (err) { liveNote("Live: couldn't open " + url + ": " + err.message); return; }
@@ -1256,6 +1278,10 @@ function setReplayUI() {
   if (on !== $("#truth").disabled) { $("#truth").checked = !on; showTruth = !on; }   // no ground truth in a recording
   $("#truth").disabled = on;
   $("#reset").hidden = on; $("#loadRec").hidden = !on;
+  // simulator-only controls: no ground truth with real events, and live events can't be sped up or skipped
+  $("#skip").hidden = on; $("#truth").closest("label").hidden = on;
+  $("#play").hidden = !!live; $("#speed").hidden = !!live;
+  feedDirty = true;
   $("#liveBtn").textContent = live ? "Disconnect" : "Connect live";
   document.querySelectorAll("#modeSeg button").forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.m === "real") === on)));
   if (!on) $("#replayNote").textContent = "";
@@ -1616,7 +1642,7 @@ function renderBars() {
       tag = z.camera ? " <small>· phone</small>" : " <small>· no phone</small>";
       if (r.p > 0.05 && cov > 0.5) tag += " <small>· probably covered</small>";
     }
-    return '<div class="barrow"><div class="name">' + esc(r.pl.name) + tag + '</div><div class="pct">' + pct(r.p) + '</div><div class="track"><div class="fill" style="width:' + (r.p * 100).toFixed(1) + '%"></div></div></div>';
+    return '<div class="barrow' + (r.p < 0.01 ? ' tiny' : '') + '"><div class="name">' + esc(r.pl.name) + tag + '</div><div class="pct">' + pct(r.p) + '</div><div class="track"><div class="fill" style="width:' + (r.p * 100).toFixed(1) + '%"></div></div></div>';
   }).join("");
 }
 function whereText(pl, b) {
@@ -1719,7 +1745,8 @@ function renderAsk() {
 
 // ---------- the guide: voice in, the LLM for everything but the simple commands, voice out ----------
 // The guide server is trace_api.py (python trace_api.py, or multicam.py); ?api=http://host:port overrides.
-const API = new URLSearchParams(location.search).get("api") || (location.protocol.startsWith("http") && location.port === "8000" ? "" : "http://localhost:8000");
+// Served over http (trace_api.py / multicam.py, any port): the same server. Opened as a file: localhost:8000.
+const API = new URLSearchParams(location.search).get("api") || (/^https?:$/.test(location.protocol) ? "" : "http://localhost:8000");
 const ITEM_WORDS = { keys: /\b(keys?|keyring)\b/, wallet: /\b(wallet|purse|cards?)\b/, glasses: /\b(glasses|specs|spectacles)\b/ };
 function askInfo(t) { $("#askInfo").textContent = t || ""; }
 async function postJSON(path, body, ms) {
@@ -2014,7 +2041,8 @@ function planOf(b) {   // the plan for the person searching now: their last fail
 }
 function renderFeed() {
   if (!feedDirty) return; feedDirty = false;
-  $("#feedList").innerHTML = feed.map((f) => "<li><b>" + esc(f.t) + "</b>" + esc(f.line) + "</li>").join("");
+  $("#feedList").innerHTML = feed.length ? feed.map((f) => "<li><b>" + esc(f.t) + "</b>" + esc(f.line) + "</li>").join("")
+    : '<li class="note">' + (live ? "Watching the cameras. Changes will appear here." : replay ? "Waiting for events: Connect live, or Load recorded events." : "Waiting for the first change in the room.") + "</li>";
 }
 function renderAll() {
   renderFeed();
@@ -2475,7 +2503,9 @@ function placeLabel(el, v3, html, cls, w, h) {
 }
 
 function draw3D(now) {
-  const cv = $("#room3d"), w = cv.clientWidth || 600, h = Math.max(320, Math.round(w * 0.62));
+  const cv = $("#room3d"), w = cv.clientWidth || 600, pres = document.body.classList.contains("present");
+  // presentation view: as big as fits, leaving room for the feed below it on the screen
+  const h = Math.max(320, Math.round(pres ? Math.min(w * 0.62, window.innerHeight - 440 - ($("#camStrip").hidden ? 0 : $("#camStrip").offsetHeight)) : w * 0.62));
   const { renderer, camera, P } = R3;
   const sz = renderer.getSize(new THREE.Vector2());
   if (sz.x !== w || sz.y !== h) { renderer.setSize(w, h, false); cv.style.height = h + "px"; camera.aspect = w / h; camera.updateProjectionMatrix(); }
@@ -3206,8 +3236,12 @@ $("#resetLearn").onclick = () => {
   HAB = {}; try { localStorage.removeItem(habKey()); } catch (e) { /* nothing saved */ }
   learnHabits(HAB); renderLearned();
 };
+// Presentation view puts the feed under the room (left), so where-it-is and Ask Trace fit on the right.
+const feedHome = { parent: $("#feedCard").parentNode, next: $("#feedCard").nextElementSibling };
 function setPresent(on) {
   document.body.classList.toggle("present", on);
+  const fc = $("#feedCard"), room = $("#view3d").closest(".card");
+  if (on) room.after(fc); else feedHome.parent.insertBefore(fc, feedHome.next);
   $("#presentBtn").textContent = on ? "Show everything" : "Presentation view";
   if (R3) setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
 }
