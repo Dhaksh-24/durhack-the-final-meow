@@ -4,6 +4,7 @@
     python run_trace.py --video keys_test.mp4   # a phone video instead of live phones (for testing)
     python run_trace.py --demo                  # no cameras at all: a fake session, to check the page
     python run_trace.py --present               # open the page in presentation view (for the judges)
+    python run_trace.py --seed                  # preload a simulated morning into the heat map (labelled)
     python run_trace.py --share                 # let a second laptop on the same Wi-Fi open the pages
     python run_trace.py --port 8100             # if 8000 is taken (the live feed then uses 8865)
     python run_trace.py --no-people             # any other option is passed on to multicam.py
@@ -127,6 +128,7 @@ def main():
     ap.add_argument("--video", help="a video file to use as the camera (test without phones)")
     ap.add_argument("--demo", action="store_true", help="no cameras: a fake session to check the page works")
     ap.add_argument("--present", action="store_true", help="open the page in presentation view")
+    ap.add_argument("--seed", action="store_true", help="preload a SIMULATED morning into the heat map (labelled as simulated on the page)")
     ap.add_argument("--share", action="store_true",
                     help="open the server and live feed to this Wi-Fi, so a second laptop can show the pages")
     ap.add_argument("--keep-events", action="store_true", help="don't clear trace-events.jsonl first")
@@ -181,6 +183,8 @@ def main():
     procs, query = [], "live"
     if a.present:
         query += "&view=present"
+    if a.seed:
+        query += "&seed=morning"
     bridge = [PY, str(ROOT / "bridge.py"), "--file", str(EVENTS), "--port", str(ws_port())] + \
              (["--host", "0.0.0.0"] if a.share else [])
     try:

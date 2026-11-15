@@ -2142,6 +2142,7 @@ function loadMap(obj, save = true) {
   }
   if (!obj.zones.some((z) => z.camera)) throw new Error("At least one zone needs \"camera\": true, or Trace can never see anything.");
   setupMap(obj); resetDay(); build3D(); $("#mapTitle").textContent = MAP.name; $("#mapText").value = mapToText(); renderAll();
+  if (seedMinutes) { seedHeat(seedMinutes); renderHeat(); }   // a simulated morning is regenerated for the new room's zones
   try { localStorage.setItem("trace.map", mapToText()); } catch (e) { /* private window: not remembered */ }
   if (save && /^https?:$/.test(location.protocol)) {   // served by trace_api: save it as room.json for every browser
     fetch(API + "/api/room", { method: "POST", headers: { "Content-Type": "application/json" }, body: mapToText() }).catch(() => {});
@@ -3231,7 +3232,7 @@ $("#sonarChk").onchange = (e) => {
 };
 $("#seedBtn").onclick = () => { seedHeat(120); renderHeat(); };
 $("#seedClear").onclick = () => { clearSeed(); renderHeat(); };
-if (QS.get("seed") === "morning") setTimeout(() => { seedHeat(120); renderHeat(); }, 500);
+if (QS.get("seed") === "morning") setTimeout(() => { seedHeat(120); renderHeat(); }, 500);   // loadMap re-seeds if room.json arrives later
 $("#resetLearn").onclick = () => {
   HAB = {}; try { localStorage.removeItem(habKey()); } catch (e) { /* nothing saved */ }
   learnHabits(HAB); renderLearned();
