@@ -1071,7 +1071,8 @@ async function getData(path) {
   try { return { ok: true, data: await api(path) }; } catch { return { ok: false }; }
 }
 const asList = (d, key) => Array.isArray(d) ? d : (d && Array.isArray(d[key]) ? d[key] : []);
-const thumbURL = (it) => state.mode === "demo" ? (it.box ? mockThumb(it) : "") : `${API_BASE}/api/thumbs/${encodeURIComponent(it.id)}.jpg?v=${Math.floor((it.last_time || 0) / 30)}`;
+// Items built from the model (no multicam: ids like "keys-1") have no photo, so don't ask for one
+const thumbURL = (it) => state.mode === "demo" ? (it.box ? mockThumb(it) : "") : !/^\d+$/.test(String(it.id)) ? "" : `${API_BASE}/api/thumbs/${encodeURIComponent(it.id)}.jpg?v=${Math.floor((it.last_time || 0) / 30)}`;
 const snapURL = (it) => state.mode === "demo" ? sceneSVG(it.camera) : `${API_BASE}/api/snapshots/${encodeURIComponent(it.id)}.jpg?v=${Math.floor(it.last_time || 0)}`;
 
 /* ------------------------------------------------------------ state */

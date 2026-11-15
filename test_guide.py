@@ -134,6 +134,20 @@ check(bad["reply"].startswith("Your keys were last seen") and "certain" in bad["
 ses.clear()
 wrong = guide.chat("where are my keys", [], MODEL, ses, llm=llm_says("Try %s, very likely." % guide.where_text(first) if w != "very likely" else "Try %s, possibly." % guide.where_text(first)), now=2000)
 check("doesn't match the plan" in wrong["why"], "a probability word that doesn't match the plan is rejected")
+print("'not there' when the top place is suggested again")
+SEEN = [dict(p, pv=0.9996 if p["id"] == "sofa" else 0.0001, pc=0.0) for p in PLACES]   # a phone sees them now
+VIS = {"items": {"keys": dict(BUNDLE, places=SEEN, item_plural=True, visible_now="sofa",
+                              last_seen={"zone": "sofa", "time": "14:05", "ago": "just now"})}}
+vs = {}
+guide.chat("where are my keys", [], VIS, vs, llm=broken, now=3000)
+again = guide.chat("not there", [], VIS, vs, llm=broken, now=3001)["reply"]
+check("still sees something that looks like your keys" in again and "the sofa again" in again and "next" not in again,
+      "phone still sees them: says so and asks for a careful second look, not 'next'")
+again2 = guide.chat("not there", [], VIS, vs, llm=broken, now=3002)["reply"]
+check(again2 != again and "may be something else" in again2 and "once more." in again2,
+      "second 'not there' at the same place: doesn't repeat itself, says the phone may be wrong")
+check("Check %s next" % guide.where_text(guide.rank(guide.apply_evidence(PLACES, [{"zone": first["zone"], "part": "all", "found": False, "sure": "high"}], S), S)[0]) in r2["reply"],
+      "a normal 'not there' still moves on to the next place")
 ses.clear()
 late = guide.chat("where are my keys", [], MODEL, ses, llm=llm_says("You had them on the desk about 3 minutes ago."), now=2000)
 check("time" in late["why"], "a time that isn't from the model is rejected")
