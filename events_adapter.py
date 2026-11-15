@@ -1,11 +1,11 @@
 """events_adapter.py -- turn a camera program's raw detections into SPEC 3.2 events.
 
-    python live_scene.py --jsonl --no-window | python events_adapter.py
+    python legacy/live_scene.py --jsonl --no-window | python events_adapter.py
     python events_adapter.py --demo            # a fake ~45 s session, no camera needed
     python events_adapter.py --demo --fast     # the same, instantly
     python events_adapter.py --zones zones_map.json --out events.jsonl
 
-Input: one JSON object per line on stdin, as live_scene.py --jsonl writes them
+Input: one JSON object per line on stdin, as legacy/live_scene.py --jsonl writes them
 (see the top of scene.py):
     {"time": "2026-11-14T12:00:00.000+00:00", "camera_id": "lounge",
      "image_w": 1280, "image_h": 854, "item": "keys", "box": [x1, y1, x2, y2],

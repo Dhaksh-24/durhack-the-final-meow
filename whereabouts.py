@@ -31,7 +31,7 @@ instead, from the same scores, so the demo never stalls.
 One person at a time: the trail is "whoever the cameras saw". Good enough for a
 flat with one person who needs help, which is who this is for.
 
-Try it without cameras:  python simulate.py
+Try it without cameras:  python tests/simulate.py
 """
 import json
 import math

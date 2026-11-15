@@ -367,7 +367,7 @@ def main():
     ap = argparse.ArgumentParser(description="Build Trace's room model (places.json)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build", help="build places.json from zones.json + photos / scene JSON")
-    b.add_argument("--scene", action="append", help="CAMERA=scene.json (from scene.py / live_scene.py)")
+    b.add_argument("--scene", action="append", help="CAMERA=scene.json (from scene.py / legacy/live_scene.py)")
     b.add_argument("--photo", action="append", help="CAMERA=photo.jpg (finds the furniture in it)")
     b.add_argument("--grab", action="append", help="CAMERA=webcam index or stream URL")
     b.add_argument("--out", default=str(ROOM_FILE))

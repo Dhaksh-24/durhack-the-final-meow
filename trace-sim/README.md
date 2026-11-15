@@ -18,7 +18,7 @@ Open `index.html` in a browser (needs internet once, for three.js).
 4. In each photo click the four corners of the sheet on the floor, then the two ends of each piece of furniture's front edge; name it.
 5. "Build the room". The browser remembers the room on reload. "Copy the zone map" gives the zone ids `multicam.py` should use, and "Camera calibration for the tracker" gives `baseline/calibration.json`.
 
-Event format the model reads (one JSON object per line, full contract in `SPEC.md` 3.2):
+Event format the model reads (one JSON object per line, full contract in `docs/SPEC.md` 3.2):
 
     {"time": "14:05:10", "t": 1794696414.7, "item": "keys-1", "category": "keys", "zone": "sofa", "event": "appeared", "confidence": 0.82, "camera": "phone-1"}
 

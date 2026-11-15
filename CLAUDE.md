@@ -3,11 +3,16 @@
 Start with `HANDOVER.md` (how to run it, demo set-up, honest status). `python run_trace.py --demo`
 checks the page without cameras.
 
-Full spec: `SPEC.md` (product, architecture, data contracts, the maths, the LLM agent,
+Full spec: `docs/SPEC.md` (product, architecture, data contracts, the maths, the LLM agent,
 and what "done" means for each remaining task). Read it before starting a task.
 
+Layout: the demo's own files are at the top level and import each other by plain module name
+(`multicam.py` writes `memory/`, `zones.json` etc. relative to the folder it's run from), so keep
+them there. `README.md` has the file table. `tests/`, `research/` (detector benchmarking and
+`train_verifier.py`) and `legacy/` scripts put the repo folder on `sys.path` and read `data/` from it.
+
 "AirTags without the AirTag." Phones placed around a room watch zones (sofa, desk, shelf…).
-Trace keeps a probability for where each important item (keys, wallet, glasses) is, and an
+Trace keeps a probability for where each important item (keys, glasses; the simulator also has a wallet) is, and an
 LLM guides the person to it by voice. For blind people, people with dementia, and everyone.
 Demo: the presenter's keys are hidden, they're blindfolded, and Trace talks them to the keys.
 
@@ -20,7 +25,8 @@ Worlds"; quant judges who value complexity, intelligence and elegance).
   (DroidCam / IP Webcam), detects items with YOLO-World via `detect.py`, keeps identity across
   cameras with CLIP fingerprints, logs to `events.jsonl`. Saves a baseline photo per camera to
   `baseline/` at start-up and loads `baseline/calibration.json` to put sightings on the floor
-  in metres. Benchmarking work on prompts and thresholds per object is on `main`.
+  in metres. `detect.py` checks each keys / glasses box with a CLIP classifier (`verifier.json`,
+  built by `research/train_verifier.py`). Benchmarking prompts and thresholds: `research/bench.py`.
 - **Model / LLM** (branch `trace-model`): `trace-sim/index.html`, a single self-contained page.
 - **Maths**: calibrate detector confidence into evidence strength; stress-test the results.
 

@@ -55,7 +55,7 @@ detected item and emit() writes them as JSON lines:
 
 Every line from one frame shares the same "time". The anchor ids it refers
 to are resolved against the fixed furniture list -- save_anchors() and
-load_anchors() -- which live_scene.py --setup writes once per room.
+load_anchors() -- which legacy/live_scene.py --setup writes once per room.
 """
 import datetime
 import hashlib

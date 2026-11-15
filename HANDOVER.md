@@ -1,10 +1,11 @@
 # Trace: handover
 
 Read this first. It's everything you need to run Trace, set up the demo room, and know what's
-left. Detail lives in `SPEC.md` (design) and `RUN_LIVE.md` (the live chain, piece by piece).
+left. The design is in `docs/SPEC.md`; section 8 below runs the live chain piece by piece.
 
-**Trace in one line:** phones watch a room; a probability model works out where your keys,
-wallet and glasses probably are; Trace talks you to them, and shows it all on a 3D model of the room.
+**Trace in one line:** phones watch a room; a probability model works out where your keys and
+glasses probably are; Trace talks you to them, and shows it all on a 3D model of the room.
+(The detector looks for keys and glasses only; the page still has a wallet for the simulator.)
 
 ---
 
@@ -130,10 +131,12 @@ you recorded during a good rehearsal. Say "this is our recorded run from this mo
 | `trace-sim/index.html` | `/sim`: runs the model, 3D room, cameras, metrics (keep it open) |
 | `trace.html` | `/`: the front end you talk to ("Hey Trace", voice, mascot) |
 | `tts.py` | the voice: Microsoft neural (edge-tts) online, Kokoro offline |
-| `whereabouts.py` + `room.py` | backup answers: multicam's own person trail (where you stopped, how the item went missing). `/api/ask` uses it only when the `/sim` tab isn't posting the model. Its places live in `places.json` |
+| `whereabouts.py` + `room.py` | backup answers: multicam's own person trail (where you stopped, how the item went missing). `/api/ask` uses it only when the `/sim` tab isn't posting the model. Its places live in `places.json`. See `docs/whereabouts.md` |
+| `scene.py`, `targets.py` | used by the two above: furniture found in a photo becomes places (`room.py` imports `scene`), and the item list (`whereabouts.py` imports `targets`). Don't move or delete them |
+| `snap.py` | one photo per phone, only for mapping the room from angled photos |
 
-Not needed for the demo (benchmarking and earlier experiments): `bench.py`, `pull_lvis.py`,
-`pull_data.py`, `targets.py`, `scene.py`, `test_scene.py`, `live_scene.py`, `snap.py`, `index.html` (task board).
+Not needed for the demo: `research/` (detector benchmarking and training the CLIP check),
+`tests/`, and `legacy/live_scene.py` (the earlier one-camera version).
 
 Never commit: `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, `room.json`,
 `places.json`, `timeline.jsonl`, `cameras.json`, `.env`. They're git-ignored; keep it that way (some contain photos of people).
@@ -148,7 +151,7 @@ Never commit: `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, `roo
 | 3D room, drawing the room from a photo/video, metrics | **Done** | in the browser |
 | Events from cameras (`multicam.py` → `trace-events.jsonl`) | **Done, not tried on real phones** | fake camera frames: correct appeared / moved / person events |
 | Live link to the page (bridge, Connect live, camera feeds beside the 3D room) | **Done** | end to end with fake cameras and with `--demo` |
-| Talking to Trace (`trace.html` + `/sim` model + LLM wording, validation, phone beep) | **Done, not tried with a real key** | `python test_guide.py` (rules path, no network) |
+| Talking to Trace (`trace.html` + `/sim` model + LLM wording, validation, phone beep) | **Done, not tried with a real key** | `python tests/test_guide.py` (rules path, no network) |
 | One-command start, presentation view, shared room | **Done** | `run_trace.py --demo` end to end |
 | **Your real keys seen by a phone in the demo room** | **Not tested: the biggest risk** | benchmark said keys are the hardest object; test tonight / first thing |
 | Real phones → page → voice, start to finish | **Not tested** | needs the demo room |
@@ -159,3 +162,55 @@ Never commit: `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, `roo
 **Bottom line:** the software is built and each piece is tested; what's unproven is the physical
 part: phones seeing real keys in the real room. Everything above is about 85% of the build; the
 remaining 15% is real-room testing, rehearsal and the pitch, which is a morning's work.
+
+---
+
+## 8. Running the pieces by hand
+
+`run_trace.py` does all of this for you. Use this when one piece breaks and you want to see which.
+
+```
+phones -> multicam.py -> trace-events.jsonl -> bridge.py (ws://localhost:8765) -> /sim ("Real events" -> "Connect live")
+            └─ also serves / (trace.html) and /sim on http://localhost:8000
+```
+
+**Cameras.** One `--cam` per phone, or list them in `cameras.json`:
+
+```powershell
+python multicam.py --cam "Sofa=http://<phone1-ip>:4747/video" --cam "Desk=http://<phone2-ip>:4747/video"
+```
+
+A zone you drag and name "Sofa" in the multicam window becomes id `sofa` in the events. To use other
+names, pass `--zone-map zone_map.json` with e.g. `{"Hall table": "desk"}`. multicam starts
+`bridge.py` itself (`--no-bridge` if you run `python bridge.py --file trace-events.jsonl` yourself),
+and `--api-host 0.0.0.0` lets other devices on the Wi-Fi open the pages.
+
+**What multicam writes** to `trace-events.jsonl` (format in `docs/SPEC.md` 3.2): `appeared` /
+`moved` / `disappeared` per item (2 of 3 frames to appear, 5 missed frames to disappear, boxes over
+15% of the frame dropped), and `person_here` / `person_left` per zone from YOLO-World `person` boxes
+(no identity; `--no-people` uses movement inside the zone instead, which a TV or lamp can set off).
+Delete `trace-events.jsonl` between runs for a clean start (`run_trace.py` does this unless
+`--keep-events`).
+
+**No cameras at all:** `python bridge.py` in one terminal, `python events_adapter.py --demo` in
+another, then open `/sim` (or `trace-sim\index.html`) and press **Connect live**: keys appear on the
+desk, disappear, then show up on the sofa, in the page's built-in "Demo flat".
+
+**The two pages.** `/sim` runs the model and, in Real events mode, posts its belief for every item to
+the server about once a second; `/` (trace.html) asks `POST /api/ask` and its answers come from that.
+If `/sim` isn't running, the server answers 503 and trace.html falls back to its own replies.
+"not there", "found it" and "again" are handled without the LLM, and each item's search is
+remembered for 15 minutes. `GET /api/model` shows what the server currently holds.
+
+**Phone beeps.** If Trace sends you to a watched zone, that zone's phone beeps: on each phone open
+`http://<laptop-ip>:8000/phone?zone=<zone id>` and tap "turn sound on" (the server must be reachable,
+so `--share`). With no phone page open, the laptop beeps.
+
+**Plugging in a different camera program.** Print one JSON object per detection per frame on stdout,
+flushed each frame, with `time` (the same for every line of one frame), `camera_id`, `item` (`keys`,
+`wallet` or `glasses`), `det_conf` (0–1), `box` [x1,y1,x2,y2], `image_w` / `image_h`, and
+`support: {"anchor": "<furniture id>"}` or `null`. Pipe it through the adapter
+(`cmd /c "python your_camera.py | python events_adapter.py --zones zones_map.json"`), where
+`zones_map.json` renames your furniture ids to the room map's zone ids, or write SPEC 3.2 events to
+the events file yourself. Then run `bridge.py`, Connect live, and check the "zones not in the room
+map" note under the event log.

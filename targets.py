@@ -4,7 +4,7 @@ aliases  label names that count as this target when reading a dataset.
          Datasets disagree: "Phone", "mobile phone" and "cell phone" are
          all one thing to us. Matched after lower-casing and turning - and _
          into spaces, and matched exactly -- "keyboard" must not match "key".
-prompts  phrasings to try on an open-vocabulary model. bench.py scores each
+prompts  phrasings to try on an open-vocabulary model. research/bench.py scores each
          one, so add freely; the losers cost nothing once we have picked.
 """
 
@@ -54,7 +54,7 @@ TARGETS = {
 }
 
 # Round 1 result: best prompt per target, each scored alone with
-# yolov8s-worldv2 at imgsz=640 on the LVIS sets from pull_lvis.py.
+# yolov8s-worldv2 at imgsz=640 on the LVIS sets from research/pull_lvis.py.
 # conf is the threshold where F1 peaked. a+b means load both as one set.
 BEST = {
     "phone":      {"prompt": "cell phone",       "conf": 0.14, "ap50": 0.618},

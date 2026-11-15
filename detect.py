@@ -12,7 +12,7 @@ Standalone, with optional Gemini verification:
     python detect.py --no-window --frames=30  # headless benchmark
 
 For the tracker, Detector checks every YOLO-World box with a CLIP classifier
-(verifier.json, built by train_verifier.py) -- see "Second stage" below.
+(verifier.json, built by research/train_verifier.py) -- see "Second stage" below.
 
 Standalone, YOLO-World runs deliberately loose (CONF is low) so it rarely misses, then
 Gemini confirms or rejects each candidate crop. The API call happens on a
@@ -76,7 +76,7 @@ def _iou(a, b):
 
 
 # ---------------------------------------------------------------------------
-# Second stage: a CLIP check on every candidate box (train_verifier.py).
+# Second stage: a CLIP check on every candidate box (research/train_verifier.py).
 #
 # YOLO-World alone is a weak judge of small things (LVIS AP50: keys 0.11,
 # glasses 0.48, see targets.BEST) and it calls cards, keyboards and drinking
@@ -168,7 +168,7 @@ def zero_shot_scores(embs, class_prompts, text=None):
 
 
 class ClipVerifier:
-    """Scores crops with the classifier saved by train_verifier.py (verifier.json)."""
+    """Scores crops with the classifier saved by research/train_verifier.py (verifier.json)."""
 
     def __init__(self, path=VERIFIER_FILE):
         import numpy as np
@@ -211,7 +211,7 @@ class Detector:
             print("verifier on: %s (classes %s)" % (os.path.basename(VERIFIER_FILE),
                                                      ", ".join(self.verifier.classes)))
         elif verify:
-            print("no verifier.json -- YOLO-World only (run train_verifier.py)")
+            print("no verifier.json -- YOLO-World only (run research/train_verifier.py)")
         if conf is None:
             conf = PROPOSE_CONF if self.verifier else CONF
         self.conf, self.imgsz = conf, imgsz
