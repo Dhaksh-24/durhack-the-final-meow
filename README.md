@@ -13,7 +13,9 @@ the page (`trace.html`) through `trace_api.py`, with:
   drawn on top. Opening `trace.html` as a file without `multicam.py` shows demo data
   and a drawing of the room instead.
 - **Voice:** Trace reads every answer aloud, using Kokoro (`tts.py`) when it's
-  installed and the browser's voice otherwise. The **Voice** button turns it off.
+  installed and the browser's voice otherwise. The **Voice** button opens its settings:
+  read aloud on/off and **Female / Male** (remembered per browser). You can also say
+  or type "use the male voice".
 - **"Hey Trace":** turn on **Hey Trace** in the header. Then say "Hey Trace" (chime)
   and your question, or "Hey Trace, where are my keys?" in one breath. You can also say
   "say that again", "stop", "go back", or "show me the hall camera". The mic button in
@@ -94,11 +96,26 @@ it once, and again only if the item moves somewhere else. Keys:
 `--male` starts with the male voice and `--no-voice` runs silently. If kokoro isn't
 installed, it prints how to install it and carries on without a voice.
 
+### Finding a warmer voice
+
+Kokoro can **blend** voices: `af_heart:0.6,af_bella:0.4` mixes two voices by weight,
+and works anywhere a voice id goes (`VOICES`, `--voice`, `set_voice()`). To compare
+options by ear:
+
+```bash
+python tts.py --audition     # samples/audition/NN_<voice>_<speed>.wav, same Trace line each
+```
+
+That writes 16 clips: single voices, blends and two speeds for both female and male.
+Put your favourites in `VOICES` (and the speed in `CALM_SPEED`) at the top of `tts.py`.
+The Female / Male switch in the app uses `VOICES["female"]` and `VOICES["male"]`. Then
+re-run `python tts.py --prerender`.
+
 ### Switching voices
 
 - At runtime: press `m` in `live_scene.py`, or call `tts.set_voice("male")`,
   `tts.set_voice("female")` or `tts.set_voice("bf_emma")`.
-- Default pair: edit `VOICES = {"female": "af_heart", "male": "am_michael"}` in
+- Default pair: edit `VOICES = {"female": "af_heart:0.6,af_bella:0.4", "male": "am_michael:0.6,am_puck:0.4"}` in
   `tts.py`. Voice ids starting with `a` are American and `b` are British. The right
   pipeline is chosen from that first letter.
 - After changing a voice, re-run `python tts.py --prerender`. For a voice outside

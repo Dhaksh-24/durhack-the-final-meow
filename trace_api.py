@@ -12,7 +12,8 @@ plus OpenCV only; no keys, and nothing leaves your network.
   GET /api/snapshots/<id>.jpg    frame it was last seen in      (memory/snapshots)
   GET /api/live/<camera>.mjpg    live video of one camera (MJPEG, about LIVE_FPS frames a second)
   GET /api/live/<camera>.jpg     the latest single frame
-  POST /api/speech {"text"}      Trace's voice: a WAV of the line, made by tts.py (Kokoro,
+  POST /api/speech {"text", "voice": "female"|"male"}
+                                 Trace's voice: a WAV of the line, made by tts.py (Kokoro,
                                  offline). 503 when kokoro isn't installed; the page then
                                  uses the browser's own voice instead.
 
@@ -144,13 +145,16 @@ class TraceAPI:
                 if not VOICE:
                     return self._json({"error": "voice not installed (pip install -r requirements.txt)"}, 503)
                 try:
-                    text = str(json.loads(raw or b"{}").get("text", "")).strip()[:SPEECH_MAX]
-                except ValueError:
+                    body = json.loads(raw or b"{}")
+                    text = str(body.get("text", "")).strip()[:SPEECH_MAX]
+                except (ValueError, AttributeError):
                     return self._json({"error": "bad json"}, 400)
                 if not text:
                     return self._json({"error": "no text"}, 400)
+                # only the two named voices (tts.VOICES) can be asked for from the page
+                gender = body.get("voice") if body.get("voice") in ("female", "male") else None
                 try:
-                    audio = tts.synth(text)
+                    audio = tts.synth(text, gender)
                 except Exception as exc:       # model not downloaded, no espeak, ...
                     print("tts: could not say %r: %s: %s" % (text, type(exc).__name__, exc))
                     return self._json({"error": "voice failed"}, 503)

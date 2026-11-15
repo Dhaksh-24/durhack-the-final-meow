@@ -21,9 +21,15 @@ From the command line:
     python tts.py --samples                        # samples/<voice>.wav, one per candidate voice
     python tts.py --prerender                      # audio/<voice>/<slug>.wav for LINES
 
+    python tts.py --audition                       # samples/audition/*.wav: voices, blends, speeds
+
 Voices: ids starting "a" are American English, "b" British English; the
 first letter picks the Kokoro pipeline. Pre-rendered lines (--prerender) are
 played straight from disk when speak() gets exactly that text.
+
+Blends: "af_heart:0.6,af_bella:0.4" mixes two (or more) voices by weight,
+which is the main way to get a warmer or softer sound out of Kokoro. Use a
+blend anywhere a voice id goes: VOICES, --voice, set_voice().
 
 Playback goes through one background thread and a queue, so speak() never
 holds up the camera loop. A newer line replaces anything still waiting (we
@@ -48,8 +54,10 @@ import numpy as np
 REPO = "hexgrad/Kokoro-82M"
 RATE = 24000                 # Kokoro always outputs 24 kHz mono
 
-VOICES = {"female": "af_heart", "male": "am_michael"}
-CALM_SPEED = 0.9             # a touch slower than normal speech
+# Blends picked from --audition (clips 03 and 14): af_heart is Kokoro's best voice,
+# af_bella adds warmth; am_puck darkens am_michael (and alone it peaks near clipping).
+VOICES = {"female": "af_heart:0.6,af_bella:0.4", "male": "am_michael:0.6,am_puck:0.4"}
+CALM_SPEED = 0.95            # 0.9 came out near 143 words a minute; natural talk is ~150-160
 SPEED = CALM_SPEED           # the CLI's --speed changes this
 PAUSE = 0.15                 # seconds of silence between sentences
 REPEAT_WINDOW = 5.0          # do not repeat the same sentence within this
@@ -65,6 +73,23 @@ SAMPLE_VOICES = ["af_heart", "af_bella", "af_nicole", "bf_emma",
                  "am_michael", "am_fenrir", "bm_george", "bm_fable"]
 SAMPLE_LINE = ("Hi, I'm Trace. Take your time, there's no rush. "
                "We'll find it together.")
+
+# --audition: single voices, blends and speeds, all saying a real Trace answer,
+# so you can pick by ear. Put the winners in VOICES (and CALM_SPEED).
+AUDITION_LINE = ("Found them. Your keys are on the table, just left of the laptop. "
+                 "I spotted them on the Hall camera a minute ago.")
+AUDITION = [
+    # female
+    ("af_heart", 0.90), ("af_heart", 1.00),
+    ("af_heart:0.6,af_bella:0.4", 0.95), ("af_heart:0.5,af_bella:0.5", 0.95),
+    ("af_bella", 0.95), ("af_heart:0.7,af_nicole:0.3", 0.95),
+    ("af_heart:0.6,bf_emma:0.4", 0.95), ("bf_emma", 0.95),
+    # male
+    ("am_michael", 0.90), ("am_michael", 1.00),
+    ("am_michael:0.5,am_fenrir:0.5", 0.95), ("am_fenrir", 0.95),
+    ("am_puck", 0.95), ("am_michael:0.6,am_puck:0.4", 0.95),
+    ("bm_george", 0.95), ("bm_fable", 0.95),
+]
 
 # --prerender: the fixed demo lines. speak() plays these from disk.
 GREETING = "Hi, I'm Trace. What are you looking for?"
@@ -106,15 +131,39 @@ def missing():
 # Choosing a voice
 # --------------------------------------------------------------------------
 
+VOICE_ID = re.compile(r"^[ab][fm]_[a-z]+$")
+
+
+def _parts(voice):
+    """"af_heart" -> [("af_heart", 1.0)];
+    "af_heart:0.6,af_bella:0.4" -> [("af_heart", 0.6), ("af_bella", 0.4)]."""
+    out = []
+    for bit in voice.split(","):
+        name, _, weight = bit.strip().partition(":")
+        out.append((name.strip(), float(weight) if weight else 1.0))
+    return out
+
+
 def _resolve(gender=None):
-    """"female" / "male" / a voice id / None (the current voice) -> voice id."""
+    """"female" / "male" / a voice id or blend / None (the current voice) -> voice."""
     if gender is None:
         return _voice
     voice = VOICES.get(gender, gender)
-    if voice[:1] not in ("a", "b") or "_" not in voice:
-        raise ValueError("unknown voice %r: use %s, or a Kokoro voice id such "
-                         "as bf_emma" % (gender, " / ".join(VOICES)))
+    try:
+        ok = all(VOICE_ID.match(n) and w > 0 for n, w in _parts(voice))
+    except ValueError:
+        ok = False
+    if not ok:
+        raise ValueError("unknown voice %r: use %s, a Kokoro voice id such as "
+                         "bf_emma, or a blend such as af_heart:0.6,af_bella:0.4"
+                         % (gender, " / ".join(VOICES)))
     return voice
+
+
+def _voice_dir(voice):
+    """Folder name for a voice or blend ("af_heart:0.6,af_bella:0.4" has
+    characters Windows won't allow)."""
+    return re.sub(r"[^A-Za-z0-9_.]+", "-", voice).strip("-")
 
 
 def set_voice(gender):
@@ -207,9 +256,8 @@ def synth(text, gender=None, speed=None):
     parts = []
     with _lock:
         pipe = _pipeline(voice[0])
-        # A local path, so Kokoro does not go to the network for the voice.
-        voice_file = _fetch("voices/%s.pt" % voice)
-        for result in pipe(text, voice=voice_file, speed=speed,
+        pack = _voice_pack(voice)
+        for result in pipe(text, voice=pack, speed=speed,
                            split_pattern=SENTENCE_END):
             if result.audio is None:
                 continue
@@ -219,6 +267,23 @@ def synth(text, gender=None, speed=None):
     audio = np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
     _remember(key, audio)
     return audio
+
+
+_packs = {}                  # blend spec -> mixed voice tensor
+
+
+def _voice_pack(voice):
+    """What Kokoro gets as voice=: a local .pt path for one voice (so it never
+    goes to the network), or the weighted mix of several for a blend."""
+    parts = _parts(voice)
+    if len(parts) == 1:
+        return _fetch("voices/%s.pt" % parts[0][0])
+    if voice not in _packs:
+        import torch
+        total = sum(w for _, w in parts)
+        _packs[voice] = sum(torch.load(_fetch("voices/%s.pt" % name), weights_only=True) * (w / total)
+                            for name, w in parts)
+    return _packs[voice]
 
 
 def _remember(key, audio):
@@ -245,7 +310,7 @@ def _prerendered(text, voice):
     """Path of the pre-rendered file for exactly this text, or None."""
     if text not in LINES or SPEED != CALM_SPEED:
         return None
-    path = os.path.join(AUDIO_DIR, voice, slug(text) + ".wav")
+    path = os.path.join(AUDIO_DIR, _voice_dir(voice), slug(text) + ".wav")
     return path if os.path.exists(path) else None
 
 
@@ -347,9 +412,19 @@ def prerender(voices):
     SPEED = CALM_SPEED                    # speak() only uses files made at this speed
     for voice in voices:
         for line in LINES:
-            path = os.path.join(AUDIO_DIR, voice, slug(line) + ".wav")
+            path = os.path.join(AUDIO_DIR, _voice_dir(voice), slug(line) + ".wav")
             save(line, path, voice)
             print("wrote %s" % os.path.relpath(path, HERE))
+
+
+def audition():
+    """samples/audition/NN_<voice>_<speed>.wav for every AUDITION entry."""
+    folder = os.path.join(SAMPLES_DIR, "audition")
+    for i, (voice, speed) in enumerate(AUDITION, 1):
+        path = os.path.join(folder, "%02d_%s_%.2f.wav" % (i, _voice_dir(voice), speed))
+        save(AUDITION_LINE, path, voice, speed)
+        print("wrote %s" % os.path.relpath(path, HERE))
+    print("Listen, then put your favourites in VOICES (and CALM_SPEED) at the top of tts.py.")
 
 
 def main():
@@ -364,6 +439,8 @@ def main():
                         help="write samples/<voice>.wav for each candidate voice")
     parser.add_argument("--prerender", action="store_true",
                         help="write audio/<voice>/<slug>.wav for the fixed lines")
+    parser.add_argument("--audition", action="store_true",
+                        help="write samples/audition/*.wav: voices, blends and speeds to pick from")
     args = parser.parse_args()
 
     if missing():
@@ -374,6 +451,9 @@ def main():
 
     if args.samples:
         write_samples()
+        return
+    if args.audition:
+        audition()
         return
     if args.prerender:
         prerender([args.voice] if args.voice else list(VOICES.values()))

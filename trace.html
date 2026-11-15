@@ -293,8 +293,35 @@ body.on #app { visibility: visible; }
 @media (max-width: 560px) {
   .hbtn .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .hbtn { padding: 0 10px; }
-  .top-inner > .hbtn { order: 1; }
+  .top-inner > .hbtn, .top-inner > .vwrap { order: 1; }
 }
+/* voice settings panel (opens from the Voice button) */
+.vwrap { position: relative; }
+.vpanel {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 264px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px;
+  display: grid; gap: 12px;
+}
+@media (max-width: 560px) { .vwrap { position: static; } .vpanel { left: 16px; right: 16px; width: auto; top: auto; margin-top: 8px; } }
+.vp-title { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 15px; }
+.vp-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  padding: 0; background: transparent; border: 0; color: var(--text); font-size: 14px; text-align: left;
+}
+.vp-row .track { position: relative; width: 38px; height: 24px; flex: none; border-radius: 999px; background: var(--line); }
+.vp-row .knob { position: absolute; top: 4px; left: 4px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: left .2s var(--ease); }
+.vp-row[aria-checked="true"] .track { background: var(--teal); }
+.vp-row[aria-checked="true"] .knob { left: 18px; background: var(--navy); }
+.vp-label { font-size: 12px; color: var(--muted); margin: 0 0 -6px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; gap: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.seg button {
+  height: 36px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-weight: 500;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.seg button .i { width: 14px; height: 14px; opacity: 0; }
+.seg button[aria-checked="true"] { background: var(--teal); color: var(--navy); font-weight: 600; }
+.seg button[aria-checked="true"] .i { opacity: 1; }
+.vp-note { margin: 0; font-size: 12px; color: var(--muted); }
 .mic-btn {
   width: 44px; height: 44px; flex: none; border-radius: 12px; display: grid; place-items: center;
   background: transparent; border: 1px solid var(--teal); color: var(--mint);
@@ -651,7 +678,20 @@ button.cam:hover .watch { background: var(--teal); color: var(--navy); }
       <div class="brand"><span class="mini" id="logoMascot" data-state="idle"></span><span class="wordmark">Trace</span></div>
       <span class="chip secure" id="statusChip"></span>
       <span class="chip demo" id="demoChip" hidden title="The cameras could not be reached, so Trace is showing sample items.">Demo data</span>
-      <button type="button" class="hbtn" id="voiceBtn" aria-pressed="true" title="Trace reads its answers aloud"></button>
+      <div class="vwrap">
+        <button type="button" class="hbtn" id="voiceBtn" aria-expanded="false" aria-controls="voicePanel"></button>
+        <div class="vpanel" id="voicePanel" role="group" aria-labelledby="voicePanelTitle" hidden>
+          <p class="vp-title" id="voicePanelTitle">Trace's voice</p>
+          <button type="button" class="vp-row" id="voiceOn" role="switch" aria-checked="true"><span>Read answers aloud</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+          <p class="vp-label" id="genderLabel">Voice</p>
+          <div class="seg" role="radiogroup" aria-labelledby="genderLabel" id="genderSeg">
+            <button type="button" role="radio" data-g="female" aria-checked="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Female</button>
+            <button type="button" role="radio" data-g="male" aria-checked="false"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Male</button>
+          </div>
+          <button type="button" class="btn-quiet" id="voiceTry"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>Hear it</button>
+          <p class="vp-note" id="voiceNote"></p>
+        </div>
+      </div>
       <button type="button" class="hbtn" id="earBtn" aria-pressed="false" title="Listen for “Hey Trace”"></button>
       <button type="button" class="switch" id="offBtn" title="Turn Trace off"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v8"/><path d="M7 6.6a7.5 7.5 0 1 0 10 0"/></svg><span class="lbl">Turn off</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
     </div>
@@ -1119,7 +1159,11 @@ function say(text, { itemId = null, log = true } = {}) {
    Every line Trace says is also spoken. First choice is Kokoro on the server (tts.py via
    POST /api/speech, offline); if that isn't there (demo mode, kokoro not installed) the
    browser's own speech voice is used. Toggle: the Voice button, remembered per browser. */
-const voice = { on: store.get("trace.voice") !== "off", gen: 0, last: "", speaking: false, stop: null, server: true };
+const voice = {
+  on: store.get("trace.voice") !== "off",
+  gender: store.get("trace.gender") === "male" ? "male" : "female",
+  gen: 0, last: "", speaking: false, stop: null, server: true,
+};
 function setSpeaking(on) {
   voice.speaking = on;
   el.agent.dataset.speaking = on ? "true" : "false";
@@ -1142,17 +1186,23 @@ function playBlob(blob) {
     a.play().catch(() => done(false));
   });
 }
-function browserVoice() {
+/* Browser fallback: browsers don't label voices by gender, so go by the usual names. */
+const MALE_NAMES = /\b(male|david|mark|guy|george|ryan|daniel|alex|fred|thomas|arthur|oliver|james|william|christopher|eric|roger|steffan|brian|andrew|liam|aaron|rishi)\b/i;
+const FEMALE_NAMES = /\b(female|zira|aria|jenny|sonia|libby|hazel|susan|samantha|serena|karen|moira|tessa|victoria|natasha|emma|ava|allison|michelle|ana|maisie|clara|catherine|kate|fiona)\b/i;
+function browserVoice(gender) {
   const vs = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang));
-  return vs.find((v) => /natural|neural|google uk english female|samantha|serena|sonia|libby/i.test(v.name)) || vs.find((v) => v.localService) || vs[0] || null;
+  const want = gender === "male" ? MALE_NAMES : FEMALE_NAMES;
+  const mine = vs.filter((v) => want.test(v.name) && !(gender === "male" ? FEMALE_NAMES : MALE_NAMES).test(v.name));
+  const natural = (list) => list.find((v) => /natural|neural|online/i.test(v.name));
+  return natural(mine) || mine.find((v) => v.localService) || mine[0] || natural(vs) || vs[0] || null;
 }
 function browserSay(text) {
   return new Promise((resolve) => {
     if (!("speechSynthesis" in window)) return resolve(false);
     const u = new SpeechSynthesisUtterance(text);
-    const v = browserVoice();
+    const v = browserVoice(voice.gender);
     if (v) u.voice = v;
-    u.rate = 0.95; u.pitch = 1.05;
+    u.rate = 0.95; u.pitch = voice.gender === "male" ? 0.95 : 1.05;
     // Some browsers drop onend; never wait longer than the line could take.
     const guard = setTimeout(() => finish(true), 2500 + text.length * 90);
     const finish = (ok) => { clearTimeout(guard); voice.stop = null; resolve(ok); };
@@ -1175,7 +1225,7 @@ async function speakOut(text) {
     const t = setTimeout(() => ctrl.abort(), 20000);
     try {
       const r = await fetch(API_BASE + "/api/speech", {
-        method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+        method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice: voice.gender }),
       });
       if (r.ok && g === voice.gen) ok = await playBlob(await r.blob());
       else if (r.status === 503 || r.status === 404 || r.status === 501) voice.server = false;   // no Kokoro: use the browser from now on
@@ -1186,8 +1236,34 @@ async function speakOut(text) {
 }
 function renderVoiceBtn() {
   const b = $("#voiceBtn");
+  const g = voice.gender === "male" ? "Male" : "Female";
   b.setAttribute("aria-pressed", String(voice.on));
-  b.innerHTML = `${icon(voice.on ? "speaker" : "speakerOff")}<span class="lbl">Voice ${voice.on ? "on" : "off"}</span>`;
+  b.innerHTML = `${icon(voice.on ? "speaker" : "speakerOff")}<span class="lbl">${voice.on ? `Voice: ${g}` : "Voice off"}</span>`;
+  b.setAttribute("aria-label", voice.on ? `Voice: ${g}. Voice settings` : "Voice off. Voice settings");
+  $("#voiceOn").setAttribute("aria-checked", String(voice.on));
+  for (const r of document.querySelectorAll("#genderSeg [role=radio]")) {
+    const on = r.dataset.g === voice.gender;
+    r.setAttribute("aria-checked", String(on));
+    r.tabIndex = on ? 0 : -1;               // one tab stop; arrow keys move between the two
+  }
+  $("#voiceNote").textContent = state.mode === "live" && voice.server
+    ? "Spoken by Trace's own voice on your computer."
+    : "Using your browser's voice. Run multicam.py with kokoro installed for Trace's own voice.";
+}
+function toggleVoicePanel(open) {
+  const p = $("#voicePanel"), b = $("#voiceBtn");
+  open = open ?? p.hidden;
+  p.hidden = !open;
+  b.setAttribute("aria-expanded", String(open));
+  if (open) { renderVoiceBtn(); $("#genderSeg [aria-checked=true]").focus(); }
+}
+function setGender(g) {
+  if (g === voice.gender) return;
+  voice.gender = g;
+  store.set("trace.gender", g);
+  renderVoiceBtn();
+  stopSpeaking();
+  if (voice.on) speakOut(`Hi, I'm Trace. This is my ${g} voice.`);
 }
 
 /* ------------------------------------------------------------ "Hey Trace" (listening)
@@ -1315,6 +1391,7 @@ function renderEarBtn() {
   b.setAttribute("aria-pressed", String(ok && ear.want));
   const word = !ok ? "Voice unavailable" : ear.awake ? "Listening…" : ear.want ? "Hey Trace on" : "Hey Trace off";
   b.innerHTML = `${icon(ok && (ear.want || ear.awake) ? "mic" : "micOff")}<span class="dot" aria-hidden="true"></span><span class="lbl">${word}</span>`;
+  b.setAttribute("aria-label", word);
   mic.classList.toggle("unavailable", !ok);
   mic.setAttribute("aria-pressed", String(ok && (ear.awake || ear.once)));
 }
@@ -1463,6 +1540,14 @@ async function closeChat(returnFocus = true) {
 async function ask(message) {
   message = message.trim();
   if (!message || state.busy || !state.power) return;
+  const vt = normText(message);
+  const g = / voice / .test(vt) ? (/ (female|woman|girl|lady|womans) /.test(vt) ? "female" : / (male|man|boy|guy|mans) /.test(vt) ? "male" : null) : null;
+  if (g) {                                 // "use the male voice", "switch to a female voice"
+    addMsg("user", message);
+    if (g === voice.gender) say(`I'm already using my ${g} voice.`);
+    else { setGender(g); addMsg("trace", `Hi, I'm Trace. This is my ${g} voice.`); if (!state.chatOpen) showBubble(`Hi, I'm Trace. This is my ${g} voice.`); }
+    return;
+  }
   const cam = cameraIntent(message);
   if (cam) {                              // "show me the hall camera" -> live view
     addMsg("user", message);
@@ -1588,6 +1673,7 @@ function renderHeader() {
     el.statusChip.innerHTML = `${icon("lock")}<span>Secure · <span class="mono">${live}</span> camera${live === 1 ? "" : "s"} live</span>`;
   }
   el.demoChip.hidden = state.mode !== "demo";
+  if (el.demoChip.dataset.m !== state.mode) { el.demoChip.dataset.m = state.mode; renderVoiceBtn(); }
   const items = state.items || [];
   el.eyebrow.innerHTML = state.items === null ? "<span>Loading…</span>"
     : `<span><b>${items.length}</b> ITEM${items.length === 1 ? "" : "S"} REMEMBERED</span><span><b>${items.filter((i) => i.in_view).length}</b> IN VIEW NOW</span>`;
@@ -2249,11 +2335,27 @@ async function turnOff() {
 
 /* ------------------------------------------------------------ wiring */
 el.wakeBtn.addEventListener("click", wake);
-$("#voiceBtn").addEventListener("click", () => {
+$("#voiceBtn").addEventListener("click", () => toggleVoicePanel());
+$("#voiceOn").addEventListener("click", () => {
   voice.on = !voice.on;
   store.set("trace.voice", voice.on ? "on" : "off");
   renderVoiceBtn();
   if (voice.on) speakOut("Voice on."); else stopSpeaking();
+});
+$("#genderSeg").addEventListener("click", (e) => { const r = e.target.closest("[data-g]"); if (r) setGender(r.dataset.g); });
+$("#genderSeg").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+  e.preventDefault();
+  setGender(voice.gender === "male" ? "female" : "male");
+  $("#genderSeg [aria-checked=true]").focus();
+});
+$("#voiceTry").addEventListener("click", () => {
+  if (!voice.on) { voice.on = true; store.set("trace.voice", "on"); renderVoiceBtn(); }
+  speakOut("Found them. Your keys are on the table, just left of the laptop.");
+});
+document.addEventListener("click", (e) => {
+  // composedPath, not target.closest: opening the panel redraws the button, so the clicked icon may already be gone
+  if (!$("#voicePanel").hidden && !e.composedPath().some((n) => n.classList?.contains("vwrap"))) toggleVoicePanel(false);
 });
 $("#earBtn").addEventListener("click", () => toggleEar(!(ear.want && canListen())));
 $("#micBtn").addEventListener("click", listenOnce);
@@ -2274,7 +2376,8 @@ $("#searchForm").addEventListener("submit", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (state.chatOpen) { e.preventDefault(); closeChat(); }
+  if (!$("#voicePanel").hidden) { e.preventDefault(); toggleVoicePanel(false); $("#voiceBtn").focus(); }
+  else if (state.chatOpen) { e.preventDefault(); closeChat(); }
   else if (state.foundId != null) { e.preventDefault(); closeFound(); }
   else if (state.liveCam != null && !document.fullscreenElement) { e.preventDefault(); closeLive(); }
 });
