@@ -249,8 +249,10 @@ class TraceAPI:
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(min(n, 64 * 1024))
                 p = urlparse(self.path).path
+                # the model bundle grows with the room (places, the best question's factors per zone):
+                # cut short, it wouldn't parse and Trace would keep answering from a stale model
+                raw = self.rfile.read(min(n, (2048 if p == "/api/model" else 64) * 1024))
                 if p == "/api/speech":
                     return self._speech(raw)
                 if p == "/api/ask":

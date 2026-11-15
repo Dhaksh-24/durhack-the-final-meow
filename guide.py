@@ -24,6 +24,7 @@ Provider: Gemini through the google-genai SDK, like scene.py and detect.py. GEMI
 the environment or .env; GEMINI_MODEL picks the model. With no key or no SDK, a small rules
 parser stands in for step 1 and step 2 is skipped (the page's template sentence is used).
 """
+import concurrent.futures
 import json
 import os
 import re
@@ -32,6 +33,9 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MODEL = "gemini-3.8-flash"   # default; GEMINI_MODEL in the environment or .env overrides it
 TIMEOUT = 10.0           # seconds per LLM call (Gemini rejects deadlines under 10 s)
+BUDGET = 6.0             # seconds the person waits for the LLM per turn (both calls); then the template
+_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="llm")
+S_DEFAULT = {"vis": 0.95, "cov": 0.75, "person": 0.95, "out": 0.8}
 SURE_W = {"high": 1.0, "medium": 0.5, "low": 0.3}
 PARTS = ("visible", "covered", "all")
 ITEMS = ("keys", "wallet", "glasses")
@@ -48,8 +52,27 @@ def _norm(s):
 
 
 # ------------------------------------------------------------------ the plan (exact, SPEC 4.4)
+def _num(v, default=0.0):
+    try:
+        v = float(v)
+        return v if v == v and v >= 0 else default     # NaN or negative: treat as missing
+    except (TypeError, ValueError):
+        return default
+
+
 def places_of(bundle):
-    return [dict(p) for p in bundle.get("places") or []]
+    """The bundle's places, with missing fields filled in (a place without an id is dropped)."""
+    out = []
+    for p in (bundle or {}).get("places") or []:
+        if not isinstance(p, dict) or not p.get("id"):
+            continue
+        q = dict(p)
+        q["id"] = str(q["id"])
+        q["name"] = str(q.get("name") or q["id"])
+        q["kind"] = q.get("kind") if q.get("kind") in ("zone", "person", "outside") else "zone"
+        q["pv"], q["pc"], q["t"] = _num(q.get("pv")), _num(q.get("pc")), _num(q.get("t"), 10.0) or 10.0
+        out.append(q)
+    return out
 
 
 def apply_evidence(places, evidence, S):
@@ -95,7 +118,7 @@ def rank(places, S):
         else:
             f = prob * (S["person"] if kind == "person" else S["out"])
         rows.append({"zone": p["id"], "name": p["name"], "p": prob, "word": prob_word(prob),
-                     "seconds": p["t"], "covered": p["pc"] > p["pv"], "phone": bool(p.get("phone")),
+                     "seconds": int(round(p["t"])), "covered": p["pc"] > p["pv"], "phone": bool(p.get("phone")),
                      "score": f / max(p["t"], 1e-9)})
     rows.sort(key=lambda r: -r["score"])
     return rows
@@ -210,6 +233,7 @@ Rules (they are checked by code; break one and your answer is thrown away):
 - Use the time phrases given (e.g. "about twenty minutes ago"); never invent times.
 - Never say "definitely", "certainly", "it is there", "they are there" or "is on the X" as fact; it was LAST SEEN somewhere.
 - Never say or guess who moved anything. Never mention cameras watching people.
+- If PHONE_SEES_IT_NOW_AT is set, say first that the phone there can see it right now.
 - If the person just said a place was empty, acknowledge it in a few words first ("Not on the sofa.").
 - chirp: the first place's zone if it has "phone": true and it's very likely or probably there, else null.
 MODE default: one or two short sentences.
@@ -227,25 +251,46 @@ def _sanitize_evidence(raw, places):
             continue
         out.append({"zone": ev["zone"],
                     "part": ev.get("part") if ev.get("part") in PARTS else "all",
-                    "found": bool(ev.get("found")),
+                    "found": ev.get("found") is True or str(ev.get("found")).lower() == "true",
                     "sure": ev.get("sure") if ev.get("sure") in SURE_W else "high"})
     return out
 
 
-def ask(bundle, utterance, mode="default", llm=None):
-    """See the module docstring. llm(system, user) -> dict; defaults to Gemini, or rules if no key."""
+def _call(llm, system, user, deadline):
+    """llm(system, user) in a worker thread, waiting no later than deadline (time.time()).
+    A call that's too slow is abandoned (it finishes in the background); raises TimeoutError."""
+    left = deadline - time.time()
+    if left <= 0.05:
+        raise TimeoutError("no time left for the LLM")
+    fut = _POOL.submit(llm, system, user)
+    done, _ = concurrent.futures.wait([fut], timeout=left)
+    if not done:
+        raise TimeoutError("LLM took longer than %.1f s" % left)
+    return fut.result()
+
+
+def ask(bundle, utterance, mode="default", llm=None, budget=None, parsed=None):
+    """See the module docstring. llm(system, user) -> dict; defaults to Gemini, or rules if no key.
+    budget: seconds for both LLM calls together (default BUDGET); past it, the rules / template
+    answer is used, so a slow network never leaves the person waiting. parsed: the parse already
+    done by the caller (skips LLM call 1)."""
     t0 = time.time()
-    places, S = places_of(bundle), bundle.get("search") or {"vis": 0.95, "cov": 0.75, "person": 0.95, "out": 0.8}
+    deadline = t0 + (BUDGET if budget is None else budget)
+    places, S = places_of(bundle), bundle.get("search") or dict(S_DEFAULT)
     item = bundle.get("item_name") or bundle.get("item")
     use_llm = llm or (gemini_json if load_key() else None)
     source, errors = "rules", []
-    parsed = None
-    if use_llm:
+    if parsed is not None:
+        source = "llm" if use_llm else "rules"
+    elif use_llm:
         try:
             listing = [{"zone": p["id"], "name": p["name"]} for p in places]
-            parsed = use_llm(PARSE_SYSTEM, json.dumps({"PLACES": listing, "ITEM": item, "SAID": utterance}))
+            parsed = _call(use_llm, PARSE_SYSTEM, json.dumps({"PLACES": listing, "ITEM": item, "SAID": utterance}), deadline)
+            if not isinstance(parsed, dict):
+                raise ValueError("parse did not return a JSON object")
             source = "llm"
         except Exception as exc:
+            parsed = None
             errors.append("parse: %s: %s" % (type(exc).__name__, exc))
     if parsed is None:
         parsed = rules_parse(utterance, places, bundle.get("item"))
@@ -255,20 +300,24 @@ def ask(bundle, utterance, mode="default", llm=None):
     plan = rank(apply_evidence(places, evidence, S), S)
     res = {"say": None, "places": [], "chirp": None, "evidence": evidence, "intent": intent, "item": want,
            "source": source, "plan": plan[:4], "errors": errors}
-    if any(e["found"] for e in evidence) or not use_llm or source != "llm":
+    if any(e["found"] for e in evidence) or intent == "found" or not use_llm or source != "llm" or not plan:
         res["ms"] = int((time.time() - t0) * 1000)
         return res
     try:
         checked = [e["zone"] for e in evidence if not e["found"]]
-        facts = {"ITEM": item, "MODE": mode, "SAID": utterance,
+        names = {p["id"]: p["name"] for p in places}
+        facts = {"ITEM": item, "MODE": mode if mode in ("default", "blind", "dementia") else "default", "SAID": utterance,
                  "JUST_CHECKED_EMPTY": [p["name"] for p in places if p["id"] in checked],
                  "ALREADY_CHECKED": bundle.get("already_checked") or [],
                  "LAST_SEEN": bundle.get("last_seen"),
+                 "PHONE_SEES_IT_NOW_AT": names.get(bundle.get("visible_now")) if bundle.get("visible_now") else None,
                  "TRAIL": bundle.get("trail_since_last_seen") or [],
-                 "STORY": bundle.get("story") or [],
+                 "STORY": bundle.get("story_text") or bundle.get("story") or [],
                  "PLAN": [{k: r[k] for k in ("zone", "name", "word", "seconds", "covered", "phone")} for r in plan[:4]]}
-        out = llm_out = use_llm(WORD_SYSTEM, json.dumps(facts))
-        say = str(llm_out.get("say") or "").strip()
+        out = _call(use_llm, WORD_SYSTEM, json.dumps(facts), deadline)
+        if not isinstance(out, dict):
+            raise ValueError("wording did not return a JSON object")
+        say = str(out.get("say") or "").strip()
         res["say"] = say or None
         res["places"] = [p for p in (out.get("places") or []) if isinstance(p, dict) and p.get("zone")]
         ch = out.get("chirp")
@@ -292,7 +341,9 @@ NO = re.compile(r"^(no|nope|nah|i didn.?t|don.?t think so|not that i know)\b")
 WHAT_HAPPENED = re.compile(r"\b(what happened|how did i lose|where did i (put|leave)|what did i do with)\b")
 AGAIN = re.compile(r"^(again|repeat|repeat that|say (that|it) again|what|pardon|sorry what)$")
 NOT_THERE = re.compile(r"^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$")
-FOUND_IT = re.compile(r"^(yes |yay |great )?(i )?(found|got|have) (it|them)( now)?$|^found$")
+FOUND_IT = re.compile(r"^((yes|yeah|yay|great|ok|okay|oh|ah|got it|thanks|thank you) )*(i )?(i've |ive |i have |we )?"
+                      r"(found|got|have) (it|them|my (keys|wallet|glasses|specs|purse)|the (keys|wallet|glasses))"
+                      r"( now| here| thanks| thank you)?$|^(found|got (it|them))$|^here (it is|they are)$")
 
 
 class NoModel(Exception):
@@ -325,7 +376,7 @@ def again_text(bundle, r0, tried, names):
             return ("The %s phone still sees something that looks like your %s, but it may be something else. "
                     "Feel around the %s once more." % (where, noun, where))
         s = "The %s phone still sees something that looks like your %s. " % (where, noun)
-    careful = ", more carefully, under and around things" if r0["zone"] not in ("person", "outside") else ", more carefully"
+    careful = ", more carefully, under and around things" if r0["zone"] not in ("person", "outside") and not r0["covered"] else ", more carefully"
     return s + "Check %s again%s: %s there, about %s seconds." % (where_text(r0), careful, r0["word"], r0["seconds"])
 
 
@@ -339,7 +390,7 @@ def template(bundle, plan, tries, tried=()):
     if not tries and bundle.get("visible_now"):
         return "The %s phone can see your %s right now." % (names.get(bundle["visible_now"], bundle["visible_now"]), name)
     s = "Not there. " if tries else ""
-    ls = bundle.get("last_seen")
+    ls = bundle.get("last_seen") if isinstance(bundle.get("last_seen"), dict) and bundle["last_seen"].get("zone") else None
     if not tries:
         s += ("Your %s %s last seen on the %s %s. " % (name, "were" if plural else "was", names.get(ls["zone"], ls["zone"]), ls.get("ago", ""))
               if ls else "No phone has seen your %s today. " % name)
@@ -415,7 +466,7 @@ def validate_say(say, places_said, plan, all_places, tried, facts):
 TARGET = {}
 
 
-def chat(message, history, model, sessions, mode="default", llm=None, now=None):
+def chat(message, history, model, sessions, mode="default", llm=None, now=None, budget=None):
     """One turn of trace.html's conversation. model: {"items": {id: bundle}} posted by the analytics
     page. sessions: a dict the server keeps between turns. Returns
     {"reply", "item", "state": "searching"|"found"|"idle", "chirp", "evidence", "source", "why"}."""
@@ -438,7 +489,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         return {"reply": "Which one should I look for: your keys, your wallet or your glasses?", "item": None,
                 "state": "idle", "chirp": None, "evidence": [], "source": "page", "why": ""}
     bundle = bundles[want]
-    S = bundle.get("search") or {"vis": 0.95, "cov": 0.75, "person": 0.95, "out": 0.8}
+    S = bundle.get("search") or dict(S_DEFAULT)
     ses = sessions.get(want)
     if ses is None or (item_in(said) and re.search(r"\bwhere\b", n)):
         ses = sessions[want] = {"evidence": [], "tried": [], "used": now, "last": ""}
@@ -454,20 +505,25 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         return p
     plan = plan_now()
 
-    def turn(reply, state="searching", evidence=(), source="page", why="", chirp=None):
+    def turn(reply, state="searching", evidence=(), source="page", why="", chirp=None, target=True):
         ses["last"] = reply
         top = plan[0] if plan and state != "found" else None
-        TARGET.clear()
-        TARGET.update({"item": want, "zone": top["zone"] if top else None, "name": top["name"] if top else None,
-                       "state": state, "t": time.time()})
+        if target:          # the sonar on /sim follows where Trace sends the person
+            TARGET.clear()
+            TARGET.update({"item": want, "zone": top["zone"] if top else None, "name": top["name"] if top else None,
+                           "state": state, "t": time.time()})
         if state == "found":
             ses["found"] = True
         return {"reply": reply, "item": want, "state": state, "chirp": chirp,
                 "evidence": list(evidence), "source": source, "why": why}
 
     def found_at(zone, name):
-        return turn("Found %s: %s." % ("them" if bundle.get("item_plural") else "it", name.lower()), "found",
-                    [{"zone": zone, "part": "all", "found": True, "sure": "high"}])
+        """The person has it. zone None: we don't know where they found it."""
+        them = "them" if bundle.get("item_plural") else "it"
+        kind = next((p["kind"] for p in base if p["id"] == zone), "zone")
+        where = "" if zone is None else " with you" if kind == "person" else "" if kind == "outside" else " on the " + name.lower()
+        ev = [{"zone": zone, "part": "all", "found": True, "sure": "high"}] if zone else []
+        return turn("Great, you found %s%s. I'll remember that." % (them, where), "found", ev)
 
     # Trace's one best question (the page's model picks it by expected value of information)
     bq = bundle.get("best_question")
@@ -496,15 +552,27 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         plan = plan_now()
         return turn(template(bundle, plan, len(ses["tried"]), ses["tried"]), evidence=[ev])
     if WHAT_HAPPENED.search(n) and bundle.get("story_text"):
-        return turn(bundle["story_text"])
-    if FOUND_IT.match(n) and plan and ses["last"]:
-        return found_at(plan[0]["zone"], plan[0]["name"])
+        return turn(bundle["story_text"], target=False)
+    if FOUND_IT.match(n):
+        if plan and ses["last"]:
+            return found_at(plan[0]["zone"], plan[0]["name"])
+        return found_at(None, "")
+    # "where are my keys?": no LLM needed to understand it. A phone sees it now: the template says so
+    # at once; otherwise only the wording call is made
+    where_q = bool(re.search(r"\bwhere\b", n)) and not NOT_FOUND.search(n) and not ses["tried"]
+    if where_q and bundle.get("visible_now"):
+        return turn(template(bundle, plan, 0))
 
     places = apply_evidence(base, ses["evidence"], S)
-    res = ask(dict(bundle, places=places, already_checked=list(ses["tried"])), said, mode, llm=llm)
+    res = ask(dict(bundle, places=places, already_checked=list(ses["tried"])), said, mode, llm=llm, budget=budget,
+              parsed={"intent": "where", "item": want, "evidence": []} if where_q else None)
+    for e in res.get("errors") or []:
+        print("guide:", e)
     for ev in res["evidence"]:
         if ev["found"]:
             return found_at(ev["zone"], next((p["name"] for p in base if p["id"] == ev["zone"]), ev["zone"]))
+    if res["intent"] == "found":      # "found them!" in other words, no place: where Trace sent them
+        return found_at(plan[0]["zone"], plan[0]["name"]) if plan and ses["last"] else found_at(None, "")
     for ev in res["evidence"]:
         ses["evidence"].append(ev)
         nm = next((p["name"] for p in base if p["id"] == ev["zone"]), ev["zone"])
@@ -513,7 +581,11 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
     fallback = template(bundle, plan, len(ses["tried"]), ses["tried"])
     if not res.get("say"):
         return turn(fallback, evidence=res["evidence"], source=res["source"])
-    ok, why = validate_say(res["say"], res.get("places"), plan, base, ses["tried"], json.dumps(bundle) + " " + fallback)
+    # places it may name besides the plan: those already checked, and where it was last seen / is seen now
+    seen = [z for z in ((bundle.get("last_seen") or {}).get("zone") if isinstance(bundle.get("last_seen"), dict) else None,
+                        bundle.get("visible_now")) if z]
+    mentionable = list(ses["tried"]) + [p["name"] for p in base if p["id"] in seen]
+    ok, why = validate_say(res["say"], res.get("places"), plan, base, mentionable, json.dumps(bundle) + " " + fallback)
     if not ok:
         return turn(fallback, evidence=res["evidence"], source=res["source"], why="answer rejected (%s), template used" % why)
     return turn(res["say"], evidence=res["evidence"], source=res["source"], chirp=res.get("chirp"))
