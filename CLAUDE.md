@@ -38,7 +38,8 @@ the script does `module.exports = CORE`, so you can `vm.runInNewContext` it and 
 - **Search:** rank places by P(found here) / seconds to check; "not there" multiplies by the
   miss rate and renormalises.
 - **Evaluation:** Monte Carlo over simulated days vs "last seen, then habits" baseline,
-  plus a calibration table. Last run (10% false alarms): first-check success 52% vs 20%, 2.4 vs 4.7 checks.
+  plus a calibration table. Last run (1,000 days, 10% false alarms, cover-in-place model): first check 51% vs 23%,
+  within three 84% vs 41%, 2.4 vs 4.8 checks, 31 s vs 76 s; said 95% → right 95%.
 - **3D view:** low-poly room built from the zone map (furniture type inferred from the name).
 - **Mapping from photos:** click a reference rectangle on the floor (homography), then the
   front edge of each piece of furniture; outputs the zone map and per-camera image→floor matrices.
