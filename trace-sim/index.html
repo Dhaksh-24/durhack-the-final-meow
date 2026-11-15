@@ -226,8 +226,37 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
   </div>
 
   <div class="full">
+    <section class="card" id="drawCard">
+      <h2>Draw the room (top view)</h2>
+      <p class="lead">The quick way to model a room. Type its size, then drag one box for each piece of furniture, as seen from above. To trace instead of measuring, put a top-view photo, a video frame or a sketch underneath. Nothing is uploaded.</p>
+      <div class="controls">
+        <label class="check">Room name <input type="text" id="dName" value="Demo room" style="width:150px"></label>
+        <label class="check">Width (along the back wall) <input type="number" id="dW" value="6" step="0.1" min="1" max="30"> m</label>
+        <label class="check">Depth <input type="number" id="dH" value="5" step="0.1" min="1" max="30"> m</label>
+      </div>
+      <div class="controls">
+        <label class="btn" for="dFile" style="display:inline-block">Trace a top-view photo or video</label>
+        <input type="file" id="dFile" accept="image/*,video/*" hidden>
+        <button class="btn primary" id="dFrame" type="button" hidden>Use this video frame</button>
+        <button class="btn" id="dOutline" type="button" hidden>Redo the room outline</button>
+        <button class="btn" id="dNoPhoto" type="button" hidden>Remove the photo</button>
+        <button class="btn" id="dFromRoom" type="button">Start from the room above</button>
+        <button class="btn" id="dClear" type="button">Clear the furniture</button>
+      </div>
+      <video id="dVideo" controls muted playsinline hidden style="width:100%;border-radius:8px;margin-top:8px"></video>
+      <p class="note" id="dHint"></p>
+      <canvas id="dCanvas" class="cam" style="width:auto;max-width:100%;max-height:70vh;display:block" aria-label="Top view of the room: drag to draw furniture"></canvas>
+      <div class="boxlist" id="dList"></div>
+      <div class="controls">
+        <button class="btn primary" id="dBuild" type="button">Build the room</button>
+        <span class="progress" id="dStatus"></span>
+      </div>
+      <div class="err" id="dErr"></div>
+    </section>
     <section class="card" id="mapCard">
-      <h2>Map a real room from camera photos</h2>
+      <h2>Advanced: map from angled phone photos</h2>
+      <details>
+      <summary>For when the tracker needs each phone's pixel-to-floor calibration. Otherwise, draw the room above.</summary>
       <p class="lead">Turns a photo from each phone into the room above, in metres. A sheet of paper on the floor tells each photo how big things are. The photos stay in this browser and are never uploaded.</p>
       <ol class="steps">
         <li>Measure the room: its width along the back wall and its depth.</li>
@@ -258,6 +287,7 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
         <p class="lead">For each calibrated phone, the matrix that turns a pixel on the floor into metres. Save it as <code>baseline/calibration.json</code> next to <code>multicam.py</code> and every sighting it logs gets a floor position in metres.</p>
         <pre id="calibOut">[]</pre>
         <div class="controls"><button class="btn" id="copyCalib" type="button">Copy</button><span class="note" id="copyCalibNote"></span></div>
+      </details>
       </details>
     </section>
 
@@ -1971,6 +2001,185 @@ function samplePhoto() {
 }
 
 // ---------- wiring ----------
+// ---------- draw the room from above ----------
+// Everything is kept in metres. With a photo underneath, the first drag marks the room's floor
+// in the picture; from then on the picture is stretched so that outline fills the room.
+const DR = { zones: [], img: null, outline: null, outW: 1000, drag: null, sel: -1 };
+const DSNAP = 0.05, DPX = 1000;
+function dDims() { return { W: Math.max(1, +$("#dW").value || 6), H: Math.max(1, +$("#dH").value || 5) }; }
+function dImgSize() { const i = DR.img; return i ? [i.naturalWidth || i.videoWidth || i.width, i.naturalHeight || i.videoHeight || i.height] : [0, 0]; }
+function dOutlining() { return !!DR.img && !DR.outline; }
+function dSnap(v) { return Math.round(v / DSNAP) * DSNAP; }
+function dSize() {
+  const cv = $("#dCanvas"), { W, H } = dDims(), [iw, ih] = dImgSize();
+  cv.width = DPX; cv.height = Math.round(dOutlining() ? DPX * ih / iw : DPX * H / W);
+}
+function dPos(e) {   // pointer -> canvas pixels
+  const cv = $("#dCanvas"), r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
+}
+function dDraw() {
+  const cv = $("#dCanvas"), ctx = cv.getContext("2d"), C = palette(), { W, H } = dDims(), [iw] = dImgSize();
+  const k = cv.width / W, font = "system-ui, -apple-system, Segoe UI, sans-serif";
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (dOutlining()) {
+    ctx.drawImage(DR.img, 0, 0, cv.width, cv.height);
+    if (DR.drag) { const d = DR.drag; ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 4; ctx.strokeRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0); }
+    return;
+  }
+  ctx.fillStyle = C.floor; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (DR.img) { const o = DR.outline, s = iw / DR.outW; ctx.globalAlpha = 0.9; ctx.drawImage(DR.img, o.x * s, o.y * s, o.w * s, o.h * s, 0, 0, cv.width, cv.height); ctx.globalAlpha = 1; }
+  ctx.strokeStyle = DR.img ? "rgba(255,255,255,0.35)" : C.zoneLine; ctx.lineWidth = 1;
+  for (let x = 1; x < W; x++) { ctx.beginPath(); ctx.moveTo(x * k, 0); ctx.lineTo(x * k, cv.height); ctx.stroke(); }
+  for (let y = 1; y < H; y++) { ctx.beginPath(); ctx.moveTo(0, y * k); ctx.lineTo(cv.width, y * k); ctx.stroke(); }
+  ctx.fillStyle = DR.img ? "#fff" : C.muted; ctx.font = "20px " + font;
+  ctx.fillText("back wall · " + W.toFixed(1) + " m", 10, 24);
+  const box = (z, live, sel) => {
+    ctx.fillStyle = z.watch === false ? "rgba(150,150,150,0.45)" : "rgba(31,107,138,0.45)";
+    ctx.fillRect(z.x * k, z.y * k, z.w * k, z.h * k);
+    ctx.strokeStyle = sel || live ? "#ffd23f" : DR.img ? "#fff" : C.text; ctx.lineWidth = sel || live ? 4 : 2;
+    ctx.strokeRect(z.x * k, z.y * k, z.w * k, z.h * k);
+    ctx.fillStyle = DR.img ? "#fff" : C.text; ctx.font = "600 22px " + font;
+    const label = (z.name ? z.name + " · " : "") + z.w.toFixed(2) + " × " + z.h.toFixed(2) + " m";
+    if (DR.img) { ctx.shadowColor = "#000"; ctx.shadowBlur = 6; }
+    ctx.fillText(z.w * k < 200 ? z.name || "" : label, z.x * k + 8, z.y * k + 28, Math.max(110, z.w * k - 12));
+    ctx.shadowBlur = 0;
+  };
+  DR.zones.forEach((z, i) => box(z, false, i === DR.sel));
+  if (DR.drag && DR.drag.mode === "new") {
+    const z = dRect(DR.drag);
+    if (z.w > 0 && z.h > 0) box(z, true, false);
+  }
+}
+function dRect(d) {   // a drag in canvas pixels -> a snapped rectangle in metres, inside the room
+  const { W, H } = dDims(), k = $("#dCanvas").width / W;
+  const cl = (v, m) => Math.max(0, Math.min(m, v));
+  const x0 = dSnap(cl(Math.min(d.x0, d.x1) / k, W)), x1 = dSnap(cl(Math.max(d.x0, d.x1) / k, W));
+  const y0 = dSnap(cl(Math.min(d.y0, d.y1) / k, H)), y1 = dSnap(cl(Math.max(d.y0, d.y1) / k, H));
+  return { x: x0, y: y0, w: +(x1 - x0).toFixed(2), h: +(y1 - y0).toFixed(2) };
+}
+function dRenderList() {
+  $("#dList").innerHTML = DR.zones.map((z, i) =>
+    '<div class="boxrow" data-b="' + i + '">' +
+      '<input type="text" data-f="name" value="' + esc(z.name) + '" aria-label="Name">' +
+      '<select data-f="type" aria-label="Furniture type">' + TYPES.map((t) => "<option" + (t === z.type ? " selected" : "") + ">" + t + "</option>").join("") + "</select>" +
+      '<label class="check"><input type="checkbox" data-f="watch"' + (z.watch ? " checked" : "") + "> a phone watches it</label>" +
+      '<button class="btn" type="button" data-del="' + i + '" aria-label="Remove">✕</button>' +
+    "</div>").join("");
+}
+function dStatus() {
+  const hasVid = !$("#dVideo").hidden;
+  $("#dFrame").hidden = !hasVid; $("#dOutline").hidden = !(DR.img && DR.outline); $("#dNoPhoto").hidden = !DR.img;
+  $("#dCanvas").hidden = hasVid && !DR.img;
+  $("#dHint").textContent = hasVid && !DR.img ? "Pause the video on a frame that shows the whole floor from above, then press Use this video frame."
+    : dOutlining() ? "Drag a box around the room's floor in the picture, wall to wall. That tells the page how big things are."
+    : "Drag a box over each piece of furniture" + (DR.img ? ", around where it meets the floor" : "") + ". The back wall is at the top; each grid square is 1 m. Drag a box to move it; rename it below.";
+  const n = DR.zones.length, w = DR.zones.filter((z) => z.watch).length;
+  $("#dStatus").textContent = n ? n + " piece" + (n === 1 ? "" : "s") + " of furniture, " + w + " watched by a phone" : "";
+}
+function dRefresh(list) { dSize(); dDraw(); if (list) dRenderList(); dStatus(); }
+function dFromMap() {
+  $("#dW").value = MAP.width; $("#dH").value = MAP.height; $("#dName").value = MAP.name;
+  DR.zones = MAP.zones.map((z) => ({ name: z.name, type: z.type, auto: false, watch: z.camera, x: z.x, y: z.y, w: z.w, h: z.h }));
+  DR.sel = -1; dRefresh(true);
+}
+function dSetImage(img) { DR.img = img; DR.outline = null; $("#dErr").textContent = ""; dRefresh(false); }
+function dBuild() {
+  const { W, H } = dDims(), ids = new Set();
+  $("#dErr").textContent = "";
+  const zones = DR.zones.filter((z) => z.x < W && z.y < H).map((z) => {
+    const name = (z.name || "Zone").trim() || "Zone";
+    let id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "zone", base = id, n = 2;
+    while (ids.has(id)) id = base + "-" + n++;
+    ids.add(id);
+    return { id, name, type: z.type, camera: !!z.watch, cover: COVER[z.type], check: CHECK[z.type],
+      x: +z.x.toFixed(2), y: +z.y.toFixed(2), w: +Math.min(z.w, W - z.x).toFixed(2), h: +Math.min(z.h, H - z.y).toFixed(2) };
+  });
+  if (!zones.length) { $("#dErr").textContent = "Drag at least one box for a piece of furniture first."; return; }
+  if (!zones.some((z) => z.camera)) { $("#dErr").textContent = "Tick \"a phone watches it\" on at least one piece of furniture."; return; }
+  try {
+    loadMap({ name: ($("#dName").value || "Room").trim(), width: W, height: H, zones });
+    setView(R3 ? "3d" : "2d");
+    $("#mapTitle").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) { $("#dErr").textContent = err.message; }
+}
+(function wireDraw() {
+  const cv = $("#dCanvas");
+  cv.addEventListener("pointerdown", (e) => {
+    const [x, y] = dPos(e);
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
+    if (dOutlining()) { DR.drag = { mode: "outline", x0: x, y0: y, x1: x, y1: y }; return; }
+    const k = cv.width / dDims().W, mx = x / k, my = y / k;
+    let hit = -1; DR.zones.forEach((z, i) => { if (mx >= z.x && mx <= z.x + z.w && my >= z.y && my <= z.y + z.h) hit = i; });
+    if (hit >= 0) { const z = DR.zones[hit]; DR.sel = hit; DR.drag = { mode: "move", i: hit, dx: mx - z.x, dy: my - z.y }; }
+    else { DR.sel = -1; DR.drag = { mode: "new", x0: x, y0: y, x1: x, y1: y }; }
+    dDraw();
+  });
+  cv.addEventListener("pointermove", (e) => {
+    const d = DR.drag; if (!d) return;
+    const [x, y] = dPos(e);
+    if (d.mode === "move") {
+      const { W, H } = dDims(), k = cv.width / W, z = DR.zones[d.i];
+      z.x = dSnap(Math.max(0, Math.min(W - z.w, x / k - d.dx))); z.y = dSnap(Math.max(0, Math.min(H - z.h, y / k - d.dy)));
+    } else { d.x1 = x; d.y1 = y; }
+    dDraw();
+  });
+  const end = () => {
+    const d = DR.drag; if (!d) return; DR.drag = null;
+    if (d.mode === "outline") {
+      const o = { x: Math.min(d.x0, d.x1), y: Math.min(d.y0, d.y1), w: Math.abs(d.x1 - d.x0), h: Math.abs(d.y1 - d.y0) };
+      if (o.w > 40 && o.h > 40) { DR.outline = o; DR.outW = cv.width; }
+      dRefresh(false); return;
+    }
+    if (d.mode === "new") {
+      const z = dRect(d);
+      if (z.w >= 0.15 && z.h >= 0.15) {
+        DR.zones.push(Object.assign(z, { name: "Zone " + (DR.zones.length + 1), type: "table", auto: true, watch: true }));
+        DR.sel = DR.zones.length - 1; dRenderList();
+        const inp = $("#dList").querySelector('[data-b="' + DR.sel + '"] [data-f="name"]'); if (inp) { inp.focus(); inp.select(); }
+      }
+    }
+    dDraw(); dStatus();
+  };
+  cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+  $("#dList").addEventListener("input", (e) => {
+    const row = e.target.closest("[data-b]"); if (!row) return;
+    const z = DR.zones[+row.dataset.b], f = e.target.dataset.f; if (!z) return;
+    if (f === "name") { z.name = e.target.value; if (z.auto) { z.type = furnType({ id: "", name: z.name }); row.querySelector('[data-f="type"]').value = z.type; } }
+    if (f === "type") { z.type = e.target.value; z.auto = false; }
+    if (f === "watch") z.watch = e.target.checked;
+    dDraw(); dStatus();
+  });
+  $("#dList").addEventListener("focusin", (e) => { const row = e.target.closest("[data-b]"); if (row) { DR.sel = +row.dataset.b; dDraw(); } });
+  $("#dList").addEventListener("click", (e) => {
+    const bt = e.target.closest("[data-del]"); if (!bt) return;
+    DR.zones.splice(+bt.dataset.del, 1); DR.sel = -1; dRefresh(true);
+  });
+  ["#dW", "#dH"].forEach((q) => $(q).addEventListener("input", () => dRefresh(false)));
+  $("#dFile").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
+    const url = URL.createObjectURL(f), v = $("#dVideo");
+    if (/^video\//.test(f.type)) { DR.img = null; DR.outline = null; v.src = url; v.hidden = false; dRefresh(false); return; }
+    v.hidden = true; v.removeAttribute("src");
+    const img = new Image();
+    img.onload = () => dSetImage(img);
+    img.onerror = () => { $("#dErr").textContent = "Couldn't open that picture."; };
+    img.src = url;
+  });
+  $("#dFrame").onclick = () => {
+    const v = $("#dVideo");
+    if (!v.videoWidth) { $("#dErr").textContent = "The video hasn't loaded yet."; return; }
+    const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext("2d").drawImage(v, 0, 0);
+    v.pause(); v.hidden = true; dSetImage(c);
+  };
+  $("#dOutline").onclick = () => { DR.outline = null; dRefresh(false); };
+  $("#dNoPhoto").onclick = () => { DR.img = null; DR.outline = null; const v = $("#dVideo"); v.hidden = true; v.removeAttribute("src"); dRefresh(false); };
+  $("#dFromRoom").onclick = dFromMap;
+  $("#dClear").onclick = () => { DR.zones = []; DR.sel = -1; dRefresh(true); };
+  $("#dBuild").onclick = dBuild;
+})();
+
 $("#camFile").addEventListener("change", (e) => {
   for (const f of e.target.files) addCamera(f.name.replace(/\.[^.]+$/, ""), URL.createObjectURL(f));
   e.target.value = "";
@@ -2023,6 +2232,7 @@ if (!R3) { $("#viewSeg").hidden = true; }
 setView(R3 ? "3d" : "2d");
 // Reopen the last room loaded or mapped in this browser (the zone map only, never photos).
 try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved)); } catch (e) { /* none saved, or unreadable */ }
+dFromMap();
 
 let lastT = performance.now(), acc = 0, lastPanel = 0;
 function frame(now) {

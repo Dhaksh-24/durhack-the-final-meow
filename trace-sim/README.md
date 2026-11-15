@@ -9,10 +9,12 @@ Open `index.html` in a browser (needs internet once, for three.js).
 - **Live metrics:** room size and area, what's in it, the phone network (sightings per phone), how often the model's top guess is right, its uncertainty in bits, and a test of where the next phone would help most.
 - **Map a real room from camera photos:** click a sheet of known size on the floor in each phone's photo, then the front edge of each piece of furniture; the 3D room is rebuilt in metres. Also outputs each phone's pixel-to-floor matrix for the tracker.
 
-**Cameras to 3D room (demo set-up):**
+**Model a room the quick way:** "Draw the room (top view)": type the room's width and depth, drag one box per piece of furniture, name each (the type is guessed from the name), tick which ones a phone watches, "Build the room". To trace instead of measuring, add a top-view photo, a paused video frame or a sketch and drag a box around the floor first. The browser remembers the room.
+
+**Advanced, from angled phone photos (only if the tracker needs pixel-to-floor calibration):**
 1. Phones on their stands, streaming (IP Webcam or DroidCam), cameras listed in `cameras.json` as for `multicam.py`.
 2. `python snap.py` saves one photo per camera to `baseline/` (git-ignored; it only needs OpenCV).
-3. Open the page, "Map a real room from camera photos": enter the room's width and depth, "Add phone photos" → the files in `baseline/`.
+3. Open the page, "Advanced: map from angled phone photos": enter the room's width and depth, "Add phone photos" → the files in `baseline/`.
 4. In each photo click the four corners of the sheet on the floor, then the two ends of each piece of furniture's front edge; name it.
 5. "Build the room". The browser remembers the room on reload. "Copy the zone map" gives the zone ids `multicam.py` should use, and "Camera calibration for the tracker" gives `baseline/calibration.json`.
 
