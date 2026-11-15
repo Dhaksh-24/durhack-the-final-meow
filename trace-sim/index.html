@@ -396,6 +396,7 @@ const S_PERSON = 0.95;      // checking hands and pockets finds it
 const S_OUT = 0.80;         // checking the car or bag finds it
 const T_PERSON = 5, T_OUT = 90;  // seconds each check takes
 const UNCOVER = 0.01;       // a covered item gets uncovered while someone is there
+const COVER_IN_PLACE = 0.08; // ...or covered where it lies (cushion, coat, box flap), times the zone's cover chance
 const LEAK = 0.0005;        // small mixing back to the prior each step (model humility)
 const LEAVE_P = 0.03;       // person leaves the room when they finish in a zone
 const MAX_CHECKS = 25;
@@ -590,8 +591,10 @@ function stepWorld(w) {
     for (const it of ITEMS) {
       const s = w.items[it.id];
       if (s.loc === z.id) {
-        if (rnd() < it.pick) { s.loc = "person"; s.covered = false; s.pocket = false; }
-        else if (s.covered && rnd() < UNCOVER) s.covered = false;
+        const r0 = rnd();
+        if (r0 < it.pick) { s.loc = "person"; s.covered = false; s.pocket = false; }
+        else if (s.covered) { if (rnd() < UNCOVER) s.covered = false; }
+        else if (r0 < it.pick + COVER_IN_PLACE * coverP(it, z)) s.covered = true;
       } else if (s.loc === "person") {
         const r = rnd();
         if (s.pocket) { if (r < it.unpocket) putDown(it, s, z); }
@@ -636,7 +639,8 @@ function filterStep(b, it, obs) {
     const pv = nb[2 * i] * it.pick, pc = nb[2 * i + 1] * it.pick;
     const d = nb[P] * dropEff(it, z), c = coverP(it, z);
     nb[2 * i] -= pv; nb[2 * i + 1] -= pc;
-    const u = nb[2 * i + 1] * UNCOVER; nb[2 * i + 1] -= u; nb[2 * i] += u;
+    const u = nb[2 * i + 1] * UNCOVER, cv = nb[2 * i] * COVER_IN_PLACE * coverP(it, z);
+    nb[2 * i + 1] += cv - u; nb[2 * i] += u - cv;
     nb[P] -= d; nb[2 * i] += d * (1 - c); nb[2 * i + 1] += d * c;
     nb[P] += pv + pc;
   }
@@ -892,6 +896,13 @@ function rank(b) {
     .map((x) => Object.assign(x, { score: x.f / x.t }))
     .sort((a, c) => c.score - a.score);
 }
+// The plan a person hears: as rank(), but the place they just checked isn't suggested again straight
+// away (Bayesian search may say re-check a cheap place; a person hears "it's ignoring me").
+function rankAfter(b, lastTried) {
+  const r = rank(b);
+  if (lastTried && r.length > 1 && r[0].pl.name === lastTried) { const x = r[0]; r[0] = r[1]; r[1] = x; }
+  return r;
+}
 function truePlace(s) { return s.loc; }
 function trueFound(w, it, pl) {
   const s = w.items[it.id];
@@ -948,7 +959,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { rankAfter, learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -1319,7 +1330,7 @@ function whereText(pl, b) {
   return (cov > 0.5 ? "under things on the " : "the ") + pl.name.toLowerCase();
 }
 function sentence(it, b, tries) {
-  const name = it.name.toLowerCase(), r = rank(b);
+  const name = it.name.toLowerCase(), r = planOf(b);
   if (!r.length) return "I don't have a good idea where " + (it.plural ? "they are" : "it is") + ".";
   const v = visibleAt(it.id);
   if (!tries && v) return "The " + MAP.zones[ZI[v]].name.toLowerCase() + " phone can see your " + name + " right now.";
@@ -1363,7 +1374,7 @@ function renderAsk() {
     $("#startAsk").onclick = () => handleUtterance("Where " + (it.plural ? "are" : "is") + " my " + it.name.toLowerCase() + "?");
     return;
   }
-  const sit = itemById(session.item), r = rank(session.b);
+  const sit = itemById(session.item), r = planOf(session.b);
   let html = '<div class="say">' + esc(currentSay()) + "</div>";
   if (session.result) {
     html += '<div class="result ' + (session.result.ok ? "good" : "warn") + '">' + esc(session.result.detail) + "</div>";
@@ -1412,7 +1423,7 @@ async function handleUtterance(text) {
   // the three simple commands never need the LLM
   if (/^(again|repeat|repeat that|say that again|say it again|what|pardon|sorry what)$/.test(n)) { speak(voice.last || currentSay()); return; }
   if (session && !session.result) {
-    const r = rank(session.b);
+    const r = planOf(session.b);
     if (/^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$/.test(n)) {
       failAt(r[0]); askInfo("Handled here: not there."); renderAll(); speak(currentSay()); return;
     }
@@ -1443,7 +1454,7 @@ async function handleUtterance(text) {
     const v = validateSay(res.say, res.places, session.b, session.tried, facts);
     if (v.ok) {
       session.say = res.say;
-      if (res.chirp && rank(session.b).slice(0, 2).some((x) => x.pl.id === res.chirp)) chirp(res.chirp);
+      if (res.chirp && planOf(session.b).slice(0, 2).some((x) => x.pl.id === res.chirp)) chirp(res.chirp);
     } else note += " · answer rejected (" + v.why + "), template used";
   }
   if (res && res.evidence && res.evidence.length) note += " · evidence: " + res.evidence.map((e) => (e.found ? "found at " : "not at ") + e.zone + (e.part !== "all" ? " (" + e.part + ")" : "") + (e.sure !== "high" ? ", " + e.sure : "")).join("; ");
@@ -1681,6 +1692,10 @@ function postModel() {
     .finally(() => { modelPost.busy = false; });
 }
 setInterval(postModel, 1500);   // the last change gets out even if nothing redraws afterwards
+function planOf(b) {   // the plan for the person searching now: their last failed check isn't first again
+  const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \(.*\)$/, "") : null;
+  return rankAfter(b, t);
+}
 function renderAll() {
   postModel();
   $("#clock").textContent = MAP.name + " · " + clockAt(world.tick);
@@ -2155,7 +2170,7 @@ function draw3D(now) {
   camera.lookAt(R3.target);
 
   const b = session ? session.b : beliefs[selected], it = itemById(selected);
-  const nextId = session && !session.result ? (rank(session.b)[0] || {}).pl : null;
+  const nextId = session && !session.result ? (planOf(session.b)[0] || {}).pl : null;
   const heatShown = $("#heatChk").checked, heatNow = heatShown ? roomHeat() : null;
   const trailShown = $("#trailChk").checked, trailMin = trailCache && trailCache.id === selected ? trailCache.minutes : {};
   const trailMax = Math.max(0, ...Object.values(trailMin));
