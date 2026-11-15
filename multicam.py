@@ -132,7 +132,13 @@ def atomic_write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(text)
-    os.replace(tmp, path)
+    for attempt in range(5):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:      # Windows: the server is reading the file right now
+            time.sleep(0.05)
+    print(f"  couldn't update {path} (file busy); will retry")
 
 
 # ---- feeding the Trace model (trace-sim page) ----
@@ -245,12 +251,8 @@ def view_score(box, zone, frame_shape):
 
 class Embedder:
     def __init__(self):
-        import clip
-        from ultralytics.utils import WEIGHTS_DIR
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model, self.pre = clip.load(
-            "ViT-B/32", device=self.device, download_root=str(WEIGHTS_DIR / "clip"))
-        self.model.eval()
+        # the same CLIP ViT-B/32 the detector's verifier uses: loaded once, not twice
+        self.model, self.pre, self.device = detect.load_clip()
 
     @torch.no_grad()
     def __call__(self, crops_bgr):
@@ -839,13 +841,22 @@ def hit_test(mem, cams, layout, x, y, now):
 
 
 def main():
+    global PERSON_CONF
     ap = argparse.ArgumentParser(description="FindIt multi-camera tracker")
     ap.add_argument("--cam", action="append",
                     help='NAME=SOURCE, e.g. "Hall=http://192.168.1.23:8080/video" or "Laptop=0"')
     ap.add_argument("--imgsz", type=int, default=detect.IMGSZ,
                     help="detector input size (default from detect.py)")
-    ap.add_argument("--conf", type=float, default=detect.CONF,
-                    help="detector threshold (default from detect.py)")
+    ap.add_argument("--conf", type=float, default=None,
+                    help="YOLO-World threshold (default from detect.py: PROPOSE_CONF with verifier.json, "
+                         "the same value the verifier was trained on; CONF without it)")
+    ap.add_argument("--min-prob", action="append", default=[], metavar="ITEM=P",
+                    help="override verifier.json's threshold for one item, e.g. --min-prob keys=0.7 "
+                         "(keys default 0.86 is strict: lower it if the real keys never get a box)")
+    ap.add_argument("--person-conf", type=float, default=PERSON_CONF,
+                    help=f"YOLO-World 'person' boxes below this are ignored (default {PERSON_CONF}; "
+                         "a phone looking straight down sees heads and arms, so try 0.15 if "
+                         "person_here never fires)")
     ap.add_argument("--zone-map", default=None,
                     help='JSON file renaming zones to the Trace room map ids, e.g. {"Hall table": "desk"}; '
                          'without it a zone "Sofa" becomes "sofa"')
@@ -871,6 +882,17 @@ def main():
     # person_here / person_left, the heatmap and whereabouts.py, never the item memory
     prompts = dict(detect.PROMPTS) if args.no_people else {**detect.PROMPTS, "person": ["person"]}
     detector = detect.Detector(prompts=prompts, conf=args.conf, imgsz=args.imgsz)
+    PERSON_CONF = args.person_conf
+    for spec in args.min_prob:
+        item, _, p = spec.partition("=")
+        if detector.verifier is None:
+            print(f"  --min-prob {spec} ignored: no verifier.json")
+            break
+        try:
+            detector.verifier.thresholds[item.strip()] = float(p)
+            print(f"  verifier threshold for {item.strip()}: {float(p):.2f}")
+        except ValueError:
+            print(f"  --min-prob expects ITEM=P, e.g. keys=0.7 (got {spec})")
     mem = Memory(Embedder(), cam_names)
     zones = load_zones(cams[0].id)
     brain = whereabouts.Whereabouts(roommod.Room(), cam_names)
