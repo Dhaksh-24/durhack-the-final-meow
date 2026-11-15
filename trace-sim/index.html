@@ -1964,7 +1964,7 @@ function renderMetrics() {
     tile("Room", W.toFixed(1) + " × " + H.toFixed(1) + " m", MAP.name) +
     tile("Floor area", (W * H).toFixed(1) + " m²", "furniture covers " + Math.round(furnArea / (W * H) * 100) + "%") +
     tile("Places", String(zs.length), "plus with you and outside") +
-    tile("Phones", cams.length + " of " + zs.length, cams.length === zs.length ? "every zone watched" : (zs.length - cams.length) + " blind spot" + (zs.length - cams.length === 1 ? "" : "s")) +
+   
     tile("Watched area", camArea.toFixed(1) + " m²", Math.round(camArea / Math.max(furnArea, 1e-9) * 100) + "% of the furniture") +
     tile(replay ? "Recorded time" : "Simulated time", durText(ST.ticks), clockAt(world.tick).slice(0, 5) + " now") +
     tile("Sightings", String(sightTotal), hours > 0.05 ? Math.round(sightTotal / hours) + " per hour" : "") +
