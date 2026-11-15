@@ -134,14 +134,38 @@ def atomic_write(path, text):
 
 # ---- feeding the Trace model (trace-sim page) ----
 TRACE_EVENTS_FILE = Path("trace-events.jsonl")   # SPEC 3.2 events; bridge.py streams it to the page
-MOTION_DIFF = 18        # grey-level change (0-255) that counts as movement
-MOTION_FRAC = 0.02      # share of a zone that has to move for "someone is here"
-PERSON_QUIET = 4.0      # s without movement in a zone before "person_left"
+PERSON_CONF = 0.35      # YOLO-World "person" boxes below this are ignored
+PERSON_AT = 0.25        # a person box covering this much of a zone (or their feet in it) = at that zone
+MOTION_DIFF = 18        # grey-level change (0-255) that counts as movement (--no-people only)
+MOTION_FRAC = 0.02      # share of a zone that has to move for "someone is here" (--no-people only)
+PERSON_QUIET = 4.0      # s without a person at a zone before "person_left"
+
+
+def _area(r):
+    return max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
+
+
+def person_zone(box, zones):
+    """The one zone a person is at: the most covered zone, or the zone their feet are in.
+    The model keeps a single place for the person, so this picks one, never several."""
+    fx, fy = (box[0] + box[2]) / 2, box[3]
+    best, best_s = None, 0.0
+    for z in zones:
+        r = z["rect"]
+        inter = _area([max(r[0], box[0]), max(r[1], box[1]), min(r[2], box[2]), min(r[3], box[3])])
+        s = inter / max(1.0, min(_area(r), _area(box)))
+        if r[0] <= fx <= r[2] and r[1] <= fy <= r[3]:
+            s = max(s, PERSON_AT)
+        if s >= PERSON_AT and s > best_s:
+            best, best_s = z, s
+    return best
 
 
 class ZoneWatch:
-    """person_here / person_left per named zone, from movement inside the zone.
-    No person detector and no identity: only "something moved here"."""
+    """person_here / person_left per named zone. From YOLO-World "person" boxes found in the
+    same pass as the items (so a TV, a lamp or a shadow doesn't count as someone being there),
+    or from movement inside the zone when people aren't detected (--no-people).
+    No identity either way: only "a person is at this zone"."""
 
     def __init__(self, feed):
         self.feed, self.prev, self.state = feed, {}, {}
@@ -149,7 +173,27 @@ class ZoneWatch:
     def zone_id(self, name):
         return self.feed.zone_map.get(name) or events_adapter.slug(name)
 
-    def update(self, cam, frame, zones, now):
+    def update(self, cam, frame, zones, now, people=None):
+        """people: [(box, conf)] from the detector, or None to fall back to movement."""
+        if people is None:
+            return self._motion(cam, frame, zones, now)
+        found = [person_zone(b, zones) for b, c in people if c >= PERSON_CONF]
+        at = {z["name"] for z in found if z is not None}
+        for z in zones:
+            self._mark(cam, z["name"], z["name"] in at, now)
+
+    def _mark(self, cam, name, present, now):
+        st = self.state.setdefault((cam, name), {"here": False, "last": 0.0})
+        if present:
+            st["last"] = now
+            if not st["here"]:
+                st["here"] = True
+                self.feed.person_event("person_here", self.zone_id(name), now, cam)
+        elif st["here"] and now - st["last"] > PERSON_QUIET:
+            st["here"] = False
+            self.feed.person_event("person_left", self.zone_id(name), now, cam)
+
+    def _motion(self, cam, frame, zones, now):
         w = 240
         small = cv2.resize(frame, (w, max(1, int(w * frame.shape[0] / frame.shape[1]))))
         g = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (5, 5), 0)
@@ -163,15 +207,7 @@ class ZoneWatch:
             roi = moved[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
             if roi.size == 0:
                 continue
-            st = self.state.setdefault((cam, z["name"]), {"here": False, "last": 0.0})
-            if roi.mean() > MOTION_FRAC:
-                st["last"] = now
-                if not st["here"]:
-                    st["here"] = True
-                    self.feed.person_event("person_here", self.zone_id(z["name"]), now, cam)
-            elif st["here"] and now - st["last"] > PERSON_QUIET:
-                st["here"] = False
-                self.feed.person_event("person_left", self.zone_id(z["name"]), now, cam)
+            self._mark(cam, z["name"], roi.mean() > MOTION_FRAC, now)
 
 
 def feed_frame(feed, cam, frame, dets, zones, now):
@@ -807,6 +843,8 @@ def main():
     ap.add_argument("--zone-map", default=None,
                     help='JSON file renaming zones to the Trace room map ids, e.g. {"Hall table": "desk"}; '
                          'without it a zone "Sofa" becomes "sofa"')
+    ap.add_argument("--no-people", action="store_true",
+                    help="don't look for people; say someone is at a zone from movement there instead")
     ap.add_argument("--no-bridge", action="store_true",
                     help="don't start bridge.py (which streams trace-events.jsonl to the Trace page)")
     ap.add_argument("--api-port", type=int, default=8000,
@@ -822,7 +860,10 @@ def main():
         c.start()
 
     print("Loading models (first run downloads weights)...")
-    detector = detect.Detector(conf=args.conf, imgsz=args.imgsz)
+    # people ride along in the same YOLO-World pass at no extra cost; they only feed
+    # person_here / person_left, never the item memory or the item events
+    prompts = dict(detect.PROMPTS) if args.no_people else {**detect.PROMPTS, "person": ["person"]}
+    detector = detect.Detector(prompts=prompts, conf=args.conf, imgsz=args.imgsz)
     mem = Memory(Embedder(), cam_names)
     zones = load_zones(cams[0].id)
     layout = Layout(len(cams))
@@ -893,12 +934,14 @@ def main():
         if batch:
             per_frame = detector.detect([f for _, f, _ in batch])
             for (c, f, ft), dets in zip(batch, per_frame):
+                people = None if args.no_people else [(b, s) for cat, b, s in dets if cat == "person"]
+                dets = [d for d in dets if d[0] != "person"]
                 cz = [z for z in zones if z["camera"] == c.id]
                 c.assigned = mem.update(c.id, f, dets, now, cz)
                 if feed is not None:
                     try:
                         feed_frame(feed, c.id, f, dets, cz, now)
-                        watch.update(c.id, f, cz, now)
+                        watch.update(c.id, f, cz, now, people)
                     except Exception as e:      # never let the model feed stop the tracker
                         print(f"  [{c.name}] trace event error: {e}")
                 c.dets, c.debug = dets, dict(mem.debug_scores)

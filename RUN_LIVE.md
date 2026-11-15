@@ -24,7 +24,8 @@ python multicam.py --cam "Sofa=http://<phone1-ip>:4747/video" --cam "Desk=http:/
 
 What multicam now writes to `trace-events.jsonl` (SPEC 3.2): `appeared` / `moved` / `disappeared` for
 keys, wallet, glasses (2-of-3 frames in, 5 missed frames out, boxes over 15% of the frame dropped),
-and `person_here` / `person_left` per zone from movement inside the zone (no person detector, no identity).
+and `person_here` / `person_left` per zone from YOLO-World `person` boxes in the same pass (no identity;
+`--no-people` uses movement inside the zone instead, which a TV or a lamp can set off).
 `--no-bridge` if you run `bridge.py --file trace-events.jsonl` yourself. Delete `trace-events.jsonl`
 between demo runs for a clean start.
 

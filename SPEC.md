@@ -104,7 +104,10 @@ Rules for producing them (cameras stream):
 - `disappeared`: not seen for 4–5 analysed frames in its zone (or its spot matches the
   baseline again, once change detection exists).
 - `moved`: disappeared from one zone and appeared in another within 60 s.
-- `person_here` / `person_left`: motion in / leaving a zone (no face or identity, ever).
+- `person_here` / `person_left`: a person arrives at / leaves a zone (no face or identity, ever).
+  multicam finds people with a `person` prompt in the same YOLO-World pass as the items; a
+  person is at the one zone their box covers most (or their feet are in), and has left it after
+  4 s without. `--no-people` falls back to movement inside the zone.
 - `something_changed`: a change in a zone that the detector couldn't name (e.g. a cushion
   moved while someone was there). Useful evidence that something may now be covered.
 - Worn glasses seen on a face are logged as `{"event": "appeared", "zone": "person"}`.
