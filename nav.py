@@ -36,6 +36,8 @@ _lock = threading.Lock()
 _view = {}             # the latest analysed frame
 _trail = deque(maxlen=60)   # (t, x, y) person positions in pixels
 _heading = {"v": None, "t": 0.0}
+_arrived = {"zone": None, "t": 0.0, "asked": False}   # when you reached the target
+ASK_AFTER_S = 8.0      # standing at the target this long without "found" -> ask how it went
 _last = {}             # the latest compute() result, drawn on the camera window by multicam.py
 
 
@@ -121,8 +123,19 @@ def _compute(target):
            "cam": v["cam"], "px": round(px), "py": round(py), "tx": round(tx), "ty": round(ty)}
 
     if dist <= ARRIVE_M:
+        with _lock:
+            if _arrived["zone"] != zone:
+                _arrived.update(zone=zone, t=now, asked=False)
+            waited, asked = now - _arrived["t"], _arrived["asked"]
+            if waited >= ASK_AFTER_S and not asked:
+                _arrived["asked"] = True
+        if waited >= ASK_AFTER_S and not asked:      # the feedback loop: Trace needs to hear how the check went
+            return dict(out, state="ask_check", say="Anything there? Say found them, or not there, and I'll work out where next.")
         tip = "Reach down, it's right in front of you." if seen else f"You're at {what}. Feel under things on it."
         return dict(out, state="arrived", say="Stop. " + tip)
+    with _lock:
+        if _arrived["zone"] == zone:
+            _arrived.update(zone=None, t=0.0, asked=False)
     if heading is None or now - h_t > HEADING_KEEP_S:
         return dict(out, state="no_heading", say="Take two small steps forward, so I can see which way you're facing.")
 

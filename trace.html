@@ -1765,7 +1765,7 @@ async function walkTick() {
   const now = Date.now();
   if (now < walk.quietUntil || voice.speaking) return;
   const same = r.state === walk.state;
-  if (r.state === "arrived" && same) return;                         // "stop" once
+  if (r.state === "arrived" && (same || walk.state === "ask_check")) return;   // "stop" once; no repeat after "anything there?"
   if (same && now - walk.at < (r.state === "no_person" ? 15000 : 6000)) return;
   if (!same && now - walk.at < 1500) return;
   walk.state = r.state; walk.at = now;

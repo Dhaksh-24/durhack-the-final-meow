@@ -499,6 +499,42 @@ def validate_say(say, places_said, plan, all_places, tried, facts):
 TARGET = {}
 
 
+def live_target(model, sessions):
+    """Re-plan the walk from the newest model state (the /sim page posts it every few seconds).
+    Called on every GET /api/nav. Re-routes only on a clear change: the camera sees the item somewhere
+    else, or the place Trace sent you to has collapsed (< 5%) while another untried place is now the
+    favourite (>= 40%). Places already checked are skipped. Same ranking and evidence as the
+    conversation; the words come from prob_word(); no LLM, no new maths."""
+    t = dict(TARGET)
+    item, zone = t.get("item"), t.get("zone")
+    if not item or not zone or t.get("state") != "searching":
+        return None
+    bundle = ((model or {}).get("items") or {}).get(item)
+    if not bundle:
+        return None
+    S = bundle.get("search") or dict(S_DEFAULT)
+    ses = (sessions or {}).get(item) or {"evidence": [], "tried": []}
+    tried = {re.sub(r" \((quick look|not sure)\)$", "", n) for n in ses.get("tried") or []}
+    seen = bundle.get("visible_now")
+    plan = rank(apply_evidence(places_of(bundle), ses.get("evidence") or [], S), S)
+    cand = [r for r in plan if r["name"] not in tried or r["zone"] == seen]
+    if not cand:
+        return None
+    top, cur = cand[0], next((r for r in plan if r["zone"] == zone), None)
+    name = bundle.get("item_name") or re.sub(r"-\d+$", "", item)
+    if seen and seen != zone:
+        top = next((r for r in plan if r["zone"] == seen), top)
+        why = "Change of plan: the camera can see your %s on the %s now." % (name, top["name"].lower())
+    elif top["zone"] != zone and (cur is None or cur["p"] < 0.05) and top["p"] >= 0.4:
+        why = "Change of plan: %s now looks %s." % (top["name"], top["word"])
+    else:
+        return None
+    TARGET.update({"zone": top["zone"], "name": top["name"], "t": time.time(), "replanned": True})
+    if sessions is not None and item in sessions:
+        sessions[item]["suggested"] = top["zone"]
+    return why
+
+
 def chat(message, history, model, sessions, mode="default", llm=None, now=None, budget=None):
     """One turn of trace.html's conversation. model: {"items": {id: bundle}} posted by the analytics
     page. sessions: a dict the server keeps between turns. Returns
