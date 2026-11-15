@@ -1252,9 +1252,12 @@ async function fetchSpeech(text) {
 function streamPlay(text) {
   return new Promise((resolve) => {
     const a = new Audio(`${API_BASE}/api/speech?${new URLSearchParams({ text, voice: voice.gender })}`);
-    let settled = false;
-    const done = (ok) => { if (settled) return; settled = true; voice.stop = null; resolve(ok); };
+    let settled = false, stall = 0;
+    const done = (ok) => { if (settled) return; settled = true; clearTimeout(stall); voice.stop = null; resolve(ok); };
     voice.stop = () => { a.pause(); a.removeAttribute("src"); a.load(); done(true); };   // also closes the stream
+    // the online voice never started (network hung): give up after 4 s so the browser voice speaks
+    // and the conversation doesn't stall waiting for audio that won't come
+    stall = setTimeout(() => { if (!settled && a.currentTime === 0) { a.pause(); a.removeAttribute("src"); a.load(); done(false); } }, 4000);
     a.onended = () => done(true);
     a.onerror = () => done(a.currentTime > 0.5);   // dropped part-way: don't say it all again
     a.play().catch(() => done(false));
