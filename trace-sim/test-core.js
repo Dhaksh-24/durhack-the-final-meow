@@ -6,7 +6,7 @@ const vm = require("vm"), fs = require("fs"), path = require("path");
 const src = fs.readFileSync(path.join(__dirname, "index.html"), "utf8").replace(/\r\n/g, "\n");
 const js = src.match(/<script>\n\(function([\s\S]*)<\/script>/)[0].slice(8, -9);
 const m = { exports: {} };
-vm.runInNewContext(js, { module: m, Math, console, Float64Array, JSON, Set, Object, String, isFinite, Infinity, RegExp, Array });
+vm.runInNewContext(js, { module: m, Math, console, Float64Array, Int16Array, JSON, Set, Object, String, Number, isFinite, Infinity, RegExp, Array });
 const C = m.exports;
 C.setupMap(JSON.parse(JSON.stringify(C.DEFAULT_MAP)));
 const N = +process.argv[2] || 1000;
@@ -102,6 +102,75 @@ check(C.rank(L1.B.keys)[0].pl.id === "hook", "live ends on the same top guess as
 const f3 = C.liveFeed(); f3.push([evs[1]]);
 check(f3.idle(evs[1].t + 35).length === 3, "35 s of silence adds 3 idle ticks");
 check(f3.push([{ t: evs[1].t + 36, event: "person_here", zone: "desk" }]).length === 1, "a new event is applied at once, not at the next 10 s step");
+
+// Messy real streams (robustness): flicker, low-confidence false sightings, unknown zones and items,
+// duplicates, shuffled lines, a long pause, items seen on the person, no person events at all.
+console.log("\nmessy event streams");
+C.setupMap(JSON.parse(JSON.stringify(C.DEFAULT_MAP))); C.setFalseRate(0.1);
+const T0 = 1794734600, line = (dt, o) => JSON.stringify(Object.assign({ t: T0 + dt, camera: "top" }, o));
+const runEvents = (txt) => {
+  const r = C.replayFromEvents(txt), B = {};
+  for (const it of C.ITEMS) B[it.id] = Float64Array.from(C.PRIORS[it.id]);
+  let bad = 0;
+  for (const o of r.ticks) for (const it of C.ITEMS) {
+    B[it.id] = C.filterStep(B[it.id], it, o);
+    let sum = 0; for (const x of B[it.id]) { if (!(x >= 0) || !isFinite(x)) bad++; sum += x; }
+    if (Math.abs(sum - 1) > 1e-9) bad++;
+  }
+  return { r, B, bad, top: (id) => C.rank(B[id])[0].pl.id };
+};
+{
+  const L = [];
+  for (let s = 0; s < 3600; s += 3) {   // an hour: keys flicker on the desk, glasses steady on the shelf
+    L.push(line(s, { event: (s / 3) % 2 ? "disappeared" : "appeared", item: "keys-1", zone: "desk", confidence: 0.7 }));
+    if (s % 60 === 0) L.push(line(s + 1, { event: "appeared", item: "glasses-1", zone: "shelf", confidence: 0.8 }));
+    if (s % 97 === 0) L.push(line(s + 2, { event: "appeared", item: "keys-2", zone: "sofa", confidence: 0.2 }), line(s + 5, { event: "disappeared", item: "keys-2", zone: "sofa", confidence: 0 }));
+    if (s % 300 === 0) L.push(line(s, { event: "appeared", item: "remote-1", zone: "garage", confidence: 0.9 }), line(s, { event: "person_here", zone: "hallway" }));
+  }
+  L.push(line(3601, { event: "appeared", item: "wallet-1", zone: "person", confidence: 0.9 }), line(3602, { event: "appeared", item: "glasses-1", zone: "shelf", confidence: null, time: null }));
+  L.push(line(3600 + 3 * 3600, { event: "appeared", item: "keys-1", zone: "desk", confidence: 0.8 }), line(3630 + 3 * 3600, { event: "something_changed", zone: "desk" }));   // after a 3-hour pause, seen for 30 s
+  const messy = L.concat(L).sort(() => Math.random() - 0.5).join("\n") + "\nnot json\n{}\n[1,2]\nnull\n";
+  const t0 = Date.now(), M = runEvents(messy), ms = Date.now() - t0;
+  console.log(`  ${M.r.count} events → ${M.r.ticks.length} ticks in ${ms} ms; notes: ${M.r.problems.join("; ")}`);
+  check(M.bad === 0, "no NaN, negative or unnormalised beliefs");
+  check(ms < 2000, "an hour of busy events (plus a long pause) replays in under 2 s");
+  check(M.r.ticks.length <= 2 * 360 + 5, "a 3-hour pause is shortened to an hour, not 1,080 empty ticks");
+  console.log(`  keys: ${C.rank(M.B.keys).slice(0, 3).map((x) => x.pl.id + " " + pct(x.p)).join(", ")}; glasses: ${C.rank(M.B.glasses).slice(0, 2).map((x) => x.pl.id + " " + pct(x.p)).join(", ")}`);
+  check(M.top("keys") === "desk" && M.top("glasses") === "shelf", "flickering keys stay on the desk; glasses on the shelf despite unknown zones and items");
+  check(C.rank(M.B.wallet)[0].pl.id === "person", "an item seen on the person is with the person");
+  check(M.r.problems.some((p) => /garage|hallway/.test(p)) && M.r.problems.some((p) => /remote-1/.test(p)), "unknown zones and items are reported");
+}
+{   // a false 0.2 sighting of the keys on the sofa every minute while a phone keeps seeing them on the desk
+  const L = [line(0, { event: "appeared", item: "keys-1", zone: "desk", confidence: 0.85 })];
+  for (let s = 30; s < 1800; s += 60) L.push(line(s, { event: "appeared", item: "keys-2", zone: "sofa", confidence: 0.2 }), line(s + 9, { event: "disappeared", item: "keys-2", zone: "sofa" }));
+  const F = runEvents(L.join("\n"));
+  check(at(F.B.keys, "desk") > 0.9, `low-confidence false sightings elsewhere don't move the keys (desk ${pct(at(F.B.keys, "desk"))})`);
+}
+{   // timestamps: ms instead of s, null t, lines with only a clock time among unix lines
+  const base = [line(0, { time: "09:23:20", event: "person_here", zone: "sofa" }), line(30, { time: "09:23:50", event: "appeared", item: "keys-1", zone: "sofa", confidence: 0.9 }), line(300, { time: "09:28:20", event: "person_left", zone: "sofa" })];
+  const ref = C.replayFromEvents(base.join("\n")).ticks.length;
+  const ms = base.map((l) => { const e = JSON.parse(l); e.t *= 1000; return JSON.stringify(e); });
+  const mixed = base.map((l, k) => { const e = JSON.parse(l); if (k === 1) e.t = null; if (k === 2) delete e.t; return JSON.stringify(e); });
+  check(ref === 31 && C.replayFromEvents(ms.join("\n")).ticks.length === ref, "t in milliseconds is read as seconds");
+  const R = C.replayFromEvents(mixed.join("\n"));
+  check(R.ticks.length === ref && R.ticks[3].det.keys === "sofa", "lines with only a clock time line up with unix-time lines (t: null isn't 1970)");
+  const nc = C.replayFromEvents(line(0, { event: "appeared", item: "keys-1", zone: "desk", confidence: null }));
+  check(nc.ticks[0].conf.keys === 0.8, "confidence: null counts as 0.8, not 0");
+}
+// The stage demo (HANDOVER 5): presenter at the sofa, keys seen, slid under a cloth while they sit
+// there, then they walk to the desk. With and without person events (multicam --no-people, or none).
+console.log("\nstage demo: keys hidden under a cloth on a watched zone");
+const DEMO = [line(0, { event: "person_here", zone: "sofa" }), line(5, { event: "appeared", item: "keys-1", zone: "sofa", confidence: 0.85 }),
+  line(60, { event: "disappeared", item: "keys-1", zone: "sofa", confidence: 0 }), line(90, { event: "person_left", zone: "sofa" }),
+  line(95, { event: "person_here", zone: "desk" }), line(155, { event: "something_changed", zone: "desk" })];
+for (const [name, txt, min] of [["with person events", DEMO.join("\n"), 0.75],
+    ["no person events", DEMO.filter((l) => !/person_/.test(l)).join("\n"), 0.6],
+    ["people detector missed them hiding the keys", [line(0, { event: "person_here", zone: "desk" }), line(1, { event: "person_left", zone: "desk" })].concat(DEMO.slice(1)).join("\n"), 0.6]]) {
+  const D = runEvents(txt), b = D.B.keys, plan = C.rankAfter(b);
+  const nb = C.failUpdate(b, plan[0].pl), next = C.rankAfter(nb, plan[0].pl.name)[0];
+  console.log(`  ${name}: ${plan.slice(0, 3).map((x) => x.pl.id + " " + pct(x.p)).join(", ")}; after 'not there' in pockets: ${next.pl.id} ${pct(next.p)} (${C.probWord(next.p)})`);
+  check(D.bad === 0 && plan[0].pl.id === "person" && next.pl.id === "sofa" && next.p >= min, name + ": pockets first, then under the sofa (≥ " + pct(min) + ")");
+}
 
 // The guide loop: checks with confidence, the trail, and SPEC 5.2 validation of LLM answers.
 console.log("\nguide: checks, trail, validation");
