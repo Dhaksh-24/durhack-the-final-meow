@@ -321,7 +321,21 @@ class TraceAPI:
                     return self._json({"error": "guide failed"}, 500)
                 # trace.html's own item ids come from multicam's memory: the most recent of that kind
                 same = [it for it in api.items if it.get("category") == res["item"]]
-                res["item_id"] = max(same, key=lambda it: it.get("last_time") or 0)["id"] if same else None
+                newest = max(same, key=lambda it: it.get("last_time") or 0) if same else None
+                res["item_id"] = newest["id"] if newest else None
+                # The camera tracker sees it but the model was never told (no zone event): say what
+                # the camera saw rather than "no phone has seen your keys". Only before any check, so
+                # "not there" still moves on through the model's plan.
+                ses = api.sessions.get(res["item"]) or {}
+                bundle = ((api.model or {}).get("items") or {}).get(res["item"])
+                if newest and res["state"] != "found" and not ses.get("tried"):
+                    line = guide.camera_reply(bundle, newest, time.time())
+                    if line:
+                        print("guide chat: the camera sees %s (zone %r) but the model doesn't: draw a zone box "
+                              "around it in the camera window, named as in the room map" % (res["item"], newest.get("zone")))
+                        if ses:
+                            ses["last"] = line
+                        res.update(reply=line, state="found", source="camera", why="model had no sighting; camera memory used")
                 if res.get("chirp"):
                     api.chirps[res["chirp"]] = api.chirps.get(res["chirp"], 0) + 1
                 if res.get("why"):
