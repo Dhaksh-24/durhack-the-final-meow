@@ -1,0 +1,2607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#13233A">
+<meta name="description" content="Trace remembers where your things are and tells you where to look.">
+<title>Trace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Trace: lost-item finder.
+   Layout: power-on screen (fixed, underneath) -> main app (revealed by an iris from the mascot).
+   One mascot element (#agent) sits above everything: centred on the power-on screen, bottom-right in the app.
+   Flat colours only: no gradients, glow or heavy shadows. Amber is reserved for the "found it" moment. */
+:root {
+  --bg: #13233A;
+  --card: #1A2F4A;
+  --card-hi: #203A5A;
+  --line: #2A4763;
+  --teal: #6CC4B6;
+  --teal-line: #3A7277;
+  --mint: #8ED6CA;
+  --mint-2: #A8DCC9;
+  --text: #E8F1EE;
+  --muted: #A9BDC4;
+  --quiet: #8FA6BD;        /* offline / error: grey-blue, always with an icon and words */
+  --amber: #F2C879;        /* found it, nothing else */
+  --navy: #13233A;
+  --font-display: "Sora", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --ease: cubic-bezier(.65, 0, .35, 1);
+  --pop: cubic-bezier(.3, 1.4, .5, 1);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+body:not(.on) { overflow: hidden; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: default; }
+:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+main:focus { outline: none; }
+[hidden] { display: none !important; }
+.sr { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.mono { font-family: var(--font-mono); }
+.i { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.i.sm { width: 15px; height: 15px; }
+.i.lg { width: 22px; height: 22px; }
+
+/* ------------------------------------------------------------ mascot */
+.mascot { display: block; width: 100%; height: 100%; overflow: visible; }
+.mini { display: inline-block; flex: none; }
+.mascot .m-rings, .mascot .m-orb, .mascot .m-ripples, .mascot .m-orbit {
+  transform-box: view-box; transform-origin: 60px 60px;
+}
+.mascot .ring { fill: none; stroke: var(--teal); stroke-width: 1.3; transition: opacity .6s; }
+.mascot .ring-inner { opacity: .45; }
+.mascot .ring-outer { opacity: .25; }
+.mascot .m-body { fill: var(--teal); transition: fill .6s; }
+.mascot .m-face { fill: var(--mint); transition: fill .6s; }
+.mascot .face { opacity: 0; transition: opacity .2s; }
+.mascot .face path { fill: none; stroke: var(--navy); stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; }
+.mascot .face .fill { fill: var(--navy); stroke: none; }
+.mascot .face .shine { fill: #FFFFFF; stroke: none; }
+.mascot .orbit { fill: none; stroke: var(--teal); stroke-width: 3.2; stroke-linecap: round; }
+.mascot .m-orbit { opacity: 0; transition: opacity .2s; }
+.mascot .spark { fill: var(--amber); opacity: 0; transform-box: fill-box; transform-origin: center; }
+.mascot .rip { fill: none; stroke: var(--teal); stroke-width: 1.3; opacity: 0; transform-box: view-box; transform-origin: 60px 60px; }
+
+[data-state="asleep"] .face-asleep,
+[data-state="idle"] .face-idle,
+[data-state="searching"] .face-search,
+[data-state="found"] .face-found { opacity: 1; }
+
+[data-state="asleep"] .m-body { fill: #4A8B84; }
+[data-state="asleep"] .m-face { fill: #6EA79F; }
+[data-state="asleep"] .ring { opacity: .14; }
+
+[data-state="idle"] .m-rings,
+[data-state="searching"] .m-rings,
+[data-state="found"] .m-rings { animation: breathe 3.6s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.05); opacity: .55; } }
+
+[data-state="searching"] .m-orbit { opacity: 1; animation: spin 1.1s linear infinite; }
+[data-state="searching"] .look { animation: look 1.7s ease-in-out infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes look { 0%, 100% { transform: translateX(-2.6px); } 50% { transform: translateX(2.6px); } }
+
+[data-state="found"] .m-orb { animation: hop .75s var(--pop); }
+@keyframes hop { 0% { transform: translateY(0); } 35% { transform: translateY(-9px); } 65% { transform: translateY(0); } 82% { transform: translateY(-2px); } 100% { transform: translateY(0); } }
+[data-state="found"] .spark { animation: pop .6s var(--pop) forwards; }
+[data-state="found"] .spark.s2 { animation-delay: .14s; }
+@keyframes pop { 0% { opacity: 0; transform: scale(0) rotate(-40deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+
+[data-state="found"] .rip, .sonar .rip { animation: ripple 1.3s ease-out; }
+[data-state="found"] .rip.r2, .sonar .rip.r2 { animation-delay: .28s; }
+[data-state="found"] .rip.r3, .sonar .rip.r3 { animation-delay: .56s; }
+@keyframes ripple { 0% { opacity: .75; transform: scale(1); } 100% { opacity: 0; transform: scale(2); } }
+
+/* ------------------------------------------------------------ the corner agent */
+.agent {
+  position: fixed; left: 0; top: 0; z-index: 60;
+  width: 168px; height: 168px; padding: 0; margin: 0;
+  border: 0; border-radius: 50%; background: transparent;
+  transform-origin: 0 0;
+  transition: transform 650ms var(--ease), opacity 150ms linear;
+  -webkit-tap-highlight-color: transparent;
+}
+.agent:not(.placed) { opacity: 0; }
+body:not(.on) .agent { pointer-events: none; cursor: default; }
+.agent:focus-visible { outline: 5px solid var(--mint); outline-offset: 2px; }
+.agent:hover .ring-inner { opacity: .7; }
+
+.bubble {
+  position: fixed; right: 20px; bottom: 100px; z-index: 56;
+  max-width: min(300px, calc(100vw - 40px));
+  background: var(--card); color: var(--text);
+  border: 1px solid var(--teal); border-radius: 14px;
+  padding: 10px 14px 12px; font-size: 14.5px; line-height: 1.45;
+  opacity: 0; transform: translateY(6px);
+  transition: opacity .35s ease, transform .35s ease;
+  pointer-events: none; cursor: pointer;
+}
+.bubble.show { opacity: 1; transform: none; pointer-events: auto; }
+.bubble::after {
+  content: ""; position: absolute; right: 26px; bottom: -7px; width: 12px; height: 12px;
+  background: var(--card); border-right: 1px solid var(--teal); border-bottom: 1px solid var(--teal);
+  transform: rotate(45deg);
+}
+.bubble .who { display: block; font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--teal); margin-bottom: 2px; }
+.bubble p { margin: 0; }
+
+/* ------------------------------------------------------------ chat panel */
+.chat {
+  position: fixed; right: 16px; bottom: 100px; z-index: 55;
+  width: min(380px, calc(100vw - 32px));
+  height: min(540px, calc(100vh - 124px));
+  height: min(540px, calc(100dvh - 124px));
+  display: flex; flex-direction: column;
+  background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  transform-origin: calc(100% - 26px) calc(100% + 40px);
+  overflow: hidden;
+}
+.chat-head { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 14px; border-bottom: 1px solid var(--line); }
+.chat-head .mini { width: 40px; height: 40px; flex: none; }
+.chat-head .who { flex: 1; min-width: 0; }
+.chat-head h2 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 17px; letter-spacing: -.01em; line-height: 1.2; }
+.chat-state { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--muted); }
+.chat-state .i { width: 14px; height: 14px; color: var(--teal); }
+.chat-state[data-state="found"] { color: var(--amber); }
+.chat-state[data-state="found"] .i { color: var(--amber); }
+.icon-btn {
+  width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+}
+.icon-btn:hover { color: var(--text); border-color: var(--line); }
+.chat-log { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; overscroll-behavior: contain; }
+.msg { max-width: 86%; padding: 9px 13px; border-radius: 14px; font-size: 14.5px; line-height: 1.45; }
+.msg p { margin: 0; }
+.msg.trace { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.user { align-self: flex-end; background: var(--teal); color: var(--navy); border-bottom-right-radius: 4px; font-weight: 500; }
+.msg .show-btn {
+  margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: 1px solid var(--teal-line); color: var(--mint);
+  border-radius: 999px; padding: 4px 11px 4px 9px; font-size: 13px; font-weight: 500;
+}
+.msg .show-btn:hover { border-color: var(--teal); }
+.msg.typing { display: inline-flex; gap: 5px; align-items: center; padding: 13px 14px; }
+.msg.typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--teal); animation: dot 1s ease-in-out infinite; }
+.msg.typing span:nth-child(2) { animation-delay: .15s; }
+.msg.typing span:nth-child(3) { animation-delay: .3s; }
+@keyframes dot { 0%, 100% { opacity: .3; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-3px); } }
+.suggest { display: flex; gap: 8px; padding: 2px 14px 10px; overflow-x: auto; scrollbar-width: none; }
+.suggest::-webkit-scrollbar { display: none; }
+.suggest button {
+  flex: none; background: transparent; border: 1px solid var(--line); color: var(--mint);
+  border-radius: 999px; padding: 7px 13px; font-size: 13px; white-space: nowrap;
+}
+.suggest button:hover { border-color: var(--teal); }
+.chat-form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+.chat-form input {
+  flex: 1; min-width: 0; height: 44px; padding: 0 14px; border-radius: 12px;
+  background: var(--bg); border: 1px solid var(--line); font-size: 15px;
+}
+.chat-form input::placeholder { color: var(--muted); }
+.chat-form input:focus { border-color: var(--teal); }
+.send-btn {
+  width: 44px; height: 44px; flex: none; border-radius: 12px; border: 0;
+  background: var(--teal); color: var(--navy); display: grid; place-items: center;
+}
+.send-btn:disabled { background: var(--line); color: var(--muted); }
+
+/* ------------------------------------------------------------ power-on screen */
+.boot {
+  position: fixed; inset: 0; z-index: 1; overflow-y: auto; overflow-x: hidden;
+  background: var(--bg);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 20px 16px 32px;
+}
+.boot-brand { align-self: stretch; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; max-width: 1120px; width: 100%; margin: 0 auto; }
+.wordmark { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: -.03em; line-height: 1; margin: 0; }
+.boot-brand .tag { font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+.boot-main { flex: 1; width: 100%; max-width: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding-top: 16px; }
+.boot-stage { position: relative; width: 168px; height: 168px; margin: 28px 0 22px; }
+.boot-slot { position: absolute; inset: 0; }
+.boot-rings { position: absolute; left: 50%; top: 50%; width: 760px; height: 760px; margin: -380px 0 0 -380px; pointer-events: none; }
+.boot-rings circle { fill: none; stroke: var(--line); stroke-width: 1; transform-box: view-box; transform-origin: 380px 380px; }
+.boot-rings circle:nth-child(2) { stroke-dasharray: 2 6; }
+.sonar-bg .boot-rings circle { animation: bgring 1.4s ease-out; }
+.sonar-bg .boot-rings circle:nth-child(2) { animation-delay: .12s; }
+.sonar-bg .boot-rings circle:nth-child(3) { animation-delay: .24s; }
+.sonar-bg .boot-rings circle:nth-child(4) { animation-delay: .36s; }
+@keyframes bgring { 0% { stroke: var(--line); } 30% { stroke: var(--teal); } 100% { stroke: var(--line); } }
+.boot-title { font-family: var(--font-display); font-weight: 600; font-size: 26px; letter-spacing: -.02em; margin: 0; line-height: 1.2; position: relative; }
+.boot-sub { color: var(--muted); margin: 8px 0 24px; max-width: 30ch; position: relative; }
+.btn-wake {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  min-width: 220px; height: 58px; padding: 0 28px; border-radius: 999px;
+  background: var(--teal); color: var(--navy); border: 0;
+  font-family: var(--font-display); font-weight: 600; font-size: 18px; letter-spacing: -.01em;
+  transition: background .2s, transform .15s;
+}
+.btn-wake:hover { background: var(--mint); }
+.btn-wake:active { transform: scale(.98); }
+.btn-wake:disabled { background: var(--card-hi); color: var(--muted); }
+.btn-wake .i { width: 20px; height: 20px; stroke-width: 2; }
+.checklist {
+  position: relative; list-style: none; margin: 28px 0 0; padding: 6px 16px; width: 100%;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; text-align: left;
+}
+.ck-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); color: var(--muted); }
+.ck-row:first-child { border-top: 0; }
+.ck-icon { position: relative; width: 22px; height: 22px; flex: none; border-radius: 50%; border: 1.5px solid var(--line); display: grid; place-items: center; transition: background .25s, border-color .25s; }
+.ck-icon .i { width: 14px; height: 14px; stroke-width: 2.4; color: var(--navy); opacity: 0; transform: scale(.5); transition: opacity .2s, transform .25s var(--pop); }
+.ck-row[data-state="active"] .ck-icon { border-color: var(--teal); border-top-color: transparent; animation: spin .8s linear infinite; }
+.ck-row[data-state="done"] { color: var(--text); }
+.ck-row[data-state="done"] .ck-icon { background: var(--teal); border-color: var(--teal); }
+.ck-row[data-state="done"] .ck-icon .i { opacity: 1; transform: scale(1); }
+.ck-text { flex: 1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 10px; }
+.ck-detail { font-family: var(--font-mono); font-size: 12.5px; color: var(--teal); }
+.boot-foot { margin-top: 18px; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); letter-spacing: .04em; display: inline-flex; align-items: center; gap: 6px; position: relative; }
+
+/* ------------------------------------------------------------ app shell */
+#app { position: relative; z-index: 2; min-height: 100vh; background: var(--bg); visibility: hidden; }
+body.on #app { visibility: visible; }
+.top { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); }
+.top-inner { max-width: 1160px; margin: 0 auto; padding: 12px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.brand { display: flex; align-items: center; gap: 9px; margin-right: auto; }
+.brand .mini { width: 32px; height: 32px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  font-size: 12.5px; padding: 4px 10px 4px 8px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.chip .i { width: 14px; height: 14px; }
+.chip.secure { color: var(--mint); border-color: var(--teal-line); }
+.chip.offline { color: var(--quiet); border-style: dashed; border-color: var(--quiet); }
+.chip.demo { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--mint-2); border-style: dashed; border-color: var(--mint-2); }
+.switch {
+  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 6px 0 12px;
+  background: transparent; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; color: var(--muted);
+}
+.switch:hover { color: var(--text); border-color: var(--teal-line); }
+.switch .track { position: relative; width: 38px; height: 24px; border-radius: 999px; background: var(--teal); }
+.switch .knob { position: absolute; top: 4px; left: 18px; width: 16px; height: 16px; border-radius: 50%; background: var(--navy); transition: left .2s var(--ease); }
+.switch.off .knob { left: 4px; }
+.switch.off .track { background: var(--line); }
+@media (max-width: 420px) { .switch .lbl { display: none; } .switch { padding-left: 8px; } }
+/* voice toggles: icon + word, state shown by icon, word and outline (never colour alone) */
+.hbtn {
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px; border-radius: 999px;
+  background: transparent; border: 1px solid var(--line); color: var(--muted); font-size: 13px; white-space: nowrap;
+}
+.hbtn:hover { color: var(--text); border-color: var(--teal-line); }
+.hbtn[aria-pressed="true"] { color: var(--mint); border-color: var(--teal-line); }
+.hbtn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); display: none; }
+.hbtn.listening .dot { display: inline-block; animation: blink 1.8s ease-in-out infinite; }
+.hbtn.awake { background: var(--teal); color: var(--navy); border-color: var(--teal); }
+.hbtn.awake .dot { background: var(--navy); }
+.hbtn.unavailable { border-style: dashed; color: var(--quiet); }
+@media (max-width: 560px) {
+  .hbtn .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .hbtn { padding: 0 10px; }
+  .top-inner > .hbtn, .top-inner > .vwrap { order: 1; }
+}
+/* voice settings panel (opens from the Voice button) */
+.vwrap { position: relative; }
+.vpanel {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 264px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px;
+  display: grid; gap: 12px;
+}
+@media (max-width: 560px) { .vwrap { position: static; } .vpanel { left: 16px; right: 16px; width: auto; top: auto; margin-top: 8px; } }
+.vp-title { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 15px; }
+.vp-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  padding: 0; background: transparent; border: 0; color: var(--text); font-size: 14px; text-align: left;
+}
+.vp-row .track { position: relative; width: 38px; height: 24px; flex: none; border-radius: 999px; background: var(--line); }
+.vp-row .knob { position: absolute; top: 4px; left: 4px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: left .2s var(--ease); }
+.vp-row[aria-checked="true"] .track { background: var(--teal); }
+.vp-row[aria-checked="true"] .knob { left: 18px; background: var(--navy); }
+.vp-label { font-size: 12px; color: var(--muted); margin: 0 0 -6px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; padding: 3px; gap: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.seg button {
+  height: 36px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-weight: 500;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.seg button .i { width: 14px; height: 14px; opacity: 0; }
+.seg button[aria-checked="true"] { background: var(--teal); color: var(--navy); font-weight: 600; }
+.seg button[aria-checked="true"] .i { opacity: 1; }
+.vp-note { margin: 0; font-size: 12px; color: var(--muted); }
+.mic-btn {
+  width: 44px; height: 44px; flex: none; border-radius: 12px; display: grid; place-items: center;
+  background: transparent; border: 1px solid var(--teal); color: var(--mint);
+}
+.mic-btn:hover { background: var(--card-hi); }
+.mic-btn[aria-pressed="true"] { background: var(--teal); color: var(--navy); }
+.mic-btn.unavailable { border-style: dashed; border-color: var(--quiet); color: var(--quiet); }
+/* Trace listening ("Hey Trace" heard): the inner ring firms up and the orbit arc circles */
+.agent[data-ear="awake"] .ring-inner { opacity: 1; stroke-width: 2.4; }
+.agent[data-ear="awake"] .m-orbit { opacity: 1; animation: spin 1.6s linear infinite; }
+/* Trace speaking: the smile group nods gently */
+.agent[data-speaking="true"] .face > path:last-child { animation: talk .32s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: center; }
+@keyframes talk { from { transform: scaleY(1); } to { transform: scaleY(1.6); } }
+.chat-state[data-state="listening"] .i { color: var(--mint); }
+@media (max-width: 560px) { .top-inner > .switch { order: 1; } .top-inner > .chip { order: 2; } }
+
+.wrap { max-width: 1160px; margin: 0 auto; padding: 0 16px; }
+main { padding-bottom: 128px; }
+.hero { padding: 28px 0 8px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.eyebrow b { color: var(--text); font-weight: 500; }
+.search { position: relative; }
+.search > .i { position: absolute; left: 18px; top: 50%; margin-top: -11px; color: var(--teal); pointer-events: none; }
+.search input {
+  width: 100%; height: 62px; padding: 0 128px 0 52px; border-radius: 14px;
+  background: var(--card); border: 1px solid var(--line); font-size: 18px;
+  -webkit-appearance: none; appearance: none;
+}
+.search input::placeholder { color: var(--muted); }
+.search input:focus { border-color: var(--teal); }
+.search input::-webkit-search-cancel-button { display: none; }
+.ask-btn {
+  position: absolute; right: 8px; top: 8px; height: 46px; padding: 0 16px; border-radius: 10px;
+  border: 0; background: var(--teal); color: var(--navy); font-weight: 600; font-size: 14.5px;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.ask-btn:hover { background: var(--mint); }
+.ask-btn .mini { width: 22px; height: 22px; }
+@media (max-width: 480px) {
+  .search input { font-size: 16px; padding-right: 92px; height: 58px; }
+  .ask-btn { height: 42px; padding: 0 12px; }
+  .ask-btn .long { display: none; }
+}
+.filter-note { margin: 10px 2px 0; font-size: 13.5px; color: var(--muted); }
+.filter-note:empty { margin: 0; }
+
+.banner {
+  display: flex; align-items: center; gap: 12px; margin: 14px 0 0; padding: 12px 14px;
+  border: 1px dashed var(--quiet); border-radius: 12px; background: var(--card); color: var(--text);
+}
+.banner > .i { color: var(--quiet); }
+.banner p { margin: 0; flex: 1; font-size: 14px; }
+.banner p span { color: var(--muted); }
+.btn-quiet {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 10px;
+  background: transparent; border: 1px solid var(--line); color: var(--mint); font-size: 13.5px; font-weight: 500; white-space: nowrap;
+}
+.btn-quiet:hover { border-color: var(--teal); }
+
+.sec-head { display: flex; align-items: baseline; gap: 10px; margin: 30px 0 12px; }
+.sec-head h2 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 16px; letter-spacing: -.01em; }
+.sec-head .count { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.sec-head .rule { flex: 1; height: 1px; background: var(--line); align-self: center; }
+
+/* cameras */
+.cams { list-style: none; margin: 0; padding: 0 0 4px; display: flex; gap: 10px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.cams > li { flex: none; scroll-snap-align: start; display: flex; }
+.cam {
+  min-width: 168px; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px 14px; color: var(--text); transition: border-color .15s;
+}
+button.cam:hover { border-color: var(--teal-line); }
+.cam-name { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--text); }
+.cam .watch {
+  margin-top: 12px; display: flex; align-items: center; justify-content: center; gap: 6px; height: 34px; border-radius: 9px;
+  border: 1px solid var(--teal); color: var(--mint); font-size: 13px; font-weight: 600; transition: background .15s, color .15s;
+}
+.cam .watch .i { width: 15px; height: 15px; }
+button.cam:hover .watch { background: var(--teal); color: var(--navy); }
+.cam.down .watch { border-style: dashed; border-color: var(--quiet); color: var(--quiet); }
+.cam-name .i { color: var(--teal); }
+.cam.down .cam-name .i { color: var(--quiet); }
+.cam-foot { margin-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--mint); }
+.live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); }
+.down-lbl { display: inline-flex; align-items: center; gap: 5px; color: var(--quiet); }
+.down-lbl .i { width: 14px; height: 14px; }
+.cam-count { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.cams > li.cams-empty {
+  flex: 1; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 11px 14px; background: var(--card);
+  border: 1px dashed var(--line); border-radius: 12px; font-size: 13.5px; color: var(--muted);
+}
+.cams-empty .cam-name .i { color: var(--quiet); }
+.cams-empty code { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); }
+
+/* layout */
+.cols { display: grid; gap: 0 28px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1040px) { .cols { grid-template-columns: minmax(0, 1fr) 320px; } }
+
+/* items */
+.items { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 720px) { .items { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.item {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 14px;
+  padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  animation: rise .45s var(--ease) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.thumb {
+  position: relative; width: 64px; height: 64px; border-radius: 10px; overflow: hidden;
+  background: var(--bg); border: 1px solid var(--line); display: grid; place-items: center; color: var(--teal);
+}
+.thumb .i { width: 26px; height: 26px; stroke-width: 1.5; }
+.thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.item-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.item-name { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 16px; line-height: 1.3; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.view-chip { font-size: 12px; padding: 2px 9px 2px 7px; }
+.view-chip.in { color: var(--mint); border-color: var(--teal-line); }
+.view-chip.out { color: var(--quiet); }
+.item-sentence { margin: 6px 0 0; font-size: 15px; }
+.item-flag { margin: 6px 0 0; display: flex; align-items: flex-start; gap: 6px; font-size: 13.5px; color: var(--mint-2); }
+.item-flag .i { margin-top: 2px; }
+.item-meta { margin: 10px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 13px; color: var(--muted); }
+.item-meta span { display: inline-flex; align-items: center; gap: 5px; }
+.item-meta .cam-t { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+.item-meta .time { font-family: var(--font-mono); font-size: 12px; }
+.item-meta .i { width: 14px; height: 14px; }
+.item-foot { margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.btn-find {
+  display: inline-flex; align-items: center; gap: 7px; height: 40px; padding: 0 16px; border-radius: 10px;
+  background: transparent; border: 1px solid var(--teal); color: var(--mint); font-weight: 600; font-size: 14px;
+  transition: background .15s, color .15s;
+}
+.btn-find:hover { background: var(--teal); color: var(--navy); }
+@media (max-width: 400px) {
+  .item { grid-template-columns: 52px minmax(0, 1fr); gap: 12px; padding: 14px; }
+  .thumb { width: 52px; height: 52px; }
+}
+
+.conf {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px 4px 9px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--line); font-size: 13px; white-space: nowrap; color: var(--text);
+}
+.conf .bars { width: 16px; height: 14px; flex: none; }
+.conf .bars rect { fill: var(--line); }
+.conf .bars rect.on { fill: var(--teal); }
+.conf .pct { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); }
+.conf[data-level="1"] { color: var(--quiet); border-style: dashed; }
+.conf[data-level="1"] .bars rect.on { fill: var(--quiet); }
+
+/* loading / empty */
+.sk-card { display: grid; grid-template-columns: 64px 1fr; gap: 14px; padding: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.sk { background: var(--card-hi); border-radius: 6px; animation: sk 1.4s ease-in-out infinite; }
+@keyframes sk { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+.state-card {
+  grid-column: 1 / -1; text-align: center; padding: 36px 20px; border: 1px dashed var(--line); border-radius: 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.state-card .art { width: 132px; height: 84px; margin-bottom: 8px; color: var(--teal); }
+.state-card h3 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 18px; letter-spacing: -.01em; }
+.state-card p { margin: 0; color: var(--muted); max-width: 40ch; }
+.state-card .btn-quiet { margin-top: 12px; }
+/* "No items yet": one short row instead of a tall card, so an empty room doesn't leave a gap */
+.state-card.compact { flex-direction: row; align-items: center; text-align: left; gap: 18px; padding: 16px 20px; }
+.state-card.compact .art { width: 84px; height: 54px; margin: 0; flex: none; }
+.state-card.compact h3 { font-size: 15.5px; }
+.state-card.compact p { max-width: none; font-size: 13.5px; margin-top: 3px; }
+@media (max-width: 420px) { .state-card.compact .art { display: none; } }
+
+/* activity */
+.feed { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.feed li { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; padding: 12px 14px; border-top: 1px solid var(--line); }
+.feed li:first-child { border-top: 0; }
+.feed .ico { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; color: var(--teal); }
+.feed .ico .i { width: 16px; height: 16px; }
+.feed .what { font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.feed .what b { font-weight: 600; }
+.feed .when { margin-top: 3px; font-family: var(--font-mono); font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+.feed .empty { display: block; color: var(--muted); font-size: 14px; padding: 18px 14px; }
+
+/* ------------------------------------------------------------ found view */
+.found { position: fixed; inset: 0; z-index: 30; background: var(--bg); overflow-y: auto; overscroll-behavior: contain; }
+.found-inner { max-width: 1120px; margin: 0 auto; padding: 14px 16px 132px; }
+.found-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.back-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px 0 10px;
+  background: transparent; border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-weight: 500;
+}
+.back-btn:hover { border-color: var(--teal-line); }
+.found-grid { display: grid; gap: 22px; margin-top: 20px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .found-grid { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 32px; align-items: start; } }
+.shot {
+  position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden;
+  background: var(--card); border: 1px solid var(--line);
+}
+.shot img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: fill; }
+.shot-grid { position: absolute; inset: 0; color: var(--line); }
+.shot-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 14px; text-align: center; padding: 16px; }
+.shot-state .i { width: 26px; height: 26px; color: var(--quiet); }
+.shot-state .spinner { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--teal); animation: spin .8s linear infinite; }
+.shot-tag {
+  position: absolute; display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--text);
+}
+.shot-tag .i { width: 13px; height: 13px; color: var(--teal); }
+.shot-tag.tl { left: 10px; top: 10px; }
+.shot-tag.tr { right: 10px; top: 10px; text-transform: none; letter-spacing: 0; }
+.shot-tag.bl { left: 10px; bottom: 10px; color: var(--mint-2); border-style: dashed; border-color: var(--mint-2); }
+.shot-tag .down { color: var(--quiet); }
+@media (max-width: 480px) {
+  .shot-tag { font-size: 10.5px; padding: 3px 7px; gap: 4px; }
+  .shot-tag.tl { left: 6px; top: 6px; } .shot-tag.tr { right: 6px; top: 6px; } .shot-tag.bl { left: 6px; bottom: 6px; }
+  .box-tag { font-size: 11.5px; padding: 2px 7px; }
+}
+.box { position: absolute; border: 2px solid var(--amber); border-radius: 4px; animation: lock .55s var(--pop) both .1s; }
+@keyframes lock { from { opacity: 0; transform: scale(1.5); } to { opacity: 1; transform: none; } }
+.box::before, .box::after { content: ""; position: absolute; width: 10px; height: 10px; border: 3px solid var(--amber); }
+.box::before { left: -5px; top: -5px; border-right: 0; border-bottom: 0; }
+.box::after { right: -5px; bottom: -5px; border-left: 0; border-top: 0; }
+.box-tag {
+  position: absolute; left: -2px; bottom: calc(100% + 6px); white-space: nowrap;
+  background: var(--amber); color: var(--navy); font-weight: 600; font-size: 12.5px; padding: 3px 9px; border-radius: 6px;
+}
+.box.top-edge .box-tag { bottom: auto; top: calc(100% + 6px); }
+.found-label { display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--amber); }
+.found-label .i { width: 16px; height: 16px; }
+.found-label.maybe { color: var(--mint-2); }
+.found-title { margin: 6px 0 0; font-family: var(--font-display); font-weight: 600; font-size: 20px; letter-spacing: -.01em; }
+.found-sentence { margin: 10px 0 0; font-family: var(--font-display); font-weight: 500; font-size: clamp(23px, 5.4vw, 30px); line-height: 1.28; letter-spacing: -.015em; }
+.found-flag { margin: 12px 0 0; display: flex; gap: 8px; align-items: flex-start; color: var(--mint-2); }
+.found-flag .i { margin-top: 3px; }
+.facts { margin: 20px 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.facts div { padding: 12px 14px; border-left: 1px solid var(--line); min-width: 0; }
+.facts div:first-child { border-left: 0; }
+.facts dt { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.facts dd { margin: 0; font-family: var(--font-mono); font-size: 13.5px; overflow-wrap: anywhere; }
+.facts dd.view-in { color: var(--mint); }
+.found-conf { margin-top: 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.found-conf .note { font-size: 13.5px; color: var(--muted); }
+.next { margin-top: 26px; }
+.next h3 { margin: 0 0 10px; font-family: var(--font-display); font-weight: 600; font-size: 16px; }
+.next ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.next li { display: flex; align-items: center; gap: 12px; padding: 11px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.next li .n { font-family: var(--font-mono); font-size: 12px; color: var(--muted); width: 18px; }
+.next li .i { color: var(--teal); }
+.found-missing { text-align: center; padding: 60px 16px; }
+.found-actions { margin-top: 14px; }
+
+/* ------------------------------------------------------------ live camera view */
+.live-view { position: fixed; inset: 0; z-index: 28; background: var(--bg); overflow-y: auto; overscroll-behavior: contain; }
+.live-inner { max-width: 1160px; margin: 0 auto; padding: 14px 16px 132px; }
+.live-bar { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.live-bar h2 { margin: 0; flex: 1; min-width: 0; font-family: var(--font-display); font-weight: 600; font-size: 20px; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--mint); border: 1px solid var(--teal-line);
+}
+.live-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); animation: blink 1.8s ease-in-out infinite; }
+.live-pill .i { width: 14px; height: 14px; }
+.live-pill.down { color: var(--quiet); border: 1px dashed var(--quiet); }
+.live-pill.demo { color: var(--mint-2); border: 1px dashed var(--mint-2); }
+@keyframes blink { 50% { opacity: .3; } }
+.cam-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 14px 0 2px; scrollbar-width: none; }
+.cam-tabs::-webkit-scrollbar { display: none; }
+.cam-tabs button {
+  flex: none; display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px; border-radius: 999px;
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+}
+.cam-tabs button:hover { border-color: var(--teal-line); color: var(--text); }
+.cam-tabs button .i { width: 15px; height: 15px; }
+.cam-tabs button[aria-pressed="true"] { background: var(--teal); border-color: var(--teal); color: var(--navy); }
+.live-grid { display: grid; gap: 22px; margin-top: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 960px) { .live-grid { grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 28px; align-items: start; } }
+.screen-wrap { position: relative; }
+.screen { position: relative; width: 100%; aspect-ratio: var(--ar, 16 / 9); border-radius: 12px; overflow: hidden; background: var(--card); border: 1px solid var(--line); }
+.screen img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: fill; }
+.screen-wrap:fullscreen { display: flex; align-items: center; justify-content: center; background: var(--navy); }
+.screen-wrap:fullscreen .screen { width: min(100vw, calc(100vh * var(--ar, 1.7778))); border-radius: 0; border: 0; }
+.screen-btn {
+  position: absolute; right: 10px; bottom: 10px; width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center;
+  background: var(--bg); border: 1px solid var(--line); color: var(--text);
+}
+.screen-btn:hover { border-color: var(--teal-line); }
+.lbox { position: absolute; padding: 0; margin: 0; background: transparent; border-radius: 4px; cursor: pointer; }
+.lbox.in { border: 2px solid var(--teal); }
+.lbox.out { border: 2px dashed var(--quiet); }
+.lbox .ltag {
+  position: absolute; left: -2px; bottom: calc(100% + 5px); white-space: nowrap;
+  font-size: 12px; font-weight: 600; line-height: 1.5; padding: 1px 8px; border-radius: 6px;
+}
+.lbox.in .ltag { background: var(--teal); color: var(--navy); }
+.lbox.out .ltag { background: var(--bg); color: var(--muted); border: 1px dashed var(--quiet); font-weight: 500; }
+.lbox.top-edge .ltag { bottom: auto; top: calc(100% + 5px); }
+.lbox.right-half .ltag, .box.right-half .box-tag { left: auto; right: -2px; }
+@media (max-width: 480px) { .lbox .ltag { font-size: 11px; padding: 0 6px; } }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend .sw { width: 18px; height: 12px; border-radius: 3px; border: 2px solid var(--teal); }
+.legend .sw.out { border: 2px dashed var(--quiet); }
+.cam-items { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.cam-items li + li { border-top: 1px solid var(--line); }
+.cam-items button {
+  width: 100%; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 12px 14px; background: transparent; border: 0; text-align: left; color: var(--text);
+}
+.cam-items button:hover { background: var(--card-hi); }
+.cam-items .ico { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; color: var(--teal); }
+.cam-items .ico .i { width: 16px; height: 16px; }
+.cam-items .nm { font-weight: 600; font-size: 14.5px; overflow-wrap: anywhere; }
+.cam-items .sub { display: flex; align-items: center; gap: 5px; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+.cam-items .sub .i { width: 13px; height: 13px; }
+.cam-items .sub.in { color: var(--mint); }
+.cam-items .go { color: var(--muted); }
+.cam-items .empty { display: block; padding: 18px 14px; color: var(--muted); font-size: 14px; }
+.live-note { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+
+/* ------------------------------------------------------------ reduced motion: every animation becomes a quick fade */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important; animation-delay: 0ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 150ms !important; transition-property: opacity, color, background-color, border-color, fill !important;
+    scroll-behavior: auto !important;
+  }
+  .ck-row[data-state="active"] .ck-icon { border-top-color: var(--teal); }
+  [data-state="searching"] .m-orbit { opacity: 1; }
+}
+</style>
+</head>
+<body>
+<noscript><p style="padding:24px">Trace needs JavaScript to show your items.</p></noscript>
+
+<!-- ============================================================ power-on screen -->
+<section id="boot" class="boot" aria-labelledby="bootTitle">
+  <div class="boot-brand">
+    <p class="wordmark">Trace</p>
+    <span class="tag">LOST-ITEM FINDER</span>
+  </div>
+  <div class="boot-main">
+    <div class="boot-stage" id="bootStage">
+      <svg class="boot-rings" viewBox="0 0 760 760" aria-hidden="true">
+        <circle cx="380" cy="380" r="122"/><circle cx="380" cy="380" r="184"/><circle cx="380" cy="380" r="262"/><circle cx="380" cy="380" r="360"/>
+      </svg>
+      <div class="boot-slot" id="bootSlot"></div>
+    </div>
+    <h1 class="boot-title" id="bootTitle">Trace is asleep</h1>
+    <p class="boot-sub" id="bootSub">Wake Trace to connect the cameras and see where your things are.</p>
+    <button type="button" class="btn-wake" id="wakeBtn"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v8"/><path d="M7 6.6a7.5 7.5 0 1 0 10 0"/></svg><span>Wake Trace</span></button>
+    <ol class="checklist" id="checklist" aria-label="Start-up checks">
+      <li class="ck-row" data-step="cams" data-state="pending"><span class="ck-icon" aria-hidden="true"></span><span class="ck-text"><span>Connecting cameras</span><span class="ck-detail"></span></span><span class="sr ck-sr">pending</span></li>
+      <li class="ck-row" data-step="room" data-state="pending"><span class="ck-icon" aria-hidden="true"></span><span class="ck-text"><span>Loading room furniture</span><span class="ck-detail"></span></span><span class="sr ck-sr">pending</span></li>
+      <li class="ck-row" data-step="items" data-state="pending"><span class="ck-icon" aria-hidden="true"></span><span class="ck-text"><span>Loading remembered items</span><span class="ck-detail"></span></span><span class="sr ck-sr">pending</span></li>
+      <li class="ck-row" data-step="secure" data-state="pending"><span class="ck-icon" aria-hidden="true"></span><span class="ck-text"><span>Session secured</span><span class="ck-detail"></span></span><span class="sr ck-sr">pending</span></li>
+    </ol>
+    <p class="sr" id="bootLive" aria-live="polite"></p>
+    <p class="boot-foot"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>Video stays on your network</p>
+  </div>
+</section>
+
+<!-- ============================================================ main app -->
+<div id="app" inert>
+  <header class="top">
+    <div class="top-inner">
+      <div class="brand"><span class="mini" id="logoMascot" data-state="idle"></span><span class="wordmark">Trace</span></div>
+      <span class="chip secure" id="statusChip"></span>
+      <span class="chip demo" id="demoChip" hidden title="The cameras could not be reached, so Trace is showing sample items.">Demo data</span>
+      <div class="vwrap">
+        <button type="button" class="hbtn" id="voiceBtn" aria-expanded="false" aria-controls="voicePanel"></button>
+        <div class="vpanel" id="voicePanel" role="group" aria-labelledby="voicePanelTitle" hidden>
+          <p class="vp-title" id="voicePanelTitle">Trace's voice</p>
+          <button type="button" class="vp-row" id="voiceOn" role="switch" aria-checked="true"><span>Read answers aloud</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+          <p class="vp-label" id="genderLabel">Voice</p>
+          <div class="seg" role="radiogroup" aria-labelledby="genderLabel" id="genderSeg">
+            <button type="button" role="radio" data-g="female" aria-checked="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Female</button>
+            <button type="button" role="radio" data-g="male" aria-checked="false"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Male</button>
+          </div>
+          <button type="button" class="btn-quiet" id="voiceTry"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>Hear it</button>
+          <p class="vp-note" id="voiceNote"></p>
+        </div>
+      </div>
+      <button type="button" class="hbtn" id="earBtn" aria-pressed="false" title="Listen for “Hey Trace”"></button>
+      <button type="button" class="switch" id="offBtn" title="Turn Trace off"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v8"/><path d="M7 6.6a7.5 7.5 0 1 0 10 0"/></svg><span class="lbl">Turn off</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <div class="wrap">
+      <h1 class="sr">Trace</h1>
+      <section class="hero" aria-label="Search">
+        <p class="eyebrow" id="eyebrow"></p>
+        <form class="search" id="searchForm" role="search">
+          <svg class="i lg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+          <label class="sr" for="q">What are you looking for?</label>
+          <input id="q" type="search" placeholder="What are you looking for?" autocomplete="off" enterkeyhint="search" spellcheck="false">
+          <button type="submit" class="ask-btn"><span class="mini" data-state="idle" id="askMascot"></span><span>Ask<span class="long"> Trace</span></span></button>
+        </form>
+        <p class="filter-note" id="filterNote" aria-live="polite"></p>
+        <div id="banner"></div>
+      </section>
+
+      <section aria-labelledby="camsHead">
+        <div class="sec-head"><h2 id="camsHead">Live cameras</h2><span class="count" id="camCount"></span><span class="rule"></span></div>
+        <ul class="cams" id="cams"></ul>
+      </section>
+
+      <div class="cols">
+        <section aria-labelledby="itemsHead">
+          <div class="sec-head"><h2 id="itemsHead">Remembered items</h2><span class="count" id="itemCount"></span><span class="rule"></span></div>
+          <div class="items" id="items"></div>
+        </section>
+        <section aria-labelledby="feedHead">
+          <div class="sec-head"><h2 id="feedHead">Recent sightings</h2><span class="rule"></span></div>
+          <ol class="feed" id="feed"></ol>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ============================================================ live camera view -->
+<div class="live-view" id="live" role="dialog" aria-modal="true" aria-labelledby="liveTitle" hidden>
+  <div class="live-inner" id="liveInner"></div>
+</div>
+
+<!-- ============================================================ found view -->
+<div class="found" id="found" role="dialog" aria-modal="true" aria-labelledby="foundTitle" hidden>
+  <div class="found-inner" id="foundInner"></div>
+</div>
+
+<!-- ============================================================ Trace, the corner agent -->
+<div class="bubble" id="bubble" role="status" aria-live="polite"><span class="who">Trace</span><p id="bubbleText"></p></div>
+
+<section class="chat" id="chat" role="dialog" aria-labelledby="chatTitle" hidden>
+  <div class="chat-head">
+    <span class="mini" id="chatMascot" data-state="idle"></span>
+    <div class="who">
+      <h2 id="chatTitle">Trace</h2>
+      <span class="chat-state" id="chatState" data-state="idle"></span>
+    </div>
+    <button type="button" class="icon-btn" id="chatClose" aria-label="Close chat"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <div class="chat-log" id="chatLog" role="log" aria-live="polite" aria-label="Conversation with Trace"></div>
+  <div class="suggest" id="suggest" aria-label="Suggestions">
+    <button type="button">Where are my keys?</button>
+    <button type="button">What did you see last?</button>
+    <button type="button">Find my wallet</button>
+  </div>
+  <form class="chat-form" id="chatForm">
+    <label class="sr" for="chatInput">Message Trace</label>
+    <input id="chatInput" type="text" placeholder="Ask Trace where something is" autocomplete="off" enterkeyhint="send">
+    <button type="button" class="mic-btn" id="micBtn" aria-pressed="false" aria-label="Speak to Trace"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></button>
+    <button type="submit" class="send-btn" id="sendBtn" aria-label="Send"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15"/><path d="M13 6l6 6-6 6"/></svg></button>
+  </form>
+</section>
+
+<p class="sr" id="earLive" role="status" aria-live="assertive"></p>
+<button type="button" class="agent" id="agent" data-state="asleep" aria-label="Trace. Open chat" aria-expanded="false" aria-controls="chat" tabindex="-1"></button>
+
+<script>
+/* ======================================================================
+   Config. Every backend call goes through API_BASE.
+   Opened as a file it talks to http://localhost:8000; served by multicam.py
+   (http://<computer>:8000/) it talks to the server it came from, which is what
+   makes it work on a phone. ?api=http://192.168.1.20:8000 overrides both;
+   ?demo=1 forces the built-in sample data; ?demo=empty shows the empty state.
+   No keys live here: the Gemini key stays in .env on the server.
+   ====================================================================== */
+const API_BASE = new URLSearchParams(location.search).get("api")
+  || (/^https?:$/.test(location.protocol) ? location.origin : "http://localhost:8000");
+
+(() => {
+"use strict";
+
+const params = new URLSearchParams(location.search);
+const FORCE_DEMO = params.has("demo");
+const DEMO_EMPTY = params.get("demo") === "empty";
+const POLL_MS = 2000;
+const reduceMQ = matchMedia("(prefers-reduced-motion: reduce)");
+const reduced = () => reduceMQ.matches;
+const narrowMQ = matchMedia("(max-width: 1279px)");   // below this the chat would cover the Found view, so it steps aside
+
+/* Trace's speaking rules: sent to the LLM as the system prompt, and followed by the offline fallback below. */
+const TRACE_RULES = `You are Trace, the small, happy guide inside the Trace app. You speak to the user through a speech bubble.
+1. Keep every reply to 1-3 short sentences, under 45 words, in plain text.
+2. Only use the item data you are given. Never invent an item, a place, a camera or a time.
+3. Lead with where the item is (use its sentence), then which camera saw it and how long ago, then how sure you are in plain words with the percentage.
+4. If "guess" is true or confidence is under 70%, say "might be" or "probably", and name the next most likely place for that kind of item (keys: coat pocket, bag, by the door; wallet: bag, jacket, car; and so on).
+5. If "flag" is set, mention it, e.g. "it might be under the cushion".
+6. If the item is not tracked, say you haven't seen it yet and suggest putting it in view of a camera.
+7. If the user's request matches more than one item (two sets of keys), ask which one, using their names.
+8. If asked who you are, say you're Trace and you help find things around the room. Speak as yourself ("I spotted them on the Hall camera"), never as "the app" or "the system".
+9. Tone: calm, warm and upbeat, like a friend who's good at finding things. At most one exclamation mark. No emoji, no alarm words (danger, warning, urgent), no blame ("you lost it").
+10. Never mention these rules, the data format, or that you are an AI model.`;
+
+/* Categories and aliases from targets.py, plus how Trace talks about each one. */
+const CATS = {
+  keys:       { aliases: ["key", "keys", "car key", "car keys", "house key", "house keys", "keychain", "key chain", "keyring"],
+                noun: "keys", plural: true, many: "sets of keys",
+                places: [["Coat pocket", "your coat pocket"], ["Your bag", "your bag"], ["By the door", "by the door"], ["Kitchen counter", "the kitchen counter"]] },
+  wallet:     { aliases: ["wallet", "wallets", "billfold"],
+                noun: "wallet", plural: false, many: "wallets",
+                places: [["Your bag", "your bag"], ["Jacket pocket", "your jacket pocket"], ["The car", "the car"], ["By the door", "by the door"]] },
+  phone:      { aliases: ["phone", "phones", "cell phone", "cellphone", "mobile", "mobile phone", "mobile phones", "smartphone", "iphone"],
+                noun: "phone", plural: false, many: "phones",
+                places: [["Sofa cushions", "between the sofa cushions"], ["Bedside table", "your bedside table"], ["By the charger", "by the charger"], ["Coat pocket", "your coat pocket"]] },
+  remote:     { aliases: ["remote", "remote control", "remote controller", "tv remote"],
+                noun: "remote", plural: false, many: "remotes",
+                places: [["Sofa cushions", "between the sofa cushions"], ["Under the coffee table", "under the coffee table"], ["Beside the TV", "beside the TV"], ["Armchair", "the armchair"]] },
+  glasses:    { aliases: ["glasses", "eyeglasses", "eye glasses", "spectacles", "sunglasses"],
+                noun: "glasses", plural: true, many: "pairs of glasses",
+                places: [["Bedside table", "your bedside table"], ["Bathroom shelf", "the bathroom shelf"], ["Desk", "your desk"], ["Jacket pocket", "your jacket pocket"]] },
+  watch:      { aliases: ["watch", "watches", "wristwatch", "wrist watch", "smartwatch"],
+                noun: "watch", plural: false, many: "watches",
+                places: [["Bedside table", "your bedside table"], ["Bathroom sink", "by the bathroom sink"], ["Desk", "your desk"], ["Gym bag", "your gym bag"]] },
+  headphones: { aliases: ["headphones", "headphone", "headset", "earphones", "earbuds", "airpods"],
+                noun: "headphones", plural: true, many: "pairs of headphones",
+                places: [["Your bag", "your bag"], ["Desk", "your desk"], ["Sofa", "the sofa"], ["By the charger", "by the charger"]] },
+  bag:        { aliases: ["bag", "bags", "backpack", "handbag", "rucksack"],
+                noun: "bag", plural: false, many: "bags",
+                places: [["By the door", "by the door"], ["Hallway hooks", "the hallway hooks"], ["The car", "the car"], ["Under the desk", "under the desk"]] },
+};
+
+/* ------------------------------------------------------------ icons */
+const ICON = {
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
+  camera: '<rect x="3" y="6.5" width="13" height="11" rx="2.5"/><path d="M16 10.5l5-3v9l-5-3"/>',
+  cameraOff: '<path d="M3 3l18 18"/><path d="M16 12.5V9l5-2.5v10l-1.5-.75M13.5 17.5H5.5a2.5 2.5 0 0 1-2.5-2.5V9a2.5 2.5 0 0 1 2.5-2.5h1"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M4 4l16 16"/><path d="M9.9 5.8A9.6 9.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.9 3.6M6.4 7.4C3.9 9.1 2.5 12 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.2-1.1"/>',
+  target: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.2"/>',
+  cloudOff: '<path d="M3 3l18 18"/><path d="M8.2 6.9A5.5 5.5 0 0 1 17 11h.5a3.5 3.5 0 0 1 2.4 6M16.5 18H7a4 4 0 0 1-1.7-7.6"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  pin: '<path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
+  back: '<path d="M15 5l-7 7 7 7"/>',
+  refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
+  sparkle: '<path d="M12 3.5c.7 5 1.9 6.6 7.5 7.5-5.6.9-6.8 2.5-7.5 7.5-.7-5-1.9-6.6-7.5-7.5 5.6-.9 6.8-2.5 7.5-7.5z" fill="currentColor" stroke="none"/>',
+  dots: '<circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/>',
+  moon: '<path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/>',
+  expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  shrink: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+  chevron: '<path d="M9 5l7 7-7 7"/>',
+  speaker: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
+  speakerOff: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
+  micOff: '<path d="M3 3l18 18"/><path d="M9 9v2a3 3 0 0 0 5.1 2.1M15 10V6a3 3 0 0 0-5.7-1.3M5.5 11a6.5 6.5 0 0 0 10.4 5.2M18.5 11a6.4 6.4 0 0 1-.6 2.7M12 17.5V21"/>',
+  // categories
+  keys: '<circle cx="8" cy="8" r="4.5"/><circle cx="8" cy="8" r="1.4"/><path d="M11.2 11.2l8.3 8.3M16 16l2.2-2.2M18.4 18.4l1.8-1.8"/>',
+  wallet: '<path d="M17 6.5V5a1.5 1.5 0 0 0-1.9-1.4L5 6.5"/><rect x="3.5" y="6.5" width="17" height="13" rx="2.5"/><path d="M20.5 11h-4a2 2 0 0 0 0 4h4"/>',
+  phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+  remote: '<rect x="8" y="2.5" width="8" height="19" rx="3"/><circle cx="12" cy="7" r="1.6"/><path d="M10.5 12h3M10.5 15h3M10.5 18h3"/>',
+  glasses: '<circle cx="6.5" cy="14" r="3.5"/><circle cx="17.5" cy="14" r="3.5"/><path d="M10 14c.8-.8 3.2-.8 4 0M3 13l1.5-5M21 13l-1.5-5"/>',
+  watch: '<circle cx="12" cy="12" r="5.5"/><path d="M12 9.5V12l1.5 1.5M9 7l.8-4.5h4.4L15 7M9 17l.8 4.5h4.4L15 17"/>',
+  headphones: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4.5" height="6.5" rx="1.8"/><rect x="16.5" y="14" width="4.5" height="6.5" rx="1.8"/>',
+  bag: '<rect x="4.5" y="8" width="15" height="13" rx="3"/><path d="M9 8V6a3 3 0 0 1 6 0v2M4.5 13h15"/>',
+  item: '<rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 12h6"/>',
+};
+const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name] || ICON.item}</svg>`;
+
+/* ------------------------------------------------------------ the mascot */
+function star(cx, cy, r) {
+  const k = r * 0.16;
+  return `M${cx} ${cy - r}Q${cx + k} ${cy - k} ${cx + r} ${cy}Q${cx + k} ${cy + k} ${cx} ${cy + r}Q${cx - k} ${cy + k} ${cx - r} ${cy}Q${cx - k} ${cy - k} ${cx} ${cy - r}Z`;
+}
+function mascotSVG() {
+  return `<svg class="mascot" viewBox="0 0 120 120" aria-hidden="true" focusable="false">
+<g class="m-ripples"><circle class="rip r1" cx="60" cy="60" r="38"/><circle class="rip r2" cx="60" cy="60" r="38"/><circle class="rip r3" cx="60" cy="60" r="38"/></g>
+<g class="m-rings"><circle class="ring ring-outer" cx="60" cy="60" r="56"/><circle class="ring ring-inner" cx="60" cy="60" r="47"/></g>
+<g class="m-orbit"><path class="orbit" d="M60 13A47 47 0 0 1 100.7 36.5"/></g>
+<g class="m-sparkles"><path class="spark s1" d="${star(12, 40, 8.5)}"/><path class="spark s2" d="${star(106, 22, 6)}"/></g>
+<g class="m-orb">
+<circle class="m-body" cx="60" cy="60" r="36"/>
+<circle class="m-face" cx="60" cy="64" r="26"/>
+<g class="face face-asleep"><path d="M46 63q5.5 4.5 11 0M63 63q5.5 4.5 11 0"/><path d="M56 73.5q4 2 8 0"/></g>
+<g class="face face-idle"><path d="M46 64.5q5.5-8 11 0M63 64.5q5.5-8 11 0"/><path d="M53.5 71.5q6.5 5.5 13 0"/></g>
+<g class="face face-search"><g class="look"><path d="M46 64q5.5-4.5 11 0M63 64q5.5-4.5 11 0"/></g><path d="M55.5 72.5q4.5 2.5 9 0"/></g>
+<g class="face face-found"><circle class="fill" cx="51.5" cy="61.5" r="4.8"/><circle class="fill" cx="68.5" cy="61.5" r="4.8"/><circle class="shine" cx="53.2" cy="59.8" r="1.6"/><circle class="shine" cx="70.2" cy="59.8" r="1.6"/><path class="fill" d="M51 69.5h18q-1 9-9 9t-9-9z"/></g>
+</g></svg>`;
+}
+
+/* ------------------------------------------------------------ helpers */
+const $ = (s, el = document) => el.querySelector(s);
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const nowS = () => Date.now() / 1000;
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode: fine */ } },
+};
+const cat = (it) => CATS[it.category] || { noun: it.category || "item", plural: false, many: "items", places: [] };
+const nameOf = (it) => it.name || cap(cat(it).noun);
+const camOf = (it) => it.camera_name || it.camera || "a";
+
+function agoShort(t) {
+  if (!t) return "a while ago";
+  const s = Math.max(0, nowS() - t);
+  if (s < 45) return "just now";
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+function agoLong(t) {
+  if (!t) return "a while ago";
+  const s = Math.max(0, nowS() - t);
+  if (s < 45) return "just now";
+  if (s < 90) return "a minute ago";
+  if (s < 3600) return `${Math.round(s / 60)} minutes ago`;
+  if (s < 5400) return "an hour ago";
+  if (s < 86400) return `${Math.round(s / 3600)} hours ago`;
+  if (s < 172800) return "yesterday";
+  return `${Math.floor(s / 86400)} days ago`;
+}
+function clockTime(t) {
+  if (!t) return "";
+  const d = new Date(t * 1000), today = new Date();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === today.toDateString()) return `Today ${hm}`;
+  const y = new Date(today); y.setDate(today.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return `Yesterday ${hm}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
+}
+function confLevel(c) {
+  if (c >= 0.85) return { level: 4, words: "Very likely" };
+  if (c >= 0.70) return { level: 3, words: "Likely" };
+  if (c >= 0.50) return { level: 2, words: "Probably" };
+  return { level: 1, words: "Not sure" };
+}
+function confPill(c) {
+  const v = typeof c === "number" ? c : 0;
+  const { level, words } = confLevel(v);
+  const bars = [0, 1, 2, 3].map((i) => `<rect x="${i * 4.3}" y="${10 - i * 3}" width="2.8" height="${4 + i * 3}" rx="1" class="${i < level ? "on" : ""}"/>`).join("");
+  return `<span class="conf" data-level="${level}"><svg class="bars" viewBox="0 0 16 14" aria-hidden="true">${bars}</svg><span>${words}</span><span class="pct">${Math.round(v * 100)}%</span></span>`;
+}
+/* "Your keys are on the table" -> "Your keys might be on the table" */
+function hedge(sentence) {
+  if (!sentence) return sentence;
+  return sentence.replace(/\b(is|are)\b/, "might be");
+}
+const sentenceOf = (it) => it.sentence || `Last seen on the ${camOf(it)} camera${it.zone ? `, at the ${it.zone}` : ""}.`;
+const shownSentence = (it) => it.guess ? hedge(sentenceOf(it)) : sentenceOf(it);
+
+/* ------------------------------------------------------------ mock data (same shapes as the API) */
+const T0 = nowS();
+const MOCK_ITEMS = [
+  { id: 3,  name: "Dad's car keys",  category: "keys",       camera: "hall",    camera_name: "Hall",        zone: "Hall table",   box: [593, 365, 701, 449], sentence: "Your keys are on the table, just left of the laptop.", confidence: 0.78, guess: false, flag: null, in_view: true,  ago: 0 },
+  { id: 7,  name: "Phone",           category: "phone",      camera: "kitchen", camera_name: "Kitchen",     zone: "Counter",      box: [560, 300, 650, 340], sentence: "Your phone is on the counter, just right of the kettle.", confidence: 0.91, guess: false, flag: null, in_view: true, ago: 0 },
+  { id: 11, name: "Reading glasses", category: "glasses",    camera: "hall",    camera_name: "Hall",        zone: "Shelf",        box: [300, 170, 375, 205], sentence: "Your glasses are on the shelf, next to the plant.", confidence: 0.52, guess: true, flag: null, in_view: true, ago: 0 },
+  { id: 15, name: "Backpack",        category: "bag",        camera: "hall",    camera_name: "Hall",        zone: "Floor",        box: [205, 395, 300, 515], sentence: "Your bag is on the floor, by the door.", confidence: 0.81, guess: false, flag: null, in_view: true, ago: 0 },
+  { id: 8,  name: "TV remote",       category: "remote",     camera: "living",  camera_name: "Living room", zone: "Coffee table", box: [440, 398, 540, 430], sentence: "Your remote is on the coffee table, in front of the sofa.", confidence: 0.86, guess: false, flag: null, in_view: false, ago: 12 * 60 },
+  { id: 5,  name: "Wallet",          category: "wallet",     camera: "living",  camera_name: "Living room", zone: "Sofa",         box: [255, 300, 335, 338], sentence: "Your wallet is on the sofa, next to the cushion.", confidence: 0.64, guess: false, flag: "possibly under the cushion", in_view: false, ago: 47 * 60 },
+  { id: 12, name: "Headphones",      category: "headphones", camera: "living",  camera_name: "Living room", zone: "Desk",         box: [850, 268, 930, 330], sentence: "Your headphones are on the desk, right of the monitor.", confidence: 0.73, guess: false, flag: null, in_view: false, ago: 3 * 3600 + 600 },
+  { id: 14, name: "Spare house keys", category: "keys",      camera: "kitchen", camera_name: "Kitchen",     zone: "Key hook",     box: [220, 195, 280, 255], sentence: "Your keys are on the hook, by the door.", confidence: 0.88, guess: false, flag: null, in_view: false, ago: 26 * 3600 },
+];
+const MOCK_CAMERAS = [
+  { id: "hall", name: "Hall", live: true },
+  { id: "living", name: "Living room", live: true },
+  { id: "kitchen", name: "Kitchen", live: true },
+  { id: "bedroom", name: "Bedroom", live: false },
+];
+function localISO(t) {
+  const d = new Date(t * 1000), p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+const mock = {
+  items() {
+    if (DEMO_EMPTY) return [];
+    const n = nowS();
+    return MOCK_ITEMS.map(({ ago, ...it }) => ({
+      ...it, frame_w: 960, frame_h: 540,
+      last_time: it.in_view ? n - (it.id % 4) : T0 - ago,
+    }));
+  },
+  cameras() { return MOCK_CAMERAS.map((c) => ({ ...c })); },
+  events() {
+    if (DEMO_EMPTY) return [];
+    const extra = [[0.3, 7], [2, 3], [5, 11], [9, 15], [12, 8], [47, 5], [70, 3], [190, 12], [1560, 14]];
+    return extra.map(([mins, id]) => {
+      const it = MOCK_ITEMS.find((m) => m.id === id);
+      return { item: it.name, zone: it.zone, camera_name: it.camera_name, time: localISO(T0 - mins * 60) };
+    });
+  },
+};
+
+/* Flat schematic "camera frames" for demo mode, drawn at 960x540 like the real frames. */
+function sceneSVG(camId, viewBox) {
+  const F = "#2A4763", F2 = "#335A80", D = "#21405F", WALL = "#1B3250", FLOOR = "#16293F", T = "#86A2B8";
+  const lab = (x, y, t) => `<text x="${x}" y="${y}" fill="${T}" font-family="IBM Plex Mono, monospace" font-size="13" letter-spacing="1.5">${t}</text>`;
+  let s = `<rect width="960" height="540" fill="${WALL}"/>`;
+  if (camId === "hall") {
+    s += `<rect y="400" width="960" height="140" fill="${FLOOR}"/>
+      <rect x="40" y="70" width="140" height="330" rx="4" fill="${D}" stroke="${F2}" stroke-width="2"/><circle cx="160" cy="245" r="5" fill="${T}"/>${lab(56, 96, "DOOR")}
+      <rect x="240" y="205" width="230" height="10" rx="2" fill="${F2}"/><rect x="250" y="215" width="6" height="22" fill="${F}"/><rect x="454" y="215" width="6" height="22" fill="${F}"/>${lab(244, 256, "SHELF")}
+      <rect x="400" y="168" width="40" height="37" rx="4" fill="${F}"/><path d="M420 168c-14-26-30-28-34-46M420 168c4-30 16-40 30-50M420 168c-2-30 0-44-2-60" stroke="#4E8F86" stroke-width="5" fill="none" stroke-linecap="round"/>${lab(386, 100, "PLANT")}
+      <rect x="420" y="449" width="460" height="14" rx="3" fill="${F2}"/><rect x="440" y="463" width="10" height="70" fill="${F}"/><rect x="850" y="463" width="10" height="70" fill="${F}"/>${lab(430, 492, "TABLE")}
+      <path d="M728 360h118l-6 83H734z" fill="${F}" stroke="${F2}" stroke-width="2"/><rect x="712" y="441" width="150" height="8" rx="2" fill="${F2}"/>${lab(752, 345, "LAPTOP")}`;
+  } else if (camId === "living") {
+    s += `<rect y="360" width="960" height="180" fill="${FLOOR}"/>
+      <rect x="70" y="250" width="470" height="110" rx="14" fill="${F}"/><rect x="50" y="330" width="510" height="72" rx="12" fill="${F2}"/><rect x="40" y="300" width="40" height="110" rx="10" fill="${F}"/><rect x="530" y="300" width="40" height="110" rx="10" fill="${F}"/>${lab(80, 428, "SOFA")}
+      <rect x="100" y="268" width="140" height="72" rx="16" fill="${D}" stroke="${F2}" stroke-width="2"/>${lab(110, 258, "CUSHION")}
+      <rect x="300" y="430" width="380" height="14" rx="3" fill="${F2}"/><rect x="320" y="444" width="10" height="60" fill="${F}"/><rect x="650" y="444" width="10" height="60" fill="${F}"/>${lab(560, 470, "COFFEE TABLE")}
+      <rect x="700" y="330" width="250" height="12" rx="2" fill="${F2}"/><rect x="712" y="342" width="10" height="150" fill="${F}"/><rect x="930" y="342" width="10" height="150" fill="${F}"/>${lab(708, 368, "DESK")}
+      <rect x="720" y="215" width="120" height="86" rx="5" fill="${D}" stroke="${F2}" stroke-width="2"/><rect x="772" y="301" width="16" height="29" fill="${F}"/>${lab(736, 205, "MONITOR")}`;
+  } else if (camId === "kitchen") {
+    s += `<rect x="650" y="70" width="220" height="150" rx="4" fill="${D}" stroke="${F2}" stroke-width="2"/><path d="M760 70v150M650 145h220" stroke="${F2}" stroke-width="2"/>${lab(660, 240, "WINDOW")}
+      <rect x="30" y="40" width="140" height="300" rx="4" fill="${D}" stroke="${F2}" stroke-width="2"/>${lab(46, 66, "DOOR")}
+      <rect x="205" y="186" width="100" height="8" rx="2" fill="${F2}"/>${lab(214, 178, "HOOK")}
+      <rect y="340" width="960" height="20" fill="${F2}"/><rect y="360" width="960" height="180" fill="${F}"/><path d="M240 375v150M480 375v150M720 375v150" stroke="${D}" stroke-width="3"/>${lab(20, 392, "COUNTER")}
+      <path d="M478 340l8-66h52l8 66z" fill="${D}" stroke="${F2}" stroke-width="2"/><path d="M538 288q24 4 18 34" stroke="${F2}" stroke-width="6" fill="none"/><rect x="498" y="262" width="28" height="12" rx="4" fill="${F2}"/>${lab(476, 250, "KETTLE")}`;
+  } else {
+    s += `<rect y="380" width="960" height="160" fill="${FLOOR}"/>`;
+  }
+  for (const it of MOCK_ITEMS.filter((m) => m.camera === camId)) {
+    if (DEMO_EMPTY) break;
+    const [x1, y1, x2, y2] = it.box, w = x2 - x1, h = y2 - y1, k = Math.min(w, h) / 24 * 0.9;
+    s += `<g transform="translate(${(x1 + x2) / 2 - 12 * k} ${(y1 + y2) / 2 - 12 * k}) scale(${k})" fill="none" stroke="#A8DCC9" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICON[it.category]}</g>`;
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox || "0 0 960 540"}" preserveAspectRatio="xMidYMid slice">${s}</svg>`;
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+function mockThumb(it) {
+  const [x1, y1, x2, y2] = it.box, size = Math.max(x2 - x1, y2 - y1) * 1.9;
+  const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+  return sceneSVG(it.camera, `${cx - size / 2} ${cy - size / 2} ${size} ${size}`);
+}
+
+/* ------------------------------------------------------------ backend */
+async function api(path, { method = "GET", body, timeout = 3000 } = {}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeout);
+  try {
+    const r = await fetch(API_BASE + path, {
+      method, signal: ctrl.signal, cache: "no-store",
+      headers: body ? { "Content-Type": "application/json", Accept: "application/json" } : { Accept: "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+async function getData(path) {
+  if (FORCE_DEMO) return { ok: false };
+  try { return { ok: true, data: await api(path) }; } catch { return { ok: false }; }
+}
+const asList = (d, key) => Array.isArray(d) ? d : (d && Array.isArray(d[key]) ? d[key] : []);
+// Items built from the model (no multicam: ids like "keys-1") have no photo, so don't ask for one
+const thumbURL = (it) => state.mode === "demo" ? (it.box ? mockThumb(it) : "") : !/^\d+$/.test(String(it.id)) ? "" : `${API_BASE}/api/thumbs/${encodeURIComponent(it.id)}.jpg?v=${Math.floor((it.last_time || 0) / 30)}`;
+const snapURL = (it) => state.mode === "demo" ? sceneSVG(it.camera) : `${API_BASE}/api/snapshots/${encodeURIComponent(it.id)}.jpg?v=${Math.floor(it.last_time || 0)}`;
+
+/* ------------------------------------------------------------ state */
+const state = {
+  power: false, mode: "connecting", everLive: false, lastLiveAt: null,
+  items: null, cameras: [], events: [],
+  query: "", chat: [], chatOpen: false, foundId: null, liveCam: null, busy: false,
+};
+
+const el = {
+  app: $("#app"), boot: $("#boot"), main: $("#main"),
+  agent: $("#agent"), bubble: $("#bubble"), bubbleText: $("#bubbleText"),
+  chat: $("#chat"), chatLog: $("#chatLog"), chatInput: $("#chatInput"), chatForm: $("#chatForm"), chatState: $("#chatState"), chatMascot: $("#chatMascot"), sendBtn: $("#sendBtn"),
+  wakeBtn: $("#wakeBtn"), bootTitle: $("#bootTitle"), bootSub: $("#bootSub"), bootSlot: $("#bootSlot"), bootStage: $("#bootStage"), bootLive: $("#bootLive"),
+  offBtn: $("#offBtn"), statusChip: $("#statusChip"), demoChip: $("#demoChip"), eyebrow: $("#eyebrow"),
+  q: $("#q"), filterNote: $("#filterNote"), banner: $("#banner"),
+  cams: $("#cams"), camCount: $("#camCount"), items: $("#items"), itemCount: $("#itemCount"), feed: $("#feed"),
+  found: $("#found"), foundInner: $("#foundInner"), live: $("#live"), liveInner: $("#liveInner"),
+};
+/* The main app is out of reach while a full-screen view is open; the live view is too while Found sits on top of it. */
+function syncInert() {
+  el.app.inert = !state.power || state.foundId != null || state.liveCam != null;
+  el.live.inert = state.foundId != null;
+}
+el.agent.innerHTML = mascotSVG();
+for (const id of ["logoMascot", "chatMascot", "askMascot"]) $("#" + id).innerHTML = mascotSVG();
+
+/* ------------------------------------------------------------ Trace: state, position, voice */
+const STATE_WORDS = { asleep: ["moon", "Asleep"], idle: ["eye", "Watching"], searching: ["search", "Looking…"], found: ["sparkle", "Found it"] };
+let foundTimer = 0;
+function setAgent(s) {
+  clearTimeout(foundTimer);
+  for (const node of [el.agent, el.chatMascot]) {
+    if (s === "found" && node.dataset.state === "found") { node.dataset.state = "idle"; void node.offsetWidth; }
+    node.dataset.state = s;
+  }
+  if (!ear.awake) renderChatState(s);
+  if (s === "found") foundTimer = setTimeout(() => { if (el.agent.dataset.state === "found") setAgent("idle"); }, 4000);
+}
+
+function renderChatState(s) {
+  const [ic, words] = STATE_WORDS[s] || STATE_WORDS.idle;
+  el.chatState.dataset.state = s;
+  el.chatState.innerHTML = `${icon(ic)}<span>${words}</span>`;
+}
+
+const AGENT = 168, CORNER = 72, GUTTER = 16;
+let agentAt = "boot";
+function agentTransform(where) {
+  if (where === "boot") {
+    const r = el.bootSlot.getBoundingClientRect();
+    return `translate(${r.left}px, ${r.top}px) scale(${r.width / AGENT})`;
+  }
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  return `translate(${vw - GUTTER - CORNER}px, ${vh - GUTTER - CORNER}px) scale(${CORNER / AGENT})`;
+}
+function placeAgent(where) {
+  agentAt = where;
+  el.agent.style.transition = "none";
+  el.agent.style.transform = agentTransform(where);
+  void el.agent.offsetWidth;
+  el.agent.style.transition = "";
+  el.agent.classList.add("placed");
+}
+async function moveAgent(where) {
+  agentAt = where;
+  if (reduced()) {
+    el.agent.style.opacity = "0"; await wait(150);
+    placeAgent(where); el.agent.style.opacity = "1"; await wait(150);
+    return;
+  }
+  el.agent.style.transform = agentTransform(where);
+  await wait(680);
+}
+function agentCentre() {
+  const r = el.agent.getBoundingClientRect();
+  return [r.left + r.width / 2, r.top + r.height / 2];
+}
+function sonar(node) { node.classList.remove("sonar"); void node.offsetWidth; node.classList.add("sonar"); }
+
+let bubbleTimer = 0;
+function hideBubble() { el.bubble.classList.remove("show"); }
+function showBubble(text) {
+  el.bubbleText.textContent = text;
+  el.bubble.classList.add("show");
+  clearTimeout(bubbleTimer);
+  bubbleTimer = setTimeout(hideBubble, 8000);
+}
+/* Trace speaks: into the chat log, and into the bubble while the chat is closed. */
+function say(text, { itemId = null, log = true } = {}) {
+  if (log) addMsg("trace", text, itemId);
+  if (!state.chatOpen) showBubble(text);
+  return speakOut(text);
+}
+
+/* ------------------------------------------------------------ Trace's voice (out loud)
+   Every line Trace says is also spoken. First choice is Kokoro on the server (tts.py via
+   POST /api/speech, offline); if that isn't there (demo mode, kokoro not installed) the
+   browser's own speech voice is used. Toggle: the Voice button, remembered per browser. */
+const voice = {
+  on: store.get("trace.voice") !== "off",
+  gender: store.get("trace.gender") === "male" ? "male" : "female",
+  gen: 0, last: "", speaking: false, stop: null, server: true, engine: null,
+};
+function setSpeaking(on) {
+  voice.speaking = on;
+  el.agent.dataset.speaking = on ? "true" : "false";
+  if (on) stopEar(); else setTimeout(startEar, 250);   // don't let Trace hear itself
+}
+function stopSpeaking() {
+  voice.gen++;
+  if (voice.stop) { voice.stop(); voice.stop = null; }
+  try { speechSynthesis.cancel(); } catch { /* no speech synthesis */ }
+  if (voice.speaking) setSpeaking(false);
+}
+function playBlob(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio(url);
+    const done = (ok) => { URL.revokeObjectURL(url); voice.stop = null; resolve(ok); };
+    voice.stop = () => { a.pause(); done(true); };
+    a.onended = () => done(true);
+    a.onerror = () => done(false);
+    a.play().catch(() => done(false));
+  });
+}
+/* Browser fallback: browsers don't label voices by gender, so go by the usual names. */
+const MALE_NAMES = /\b(male|david|mark|guy|george|ryan|daniel|alex|fred|thomas|arthur|oliver|james|william|christopher|eric|roger|steffan|brian|andrew|liam|aaron|rishi)\b/i;
+const FEMALE_NAMES = /\b(female|zira|aria|jenny|sonia|libby|hazel|susan|samantha|serena|karen|moira|tessa|victoria|natasha|emma|ava|allison|michelle|ana|maisie|clara|catherine|kate|fiona)\b/i;
+function browserVoice(gender) {
+  const vs = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang));
+  const want = gender === "male" ? MALE_NAMES : FEMALE_NAMES;
+  const mine = vs.filter((v) => want.test(v.name) && !(gender === "male" ? FEMALE_NAMES : MALE_NAMES).test(v.name));
+  const natural = (list) => list.find((v) => /natural|neural|online/i.test(v.name));
+  return natural(mine) || mine.find((v) => v.localService) || mine[0] || natural(vs) || vs[0] || null;
+}
+function browserSay(text) {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) return resolve(false);
+    const u = new SpeechSynthesisUtterance(text);
+    const v = browserVoice(voice.gender);
+    if (v) u.voice = v;
+    u.rate = 0.95; u.pitch = voice.gender === "male" ? 0.95 : 1.05;
+    // Some browsers drop onend; never wait longer than the line could take.
+    const guard = setTimeout(() => finish(true), 2500 + text.length * 90);
+    const finish = (ok) => { clearTimeout(guard); voice.stop = null; resolve(ok); };
+    voice.stop = () => { speechSynthesis.cancel(); finish(true); };
+    u.onend = () => finish(true);
+    u.onerror = () => finish(false);
+    speechSynthesis.cancel();
+    speechSynthesis.speak(u);
+  });
+}
+/* One sentence of Kokoro audio from the server, or null (then the browser voice takes over). */
+async function fetchSpeech(text) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(API_BASE + "/api/speech", {
+      method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice: voice.gender }),
+    });
+    if (r.ok) {
+      const engine = r.headers.get("X-Trace-Voice") || "kokoro";   // "edge" (Microsoft, online) or "kokoro" (offline)
+      if (engine !== voice.engine) { voice.engine = engine; renderVoiceBtn(); }
+      return await r.blob();
+    }
+    if (r.status === 503 || r.status === 404 || r.status === 501) voice.server = false;   // no voice on the server: browser from now on
+  } catch { /* network: fall back */ } finally { clearTimeout(t); }
+  return null;
+}
+/* Microsoft's voice, streamed: the audio element plays while the server is still receiving it,
+   so Trace starts talking in under a second. Resolves true when it played to the end. */
+function streamPlay(text) {
+  return new Promise((resolve) => {
+    const a = new Audio(`${API_BASE}/api/speech?${new URLSearchParams({ text, voice: voice.gender })}`);
+    let settled = false;
+    const done = (ok) => { if (settled) return; settled = true; voice.stop = null; resolve(ok); };
+    voice.stop = () => { a.pause(); a.removeAttribute("src"); a.load(); done(true); };   // also closes the stream
+    a.onended = () => done(true);
+    a.onerror = () => done(a.currentTime > 0.5);   // dropped part-way: don't say it all again
+    a.play().catch(() => done(false));
+  });
+}
+async function checkVoiceEngine() {
+  if (state.mode !== "live" || !voice.server) return;
+  try {
+    const { engine } = await api("/api/voice", { timeout: 2000 });
+    if (engine === "none") voice.server = false;
+    if (engine !== voice.engine) { voice.engine = engine; renderVoiceBtn(); }
+  } catch { /* old server without /api/voice: the POST path still reports it */ }
+}
+const sentences = (text) => (text.match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
+/* Speak a line. Long answers go sentence by sentence: the first one plays while the next is
+   being made, so Trace starts talking sooner. Resolves when Trace has finished (or was cut off). */
+async function speakOut(text) {
+  if (!voice.on || !state.power || !text) return;
+  stopSpeaking();
+  const g = voice.gen;
+  voice.last = text;
+  setSpeaking(true);
+  // Microsoft's voice: the whole line in one piece (more natural phrasing), streamed so it starts at once.
+  if (state.mode === "live" && voice.server && voice.engine !== "kokoro") {
+    const ok = await streamPlay(text);
+    if (g !== voice.gen) return;
+    if (ok) { setSpeaking(false); return; }
+    checkVoiceEngine();                    // probably offline now: the paths below take over
+  }
+  // Kokoro (offline) is slow per sentence, so it goes one sentence at a time.
+  const parts = sentences(text);
+  let i = 0;
+  if (state.mode === "live" && voice.server) {
+    let next = fetchSpeech(parts[0]);
+    for (; i < parts.length; i++) {
+      const blob = await next;
+      if (g !== voice.gen) return;
+      if (!blob) break;
+      if (i + 1 < parts.length) next = fetchSpeech(parts[i + 1]);
+      if (!(await playBlob(blob))) break;            // e.g. autoplay blocked: browser voice says the rest
+      if (g !== voice.gen) return;
+    }
+  }
+  if (i < parts.length && g === voice.gen) await browserSay(parts.slice(i).join(" "));
+  if (g === voice.gen) setSpeaking(false);
+}
+function renderVoiceBtn() {
+  const b = $("#voiceBtn");
+  const g = voice.gender === "male" ? "Male" : "Female";
+  b.setAttribute("aria-pressed", String(voice.on));
+  b.innerHTML = `${icon(voice.on ? "speaker" : "speakerOff")}<span class="lbl">${voice.on ? `Voice: ${g}` : "Voice off"}</span>`;
+  b.setAttribute("aria-label", voice.on ? `Voice: ${g}. Voice settings` : "Voice off. Voice settings");
+  $("#voiceOn").setAttribute("aria-checked", String(voice.on));
+  for (const r of document.querySelectorAll("#genderSeg [role=radio]")) {
+    const on = r.dataset.g === voice.gender;
+    r.setAttribute("aria-checked", String(on));
+    r.tabIndex = on ? 0 : -1;               // one tab stop; arrow keys move between the two
+  }
+  $("#voiceNote").textContent = !(state.mode === "live" && voice.server)
+    ? "Using your browser's voice. Run multicam.py for Trace's own voice."
+    : voice.engine === "kokoro"
+      ? "Trace's offline voice, made on your computer."
+      : "Microsoft's natural voice. It needs internet, and the words Trace says are sent to Microsoft to be spoken. Without internet Trace uses its offline voice.";
+}
+function toggleVoicePanel(open) {
+  const p = $("#voicePanel"), b = $("#voiceBtn");
+  open = open ?? p.hidden;
+  p.hidden = !open;
+  b.setAttribute("aria-expanded", String(open));
+  if (open) { renderVoiceBtn(); $("#genderSeg [aria-checked=true]").focus(); }
+}
+function setGender(g, { silent = false } = {}) {
+  if (g === voice.gender) return;
+  voice.gender = g;
+  store.set("trace.gender", g);
+  renderVoiceBtn();
+  stopSpeaking();
+  if (voice.on && !silent) speakOut(`Hi, I'm Trace. This is my ${g} voice.`);
+}
+function setVoiceOn(on) {
+  voice.on = on;
+  store.set("trace.voice", on ? "on" : "off");
+  renderVoiceBtn();
+  if (!on) stopSpeaking();
+}
+
+/* ------------------------------------------------------------ "Hey Trace" (listening)
+   Uses the browser's speech recognition (Chrome, Edge, Safari). It needs a secure page:
+   http://localhost on this computer, or https. Note Chrome sends the audio to Google's
+   speech service to turn it into text; the camera video never leaves your network.
+   While on, Trace waits for "Hey Trace", chimes, then takes the next thing you say.
+   "Hey Trace, where are my keys" works in one breath too. */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const ear = { want: store.get("trace.listen") === "on", rec: null, running: false, awake: false, awakeTimer: 0, once: false, fails: 0 };
+const canListen = () => !!SR && window.isSecureContext;
+const WAKE = /\b(?:hey|hi|hay|okay|ok|a|hello)[\s,.!]+(?:trace|tracy|traces|trays|grace)\b[\s,.!?]*(.*)$/i;
+function earNote(text) { const n = $("#earLive"); n.textContent = ""; setTimeout(() => { n.textContent = text; }, 30); }
+
+let audioCtx = null;
+function chime(kind) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    // wake: rising pair. ready (listening for a follow-up): one soft note. heard: one note. off: falling pair.
+    const notes = kind === "wake" ? [660, 990] : kind === "ready" ? [740] : kind === "heard" ? [880] : [520, 390];
+    const level = kind === "ready" ? 0.06 : 0.12;
+    notes.forEach((f, i) => {
+      const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
+      const t0 = audioCtx.currentTime + i * 0.11;
+      o.type = "sine"; o.frequency.value = f;
+      gn.gain.setValueAtTime(0, t0);
+      gn.gain.linearRampToValueAtTime(level, t0 + 0.015);
+      gn.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
+      o.connect(gn).connect(audioCtx.destination);
+      o.start(t0); o.stop(t0 + 0.24);
+    });
+  } catch { /* no Web Audio: the spoken and on-screen cues still work */ }
+}
+function setAwake(on, ms = 8000) {
+  clearTimeout(ear.awakeTimer);
+  ear.awake = on;
+  el.agent.dataset.ear = on ? "awake" : "";
+  renderEarBtn();
+  if (on) {
+    el.chatState.dataset.state = "listening";
+    el.chatState.innerHTML = `${icon("mic")}<span>Listening…</span>`;
+    // nothing said in time: the conversation is over, back to waiting for "Hey Trace"
+    ear.awakeTimer = setTimeout(() => { endConvo(); chime("off"); earNote("Trace stopped listening."); }, ms);
+  } else {
+    renderChatState(el.agent.dataset.state || "idle");
+  }
+}
+function startEar() {
+  if (!(ear.want || ear.once) || !state.power || voice.speaking || ear.running || !canListen()) return;
+  const rec = new SR();
+  rec.lang = navigator.language || "en-GB";
+  rec.continuous = !ear.once;
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  rec.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) heard(e.results[i][0].transcript);
+  };
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      ear.want = false; ear.once = false; store.set("trace.listen", "off"); renderEarBtn();
+      say("I can't use the microphone. Allow it in the browser's site settings, then turn listening back on.");
+    } else if (e.error === "network" || e.error === "audio-capture") {
+      ear.fails++;
+    }
+  };
+  rec.onend = () => {
+    ear.running = false; ear.rec = null;
+    if (ear.once && !ear.awake) { ear.once = false; renderEarBtn(); }
+    // Chrome ends continuous listening every so often; quietly pick it back up.
+    if ((ear.want || ear.once) && state.power && !voice.speaking) setTimeout(startEar, ear.fails > 2 ? 4000 : 300);
+  };
+  try { rec.start(); ear.rec = rec; ear.running = true; ear.fails = Math.max(0, ear.fails - 1); } catch { /* already starting */ }
+  renderEarBtn();
+}
+function stopEar() {
+  if (ear.rec) { try { ear.rec.abort(); } catch { /* ignore */ } }
+  ear.rec = null; ear.running = false;
+}
+const FILLER = /^(um+|uh+|er+|hmm+|so|okay|ok)[.!?]*$/i;
+function heard(raw) {
+  let text = raw.trim();
+  if (!text) return;
+  const m = text.match(WAKE);
+  if (ear.awake || ear.once) {
+    if (m) text = m[1].trim();             // "Hey Trace, ..." mid-conversation is fine too
+    if (!text || FILLER.test(text)) { setAwake(true); return; }
+    ear.once = false;
+    setAwake(false);
+    chime("heard");
+    convo.active = true;
+    command(text);
+    return;
+  }
+  if (!m) return;                         // not for Trace: ignore, say nothing
+  convo.active = true;                    // any "Hey Trace" starts a conversation
+  const rest = m[1].trim();
+  if (rest && !FILLER.test(rest)) { chime("heard"); command(rest); return; }
+  chime("wake");
+  earNote("Trace is listening.");
+  setAwake(true);
+}
+/* Spoken-only extras; everything else goes through ask() like typed messages. */
+function command(text) {
+  const t = normText(text);
+  if (/ (repeat|say (that|it) again|what did you say|pardon|come again) /.test(t)) {
+    if (voice.last) speakOut(voice.last).then(() => { if (convo.active) listenForMore(); });
+    else listenForMore();
+    return;
+  }
+  if (/ (stop|turn off|quiet) listening /.test(t)) { endConvo(); toggleEar(false); return; }
+  ask(text, { voice: true });
+}
+
+/* ------------------------------------------------------------ conversation
+   Once you've said "Hey Trace", Trace answers, asks a short follow-up and keeps listening
+   for a few seconds: no wake word needed for the next thing. Offers ("Want to see the Hall
+   camera live?") can be answered with yes or no. Silence or "that's all" ends it. */
+const convo = { active: false, offer: null, lastItem: null, turn: 0, n: 0 };
+const PROMPTS = ["Anything else?", "What else can I do?", "Anything else I can find?"];
+const FOLLOW_UP_MS = 7000;
+function listenForMore() {
+  if (!state.power || !convo.active) return;
+  if (!canListen()) { convo.active = false; return; }
+  if (!ear.want) ear.once = true;          // a chat that started on the mic button keeps going too
+  setAwake(true, FOLLOW_UP_MS);
+  chime("ready");
+  earNote("Trace is listening.");
+  startEar();
+}
+function endConvo() {
+  convo.active = false;
+  convo.offer = null;
+  clearTimeout(ear.awakeTimer);
+  if (ear.awake) setAwake(false);
+  if (!ear.want) { ear.once = false; stopEar(); renderEarBtn(); }
+}
+/* Trace answers: chat + bubble + voice. In a voice conversation it then asks for more and listens. */
+async function reply(text, { itemId = null, offer = null, prompt = true, end = false, after = null } = {}) {
+  convo.offer = offer;
+  if (itemId != null) convo.lastItem = itemId;
+  const follow = offer?.question || (convo.active && prompt && !end ? PROMPTS[convo.n++ % PROMPTS.length] : "");
+  const full = follow ? `${text} ${follow}` : text;
+  addMsg("trace", full, itemId);
+  if (!state.chatOpen) showBubble(full);
+  const turn = ++convo.turn;
+  await speakOut(text);
+  if (follow && turn === convo.turn) await speakOut(follow);   // its own short clip: pre-rendered, so instant
+  if (turn !== convo.turn) return;                              // something newer took over
+  voice.last = full;
+  if (end) { endConvo(); after?.(); return; }
+  after?.();
+  if (convo.active) listenForMore();       // typed chats keep the offer too: type "yes"
+}
+
+/* Actions Trace understands besides "where is ...". Returns null when it's a question for the finder. */
+const YES = /^ (yes|yeah|yep|yup|sure|please|ok|okay|go on|go ahead|do it|show me|alright|sounds good|why not)\b/;
+const NO = /^ (no|nope|nah|not now|dont|no thanks)\b/;
+function intent(message) {
+  const t = normText(message);
+  if (convo.offer && YES.test(t)) { const o = convo.offer; convo.offer = null; return o.yes(); }
+  if (convo.offer && NO.test(t)) { convo.offer = null; return { reply: "Okay." }; }
+  if (/^ (thats all|thats it|that is all|thank you|thanks|no thanks|nothing|nothing else|bye|goodbye|im done|all done|all good|never mind|nevermind|stop|cancel|no thats it|im good) /.test(t))
+    return { reply: "Okay. I'm here if you need me.", end: true };
+  if (/ (help|what can you do|what can i (say|ask)|commands) /.test(t))
+    return { reply: "You can ask where something is, say open the hall camera, what can you see, or what do you remember. Say that's all when you're done." };
+
+  // voice
+  const g = / voice / .test(t) ? (/ (female|woman|girl|lady|womans) /.test(t) ? "female" : / (male|man|boy|guy|mans) /.test(t) ? "male" : null) : null;
+  if (g) return g === voice.gender ? { reply: `I'm already using my ${g} voice.` }
+    : { run: () => setGender(g, { silent: true }), reply: `Okay. This is my ${g} voice.` };
+  if (/ (mute|be quiet|stop talking|voice off|turn off (your |the )?voice|dont talk|no voice) /.test(t))
+    return { run: () => setVoiceOn(false), reply: "Okay, I'll stay quiet and answer on screen." };
+  if (/ (unmute|voice on|talk to me|speak (again|up|out loud)|turn on (your |the )?voice|talk again) /.test(t))
+    return { run: () => setVoiceOn(true), reply: "Okay, I'll talk again." };
+
+  // going back / closing
+  if (/^ (go back|back|close( it| this| that| the camera| the view| the picture)?|exit|done|go home|home) $/.test(t)) {
+    const closed = closeTop();
+    return { reply: closed ? "Okay." : "There's nothing open." };
+  }
+  if (/ (go to sleep|turn (yourself )?off|shut down|power off|switch off|good night|goodnight) /.test(t) && !/ (voice|listening) /.test(t))
+    return {
+      reply: "Do you want me to go to sleep? You'll need to press Wake Trace to wake me again.", prompt: false,
+      offer: { yes: () => ({ reply: "Okay. Goodnight.", end: true, after: () => turnOff() }) },
+    };
+
+  // cameras
+  if (/ (next|other|another|different) (camera|cam|one) /.test(t) && state.cameras.length) {
+    const list = state.cameras, cur = list.findIndex((c) => String(c.id) === state.liveCam);
+    const next = list[(cur + 1) % list.length];
+    return { run: () => showCamera(next.id), reply: liveLine(next.id) };
+  }
+  const cam = cameraIntent(message);
+  if (cam) return { run: () => showCamera(cam.id), reply: liveLine(cam.id) };
+  if (/ (what (can|do) you see|whats (in view|on (this|the) camera|there)|what is (in view|there)|anything in view|whats in front) /.test(t))
+    return { reply: seeLine() };
+  if (/ (what do you remember|what are you (tracking|watching|keeping)|list (everything|items|things|it all)|what have you got|everything you know|what things) /.test(t))
+    return { reply: listLine() };
+  const last = convo.lastItem != null ? findItem(convo.lastItem) : null;
+  if (last && /^ (show me|show it|show them|let me see|where exactly|show me (it|them|where))( on (the )?camera)? $/.test(t))
+    return { run: () => { closeLive(false); openFound(last, { focus: false }); }, reply: `Here's where I last saw ${nameOf(last)}.`, itemId: last.id };
+  return null;
+}
+function closeTop() {
+  if (state.foundId != null) { closeFound(); return true; }
+  if (state.liveCam != null) { closeLive(); return true; }
+  if (state.chatOpen) { closeChat(); return true; }
+  return false;
+}
+function showCamera(id) {
+  if (state.foundId != null) closeFound(false);
+  if (narrowMQ.matches && state.chatOpen) closeChat(false);
+  openLive(id, { announce: false });
+}
+function seeLine() {
+  const id = state.liveCam;
+  const items = (state.items || []).filter((i) => id == null || String(i.camera) === id);
+  const inView = items.filter((i) => i.in_view).map(nameOf);
+  const more = (n) => (n > 0 ? ` and ${n} more` : "");
+  if (!inView.length) {
+    if (id != null && items.length) return `I can't see anything I know on the ${camName(id)} camera right now. ${items.length === 1 ? "One thing was" : `${items.length} things were`} last seen there.`;
+    return id != null ? `I can't see anything I know on the ${camName(id)} camera right now.` : "I can't see anything I know right now.";
+  }
+  const where = id != null ? `On the ${camName(id)} camera` : "Right now";
+  return `${where} I can see ${joinNames(inView.slice(0, 4))}${more(inView.length - 4)}.`;
+}
+function listLine() {
+  const items = state.items || [];
+  if (!items.length) return "I'm not keeping track of anything yet. Put something in view of a camera and I'll remember it.";
+  const names = sortItems(items).map(nameOf);
+  return `I'm keeping track of ${items.length} thing${items.length === 1 ? "" : "s"}: ${names.length > 5 ? `${names.slice(0, 5).join(", ")} and ${names.length - 5} more` : joinNames(names)}.`;
+}
+function toggleEar(on) {
+  if (!canListen()) {
+    say(!SR ? "Voice commands need Chrome, Edge or Safari. You can still type to me."
+      : "Voice commands only work on this computer at localhost, or over https. You can still type to me.");
+    renderEarBtn();
+    return;
+  }
+  ear.want = on;
+  store.set("trace.listen", on ? "on" : "off");
+  if (on) { startEar(); say("I'm listening. Say Hey Trace whenever you need me."); }
+  else { setAwake(false); stopEar(); say("Okay, I've stopped listening."); }
+  renderEarBtn();
+}
+function renderEarBtn() {
+  const b = $("#earBtn"), mic = $("#micBtn");
+  const ok = canListen();
+  b.classList.toggle("unavailable", !ok);
+  b.classList.toggle("listening", ok && ear.want && !ear.awake);
+  b.classList.toggle("awake", ok && ear.awake);
+  b.setAttribute("aria-pressed", String(ok && ear.want));
+  const word = !ok ? "Voice unavailable" : ear.awake ? "Listening…" : ear.want ? "Hey Trace on" : "Hey Trace off";
+  b.innerHTML = `${icon(ok && (ear.want || ear.awake) ? "mic" : "micOff")}<span class="dot" aria-hidden="true"></span><span class="lbl">${word}</span>`;
+  b.setAttribute("aria-label", word);
+  mic.classList.toggle("unavailable", !ok);
+  mic.setAttribute("aria-pressed", String(ok && (ear.awake || ear.once)));
+}
+/* The mic button in the chat: talk once, no wake word needed. */
+function listenOnce() {
+  if (!canListen()) { toggleEar(true); return; }
+  stopSpeaking();
+  chime("wake");
+  earNote("Trace is listening.");
+  if (ear.running) { setAwake(true); return; }
+  ear.once = true;
+  setAwake(true);
+  startEar();
+}
+
+/* ------------------------------------------------------------ Trace's offline brain (follows TRACE_RULES) */
+const STOP = new Set("a an the my me i is are was were where wheres what whats did do does you your have has had seen see saw find found finding lost looking for to in on of it its them can could please help know any where's last thing things there here at and or with dont cant ive im we our trace hey hi hello".split(" "));
+const normText = (s) => " " + String(s).toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim() + " ";
+const has = (text, phrase) => text.includes(" " + phrase + " ");
+const pron = (it) => cat(it).plural ? ["them", "they're"] : ["it", "it's"];
+const wordCount = (s) => s.split(/\s+/).filter(Boolean).length;
+const joinNames = (names) => names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+function answerFor(it) {
+  const known = typeof it.confidence === "number";   // no number -> say nothing about sureness rather than invent one
+  const c = known ? it.confidence : 0;
+  const pct = Math.round(c * 100);
+  const unsure = !!it.guess || (known && c < 0.7);
+  const [them, theyre] = pron(it);
+  const cam = camOf(it);
+  let sure = c >= 0.85 ? "very sure" : c >= 0.7 ? "fairly sure" : c >= 0.5 ? "not totally sure" : "not sure";
+  if (it.guess && c >= 0.5) sure = "not totally sure";
+
+  // No furniture sentence yet: say the zone it was in if there is one, never a made-up place.
+  const zoneLine = it.zone ? `Your ${cat(it).noun} ${cat(it).plural ? "were" : "was"} last seen at the ${it.zone}.` : "";
+  const s1 = it.sentence ? (unsure ? hedge(it.sentence) : it.sentence) : zoneLine;
+  const seen = it.in_view ? `I can see ${them} on the ${cam} camera right now` : `I spotted ${them} on the ${cam} camera ${agoLong(it.last_time)}`;
+  let s2 = known ? `${seen}, and I'm ${sure} (${pct}%).` : `${seen}.`;
+  const place = cat(it).places[0]?.[1];
+  let s3 = "";
+  const flag = it.flag ? String(it.flag).replace(/^possibly\s+/i, "").replace(/\.$/, "") : "";
+  if (flag && unsure && place) s3 = `${cap(them === "them" ? "they" : "it")} might be ${flag}, or try ${place}.`;
+  else if (flag) s3 = `${cap(them === "them" ? "they" : "it")} might be ${flag}, so check there too.`;
+  else if (unsure && place) s3 = `If ${theyre} not there, try ${place}.`;
+  let reply = [s1, s2, s3].filter(Boolean).join(" ");
+  if (wordCount(reply) > 45) { s2 = known ? `${cam} camera, ${agoLong(it.last_time)}, ${pct}% sure.` : `${cam} camera, ${agoLong(it.last_time)}.`; reply = [s1, s2, s3].filter(Boolean).join(" "); }
+  return { reply, item_id: it.id, state: "found" };
+}
+
+function localAnswer(message) {
+  const text = normText(message);
+  const items = state.items || [];
+  const idle = (reply) => ({ reply, item_id: null, state: "idle" });
+
+  if (/ who are you | what are you | your name | who is trace | whos this | what is trace /.test(text))
+    return idle("I'm Trace. I help you find things around the room. Ask me where something is and I'll tell you where I last saw it.");
+
+  if (/ (what did you see|what have you seen|last thing|seen last|see last|saw last|latest|anything new|most recent) /.test(text)) {
+    const last = [...items].sort((a, b) => (b.last_time || 0) - (a.last_time || 0))[0];
+    if (!last) return idle("I haven't seen anything yet. Put something in view of a camera and I'll remember where it is.");
+    const where = last.sentence ? ` ${shownSentence(last)}` : last.zone ? ` It was at the ${last.zone}.` : "";
+    return { reply: `The last thing I spotted was ${nameOf(last)} on the ${camOf(last)} camera, ${agoLong(last.last_time)}.${where}`, item_id: last.id, state: "idle" };
+  }
+
+  // which categories does the message name? (aliases from targets.py, matched as whole words)
+  const cats = Object.keys(CATS).filter((k) => CATS[k].aliases.some((a) => has(text, a)));
+  const words = text.trim().split(" ").filter((w) => w.length > 1 && !STOP.has(w));
+  const nameScore = (it) => normText(nameOf(it)).trim().split(" ").filter((w) => !STOP.has(w) && !(CATS[it.category]?.aliases || []).includes(w))
+    .reduce((n, w) => n + (words.includes(w) ? 1 : 0), 0);
+
+  let pool = cats.length ? items.filter((it) => cats.includes(it.category)) : [];
+  if (!cats.length) {
+    pool = items.filter((it) => nameScore(it) > 0);
+  } else if (pool.length > 1) {
+    const best = Math.max(...pool.map(nameScore));
+    if (best > 0) pool = pool.filter((it) => nameScore(it) === best);
+  }
+
+  if (pool.length === 1) return answerFor(pool[0]);
+  if (pool.length > 1) {
+    const sameCat = pool.every((it) => it.category === pool[0].category);
+    const kind = sameCat ? `${pool.length === 2 ? "two" : pool.length} ${CATS[pool[0].category]?.many || "items"}` : `${pool.length} things that match`;
+    return idle(`I'm keeping an eye on ${kind}: ${joinNames(pool.slice(0, 3).map(nameOf))}. Which one do you mean?`);
+  }
+  if (cats.length) {
+    const k = CATS[cats[0]];
+    return idle(`I haven't seen your ${k.noun} yet. Put ${k.plural ? "them" : "it"} in view of a camera and I'll remember where ${k.plural ? "they are" : "it is"}.`);
+  }
+  if (/^ (hi|hello|hey|hiya|morning|evening|good (morning|afternoon|evening)) /.test(text))
+    return idle("Hi, Trace here. What are you looking for?");
+  if (/ (where|find|lost|missing|seen|looking|my) /.test(text))
+    return idle("I haven't seen that yet. Put it in view of a camera and I'll remember where it is.");
+  if (/ (what|everything|all|list) /.test(text) && items.length)
+    return idle(`I'm keeping track of ${items.length} things right now, and ${items.filter((i) => i.in_view).length} are in view. Ask me about any of them.`);
+  return idle("I help you find things around the room. Try asking where your keys are.");
+}
+
+/* ------------------------------------------------------------ chat */
+function addMsg(who, text, itemId = null) {
+  state.chat.push({ who, text });
+  const m = document.createElement("div");
+  m.className = `msg ${who}`;
+  const p = document.createElement("p");
+  p.textContent = text;
+  m.append(p);
+  if (who === "trace" && itemId != null) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "show-btn";
+    b.innerHTML = `${icon("target", "sm")}<span>Show on camera</span>`;
+    b.addEventListener("click", () => { const it = findItem(itemId); if (it) openFound(it); });
+    m.append(b);
+  }
+  el.chatLog.append(m);
+  el.chatLog.scrollTop = el.chatLog.scrollHeight;
+}
+let chatAnim = null;
+function openChat() {
+  if (state.chatOpen || !state.power) return;
+  state.chatOpen = true;
+  hideBubble();
+  el.chat.hidden = false;
+  el.agent.setAttribute("aria-expanded", "true");
+  el.agent.setAttribute("aria-label", "Trace. Close chat");
+  chatAnim?.cancel();
+  chatAnim = el.chat.animate(
+    reduced() ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: "scale(.4)" }, { opacity: 1, transform: "scale(1)" }],
+    { duration: reduced() ? 150 : 250, easing: "cubic-bezier(.2,.8,.2,1)" });
+  el.chatLog.scrollTop = el.chatLog.scrollHeight;
+  el.chatInput.focus({ preventScroll: true });
+}
+async function closeChat(returnFocus = true) {
+  if (!state.chatOpen) return;
+  state.chatOpen = false;
+  el.agent.setAttribute("aria-expanded", "false");
+  el.agent.setAttribute("aria-label", "Trace. Open chat");
+  const hadFocus = el.chat.contains(document.activeElement);
+  chatAnim?.cancel();
+  chatAnim = el.chat.animate(
+    reduced() ? [{ opacity: 1 }, { opacity: 0 }] : [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.4)" }],
+    { duration: reduced() ? 120 : 200, easing: "cubic-bezier(.4,0,1,1)" });
+  const a = chatAnim;
+  a.finished.then(() => { if (!state.chatOpen && a === chatAnim) el.chat.hidden = true; }).catch(() => {});
+  if (returnFocus && hadFocus) el.agent.focus();
+}
+
+async function ask(message, { voice: byVoice = false } = {}) {
+  message = message.trim();
+  if (!message || state.busy || !state.power) return;
+  if (!byVoice) convo.active = false;      // typing takes over from a spoken conversation
+  const history = state.chat.slice(-10).map((m) => ({ role: m.who === "user" ? "user" : "assistant", content: m.text }));
+  addMsg("user", message);
+
+  const act = intent(message);             // open a camera, go back, change voice, yes/no ...
+  if (act) {
+    act.run?.();
+    await reply(act.reply, act);
+    return;
+  }
+
+  state.busy = true;
+  el.sendBtn.disabled = true;
+  setAgent("searching");
+  const typing = document.createElement("div");
+  typing.className = "msg trace typing";
+  typing.innerHTML = '<span></span><span></span><span></span><b class="sr">Trace is looking</b>';
+  el.chatLog.append(typing);
+  el.chatLog.scrollTop = el.chatLog.scrollHeight;
+  const started = performance.now();
+
+  let res = null;
+  if (state.mode === "live") {
+    try {
+      const r = await api("/api/ask", { method: "POST", body: { message, history, system: TRACE_RULES }, timeout: 15000 });
+      if (r && typeof r.reply === "string" && r.reply.trim()) res = r;
+    } catch { /* fall back below */ }
+  }
+  if (!res) res = localAnswer(message);
+  const left = (byVoice ? 250 : 900) - (performance.now() - started);   // spoken: answer as soon as we can
+  if (left > 0) await wait(left);
+  typing.remove();
+  state.busy = false;
+  el.sendBtn.disabled = false;
+  if (!state.power) return;
+
+  const it = res.item_id != null ? findItem(res.item_id) : null;
+  let offer = null;
+  if (res.state === "found" && it) {
+    setAgent("found");
+    if (narrowMQ.matches && state.chatOpen) await closeChat(false);
+    openFound(it, { focus: !state.chatOpen && !byVoice });
+    const cam = camById(it.camera);
+    if (cam && camUp(cam) && state.liveCam !== String(cam.id)) {   // next step, as a yes/no question
+      offer = {
+        question: `Want to see the ${camName(cam.id)} camera live?`,
+        yes: () => ({ run: () => showCamera(cam.id), reply: liveLine(cam.id) }),
+      };
+    }
+  } else {
+    setAgent("idle");
+  }
+  await reply(res.reply, { itemId: it ? it.id : null, offer });
+}
+
+/* ------------------------------------------------------------ data refresh + polling */
+const findItem = (id) => (state.items || []).find((i) => String(i.id) === String(id));
+function normItems(list) {
+  return asList(list, "items").filter((it) => it && it.id != null).map((it) => ({
+    ...it,
+    confidence: typeof it.confidence === "number" ? it.confidence : null,
+    in_view: !!it.in_view, guess: !!it.guess,
+  }));
+}
+function setMode(ok) {
+  const before = state.mode;
+  if (ok) { state.everLive = true; state.mode = "live"; state.lastLiveAt = nowS(); }
+  else state.mode = state.everLive ? "offline" : "demo";
+  if (state.power && before !== state.mode) {
+    if (state.mode === "offline") say("I've lost touch with the cameras for now. I'll keep showing what I last saw.");
+    else if (state.mode === "live" && before === "offline") say("I'm back in touch with the cameras.");
+    else if (state.mode === "live" && before === "demo") say("The cameras are connected now, so you're seeing your real room.");
+  }
+}
+async function refresh(full, force = false) {
+  // In demo mode, only knock on the real backend every 10 s so the console stays quiet.
+  const net = force || state.mode !== "demo" || tickN % 5 === 0;
+  const get = (p) => net ? getData(p) : Promise.resolve({ ok: false });
+  const [ri, rc, re] = await Promise.all([
+    get("/api/items"),
+    full ? get("/api/cameras") : null,
+    full ? get("/api/events?limit=20") : null,
+  ]);
+  setMode(ri.ok);
+  if (ri.ok) state.items = normItems(ri.data);
+  else if (state.mode === "demo") state.items = mock.items();
+  if (rc) {
+    if (rc.ok) state.cameras = asList(rc.data, "cameras");
+    else if (state.mode === "demo") state.cameras = mock.cameras();
+  }
+  if (re) {
+    if (re.ok) state.events = asList(re.data, "events");
+    else if (state.mode === "demo") state.events = mock.events();
+  }
+  if (state.mode === "demo" && !state.cameras.length) state.cameras = mock.cameras();
+  if (full) checkVoiceEngine();            // online voice, or the offline one while the internet is down
+  render();
+}
+let pollGen = 0, pollTimer = 0, tickN = 0;
+function startPolling() {
+  stopPolling();
+  const g = ++pollGen;
+  const tick = async () => {
+    if (g !== pollGen || !state.power) return;
+    try { await refresh(tickN++ % 2 === 0); } catch (e) { console.error(e); }
+    if (g === pollGen && state.power) pollTimer = setTimeout(tick, POLL_MS);
+  };
+  pollTimer = setTimeout(tick, POLL_MS);
+}
+function stopPolling() { pollGen++; clearTimeout(pollTimer); }
+
+/* ------------------------------------------------------------ rendering */
+function render() {
+  renderHeader(); renderBanner(); renderCams(); renderItems(); renderFeed(); updateFound(); updateLive();
+}
+function liveCams() { return state.cameras.filter((c) => c.live && state.mode !== "offline"); }
+function renderHeader() {
+  const live = liveCams().length;
+  if (state.mode === "offline") {
+    el.statusChip.className = "chip offline";
+    el.statusChip.innerHTML = `${icon("cloudOff")}<span>Offline · last known</span>`;
+  } else if (state.mode === "connecting") {
+    el.statusChip.className = "chip";
+    el.statusChip.innerHTML = `${icon("lock")}<span>Connecting…</span>`;
+  } else if (live === 0) {
+    el.statusChip.className = "chip offline";
+    el.statusChip.innerHTML = `${icon("cameraOff")}<span>Secure · no cameras live</span>`;
+  } else {
+    el.statusChip.className = "chip secure";
+    el.statusChip.innerHTML = `${icon("lock")}<span>Secure · <span class="mono">${live}</span> camera${live === 1 ? "" : "s"} live</span>`;
+  }
+  el.demoChip.hidden = state.mode !== "demo";
+  if (el.demoChip.dataset.m !== state.mode) { el.demoChip.dataset.m = state.mode; renderVoiceBtn(); }
+  const items = state.items || [];
+  el.eyebrow.innerHTML = state.items === null ? "<span>Loading…</span>"
+    : `<span><b>${items.length}</b> ITEM${items.length === 1 ? "" : "S"} REMEMBERED</span><span><b>${items.filter((i) => i.in_view).length}</b> IN VIEW NOW</span>`;
+}
+function renderBanner() {
+  if (state.mode !== "offline") { el.banner.innerHTML = ""; return; }
+  const since = state.lastLiveAt ? ` Last update ${agoLong(state.lastLiveAt)}.` : "";
+  if (el.banner.dataset.on !== "1") {
+    el.banner.innerHTML = `<div class="banner" role="status">${icon("cloudOff", "lg")}<p>Can't reach the cameras right now. <span>Showing what Trace remembers.<span class="since"></span></span></p><button type="button" class="btn-quiet" data-retry>${icon("refresh", "sm")}Try again</button></div>`;
+    el.banner.dataset.on = "1";
+  }
+  $(".since", el.banner).textContent = since;
+}
+el.banner.addEventListener("click", async (e) => {
+  if (!e.target.closest("[data-retry]")) return;
+  await refresh(true, true);
+});
+function renderCams() {
+  const cams = state.cameras;
+  const live = liveCams().length;
+  el.camCount.textContent = cams.length ? `${live}/${cams.length} live` : "";
+  if (!cams.length) {
+    el.cams.dataset.html = "";
+    el.cams.innerHTML = `<li class="cams-empty"><span class="cam-name">${icon("cameraOff", "sm")}No cameras connected</span><span>Add a phone in <code>cameras.json</code>, then run <code>python multicam.py</code>.</span></li>`;
+    return;
+  }
+  const counts = {};
+  for (const it of state.items || []) counts[it.camera] = (counts[it.camera] || 0) + 1;
+  const html = cams.map((c) => {
+    const up = c.live && state.mode !== "offline";
+    const n = counts[c.id] || 0;
+    const status = up ? "Live" : state.mode === "offline" ? "No signal" : "Offline";
+    return `<li><button type="button" class="cam ${up ? "" : "down"}" data-cam="${esc(c.id)}" aria-label="Watch the ${esc(c.name || c.id)} camera. ${status}, ${n} item${n === 1 ? "" : "s"}">
+      <div class="cam-name">${icon(up ? "camera" : "cameraOff", "sm")}${esc(c.name || c.id)}</div>
+      <div class="cam-foot">${up ? `<span class="live"><span class="dot" aria-hidden="true"></span>Live</span>` : `<span class="down-lbl">${icon("cloudOff")}${status}</span>`}
+      <span class="cam-count">${n} item${n === 1 ? "" : "s"}</span></div>
+      <span class="watch" aria-hidden="true">${icon("eye")}Watch live</span></button></li>`;
+  }).join("");
+  if (el.cams.dataset.html !== html) { el.cams.innerHTML = html; el.cams.dataset.html = html; }   // keep focus between polls
+}
+el.cams.addEventListener("click", (e) => { const b = e.target.closest("[data-cam]"); if (b) openLive(b.dataset.cam); });
+
+const cards = new Map();
+function matches(it, q) {
+  if (!q) return true;
+  const hay = normText([nameOf(it), it.category, ...(CATS[it.category]?.aliases || []), it.zone, it.camera_name, it.sentence].join(" "));
+  return normText(q).trim().split(" ").every((w) => hay.includes(w));
+}
+function sortItems(list) {
+  return [...list].sort((a, b) => {
+    if (a.in_view !== b.in_view) return a.in_view ? -1 : 1;
+    const d = (b.last_time || 0) - (a.last_time || 0);
+    return Math.abs(d) > 30 ? d : String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+  });
+}
+function makeCard(it) {
+  const a = document.createElement("article");
+  a.className = "item";
+  a.dataset.id = it.id;
+  a.innerHTML = `
+    <div class="thumb">${icon(it.category)}<img alt="" loading="lazy" decoding="async"></div>
+    <div>
+      <div class="item-top"><h3 class="item-name"></h3><span class="chip view-chip"></span></div>
+      <p class="item-sentence"></p>
+      <p class="item-flag" hidden>${icon("info", "sm")}<span></span></p>
+      <p class="item-meta"><span class="cam-t">${icon("camera")}<span></span></span><span class="zone"></span><span class="time">${icon("clock")}<span></span></span></p>
+      <div class="item-foot"><span class="conf-slot"></span><button type="button" class="btn-find">${icon("target")}<span>Find</span></button></div>
+    </div>`;
+  const img = $("img", a);
+  img.addEventListener("error", () => { img.hidden = true; });
+  img.addEventListener("load", () => { img.hidden = false; });
+  $(".btn-find", a).addEventListener("click", () => {
+    const cur = findItem(a.dataset.id);
+    if (!cur) return;
+    setAgent("found");
+    say(answerFor(cur).reply, { itemId: cur.id });
+    openFound(cur);
+  });
+  return a;
+}
+function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+function updateCard(a, it) {
+  setText($(".item-name", a), nameOf(it));
+  const vc = $(".view-chip", a);
+  const vcHTML = it.in_view ? `${icon("eye")}In view` : `${icon("eyeOff")}Out of sight`;
+  if (vc.dataset.v !== String(it.in_view)) { vc.innerHTML = vcHTML; vc.className = `chip view-chip ${it.in_view ? "in" : "out"}`; vc.dataset.v = String(it.in_view); }
+  setText($(".item-sentence", a), shownSentence(it));
+  const fl = $(".item-flag", a);
+  fl.hidden = !it.flag;
+  if (it.flag) setText($("span", fl), cap(String(it.flag)));
+  setText($(".cam-t > span", a), camOf(it));
+  const z = $(".zone", a); z.hidden = !it.zone; setText(z, it.zone || "");
+  setText($(".time > span", a), `seen ${agoShort(it.last_time)}`);
+  const cs = $(".conf-slot", a);
+  const ck = String(it.confidence);
+  if (cs.dataset.c !== ck) { cs.innerHTML = it.confidence == null ? "" : confPill(it.confidence); cs.dataset.c = ck; }
+  $(".btn-find", a).setAttribute("aria-label", `Find ${nameOf(it)}`);
+  const img = $("img", a), src = thumbURL(it);
+  if (src && img.dataset.src !== src) { img.dataset.src = src; img.src = src; }
+  if (!src) img.hidden = true;
+}
+function renderItems() {
+  const list = state.items;
+  const q = el.q.value.trim();
+  const box = el.items;
+  if (list === null) {
+    if (!box.querySelector(".sk-card")) {
+      box.innerHTML = Array.from({ length: 4 }, () => `<div class="sk-card" aria-hidden="true"><div class="sk" style="width:64px;height:64px;border-radius:10px"></div><div><div class="sk" style="width:55%;height:16px"></div><div class="sk" style="width:90%;height:13px;margin-top:12px"></div><div class="sk" style="width:70%;height:13px;margin-top:8px"></div><div class="sk" style="width:40%;height:24px;margin-top:16px;border-radius:999px"></div></div></div>`).join("") + `<p class="sr">Loading items</p>`;
+    }
+    el.itemCount.textContent = "";
+    el.filterNote.textContent = "";
+    return;
+  }
+  for (const n of [...box.children]) if (!n.classList.contains("item")) n.remove();
+  for (const [id, a] of cards) if (!list.some((it) => String(it.id) === id)) { a.remove(); cards.delete(id); }
+
+  if (list.length === 0) {
+    for (const a of cards.values()) a.remove();
+    const noCams = !state.cameras.length;
+    box.insertAdjacentHTML("beforeend", `<div class="state-card compact">
+      <svg class="art" viewBox="0 0 132 84" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="8" y="22" width="54" height="40" rx="8"/><path d="M62 36l16-9v30l-16-9"/><circle cx="35" cy="42" r="9"/>
+        <path d="M94 62h30M100 62v-6h18v6" stroke="#2A4763"/><rect x="101" y="40" width="16" height="14" rx="3" stroke-dasharray="3 3"/>
+        <path d="M84 30c6-4 12-4 18 0" stroke="#3A7277"/><path d="M88 22c8-5 18-5 26 0" stroke="#2A4763"/></svg>
+      <div><h3>${noCams ? "No items yet – connect a camera to start" : "No items yet – put something in view of a camera"}</h3>
+      <p>Trace remembers keys, wallets, phones, remotes, glasses, watches, headphones and bags.</p></div></div>`);
+    el.itemCount.textContent = "0";
+    el.filterNote.textContent = "";
+    return;
+  }
+
+  const shown = sortItems(list.filter((it) => matches(it, q)));
+  const shownIds = new Set(shown.map((it) => String(it.id)));
+  for (const [id, a] of cards) if (!shownIds.has(id)) a.remove();
+  shown.forEach((it, i) => {
+    const id = String(it.id);
+    let a = cards.get(id);
+    if (!a) { a = makeCard(it); cards.set(id, a); a.style.animationDelay = `${Math.min(i, 8) * 45}ms`; }
+    updateCard(a, it);
+    if (box.children[i] !== a) box.insertBefore(a, box.children[i] || null);
+  });
+  el.itemCount.textContent = String(list.length);
+
+  if (q && !shown.length) {
+    box.insertAdjacentHTML("beforeend", `<div class="state-card">${icon("search", "lg")}<h3>Nothing matches “${esc(q)}”</h3><p>Press Enter and Trace will look for you.</p></div>`);
+    el.filterNote.textContent = "";
+  } else {
+    el.filterNote.textContent = q ? `Showing ${shown.length} of ${list.length}. Press Enter to ask Trace.` : "";
+  }
+}
+function evtTime(e) {
+  if (typeof e.t === "number") return e.t;
+  const v = e.time;
+  if (typeof v === "number") return v > 1e12 ? v / 1000 : v;
+  const ms = Date.parse(v);
+  return isNaN(ms) ? null : ms / 1000;
+}
+function renderFeed() {
+  const evs = state.events || [];
+  if (!evs.length) {
+    el.feed.innerHTML = `<li style="display:block"><span class="empty">No sightings yet. They show up here as the cameras spot things.</span></li>`;
+    return;
+  }
+  const byName = new Map((state.items || []).map((it) => [nameOf(it).toLowerCase(), it.category]));
+  // With nothing remembered the left column is one short row, so keep the feed short to match
+  el.feed.innerHTML = evs.slice(0, (state.items || []).length ? 20 : 5).map((e) => {
+    const c = e.category || byName.get(String(e.item || "").toLowerCase()) || "item";
+    const t = evtTime(e);
+    return `<li><span class="ico">${icon(c)}</span><div><div class="what"><b>${esc(e.item || "Something")}</b>${e.zone ? ` at the ${esc(e.zone)}` : ""}</div>
+      <div class="when">${esc(String(e.camera_name || "").toUpperCase())}${t ? ` · ${esc(agoShort(t))}` : ""}</div></div></li>`;
+  }).join("");
+}
+
+/* ------------------------------------------------------------ found view */
+let foundOpener = null;
+function openFound(it, { focus = true } = {}) {
+  if (!state.power) return;
+  const already = state.foundId != null;
+  if (!already) foundOpener = document.activeElement;
+  state.foundId = String(it.id);
+  buildFound(it);
+  el.found.hidden = false;
+  el.found.scrollTop = 0;
+  syncInert();
+  if (!already) {
+    el.found.animate(reduced() ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "none" }],
+      { duration: reduced() ? 150 : 260, easing: "cubic-bezier(.2,.8,.2,1)" });
+  }
+  if (focus) $(".back-btn", el.found)?.focus({ preventScroll: true });
+}
+function closeFound(returnFocus = true) {
+  if (state.foundId == null) return;
+  state.foundId = null;
+  el.found.hidden = true;
+  syncInert();
+  if (returnFocus && foundOpener && document.contains(foundOpener) && !foundOpener.closest("[inert]")) foundOpener.focus();
+  foundOpener = null;
+}
+function buildFound(it) {
+  const c = cat(it);
+  // No confidence from the tracker yet: "Found it" only when a camera can see it right now.
+  const unknown = it.confidence == null && !it.guess;
+  const found = unknown ? it.in_view : !it.guess && it.confidence >= 0.7;
+  const fw = it.frame_w || 0, fh = it.frame_h || 0;
+  const flag = it.flag ? cap(String(it.flag)) : "";
+  const cam = state.cameras.find((k) => k.id === it.camera);
+  const camLive = cam ? cam.live && state.mode !== "offline" : false;
+  el.foundInner.innerHTML = `
+    <div class="found-bar">
+      <button type="button" class="back-btn">${icon("back")}Back to items</button>
+      <span class="found-label ${found ? "" : "maybe"}">${icon(found ? "sparkle" : unknown ? "pin" : "search")}${found ? "Found it" : unknown ? "Last seen" : "Best guess"}</span>
+    </div>
+    <div class="found-grid">
+      <div>
+        <div class="shot" id="shot" style="${fw && fh ? `aspect-ratio:${fw} / ${fh}` : ""}">
+          <svg class="shot-grid" width="100%" height="100%" aria-hidden="true"><defs><pattern id="g" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="currentColor" stroke-width="1"/></pattern></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>
+          <div class="shot-state" data-s="loading"><span class="spinner" aria-hidden="true"></span>Loading snapshot…</div>
+          <img alt="Camera frame from ${esc(camOf(it))} where ${esc(nameOf(it))} was last seen" hidden>
+          <span class="shot-tag tl">${icon("camera")}${esc(camOf(it))}${cam ? (camLive ? " · live" : ` · <span class="down">offline</span>`) : ""}</span>
+          <span class="shot-tag tr" data-f="clock">${esc(clockTime(it.last_time))}</span>
+          ${state.mode === "demo" ? `<span class="shot-tag bl">Demo snapshot</span>` : ""}
+        </div>
+      </div>
+      <div>
+        <p class="found-title" id="foundTitle">${esc(nameOf(it))}</p>
+        <p class="found-sentence">${esc(shownSentence(it))}</p>
+        ${flag ? `<p class="found-flag">${icon("info")}<span>${esc(flag)}</span></p>` : ""}
+        <dl class="facts">
+          <div><dt>Camera</dt><dd>${esc(camOf(it))}</dd></div>
+          <div><dt>Zone</dt><dd>${esc(it.zone || "Not mapped")}</dd></div>
+          <div><dt>Seen</dt><dd data-f="seen" class="${it.in_view ? "view-in" : ""}">${esc(it.in_view ? "In view now" : agoShort(it.last_time))}</dd></div>
+        </dl>
+        ${it.confidence == null ? "" : `<div class="found-conf">${confPill(it.confidence)}<span class="note">${esc(it.guess ? "The camera only got a weak look at it." : "How sure Trace is about the spot.")}</span></div>`}
+        ${cam ? `<div class="found-actions"><button type="button" class="btn-find" data-watch>${icon("camera")}<span>Watch ${esc(cam.name || cam.id)} live</span></button></div>` : ""}
+        <section class="next" aria-labelledby="nextHead">
+          <h3 id="nextHead">Not there? Try next</h3>
+          <ol>${c.places.map(([label], i) => `<li><span class="n">0${i + 1}</span>${icon("pin")}<span>${esc(label)}</span></li>`).join("")}</ol>
+        </section>
+      </div>
+    </div>`;
+  $(".back-btn", el.foundInner).addEventListener("click", () => closeFound());
+  $("[data-watch]", el.foundInner)?.addEventListener("click", () => {
+    const camId = String(it.camera);
+    closeFound(state.liveCam === camId);
+    if (state.liveCam !== camId) openLive(camId);
+  });
+
+  const shot = $("#shot", el.foundInner), img = $("img", shot), st = $(".shot-state", shot);
+  const drawBox = (w, h) => {
+    if (!it.box || !w || !h) return;
+    const [x1, y1, x2, y2] = it.box.map(Number);
+    const L = Math.max(0, x1 / w), T = Math.max(0, y1 / h), R = Math.min(1, x2 / w), B = Math.min(1, y2 / h);
+    const b = document.createElement("div");
+    b.className = "box" + (T < 0.14 ? " top-edge" : "") + ((L + R) / 2 > 0.5 ? " right-half" : "");
+    b.style.cssText = `left:${L * 100}%;top:${T * 100}%;width:${(R - L) * 100}%;height:${(B - T) * 100}%`;
+    b.innerHTML = `<span class="box-tag">${esc(nameOf(it))}</span>`;
+    shot.append(b);
+  };
+  img.addEventListener("load", () => {
+    st.remove(); img.hidden = false;
+    if (!(fw && fh)) { shot.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`; drawBox(img.naturalWidth, img.naturalHeight); }
+  });
+  img.addEventListener("error", () => {
+    st.dataset.s = "error";
+    st.innerHTML = `${icon("cameraOff")}<span>Snapshot unavailable.<br>The box shows where Trace last saw it.</span>`;
+  });
+  if (fw && fh) drawBox(fw, fh);
+  img.src = snapURL(it);
+}
+function updateFound() {
+  if (state.foundId == null) return;
+  const it = findItem(state.foundId);
+  if (!it) return;
+  const seen = $('[data-f="seen"]', el.foundInner);
+  if (seen) { setText(seen, it.in_view ? "In view now" : agoShort(it.last_time)); seen.className = it.in_view ? "view-in" : ""; }
+  const clk = $('[data-f="clock"]', el.foundInner);
+  if (clk) setText(clk, clockTime(it.last_time));
+}
+
+/* ------------------------------------------------------------ live camera view
+   The picture is the raw camera stream (MJPEG from /api/live/<id>.mjpg); the boxes are
+   drawn here from /api/items, in Trace's colours: solid = in view now, dashed = last seen here. */
+const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+let liveOpener = null, liveRetry = 0, liveClock = 0, liveWasUp = null, livePlaying = false;
+const camById = (id) => state.cameras.find((c) => String(c.id) === String(id));
+const camUp = (c) => !!c && !!c.live && state.mode !== "offline";
+const camName = (id) => { const c = camById(id); return c ? (c.name || c.id) : id; };
+const itemsOn = (id) => sortItems((state.items || []).filter((it) => String(it.camera) === String(id) && it.box));
+function camDims(id) {
+  const c = camById(id);
+  if (c && c.frame_w && c.frame_h) return [c.frame_w, c.frame_h];
+  const it = itemsOn(id).find((i) => i.frame_w && i.frame_h);
+  if (it) return [it.frame_w, it.frame_h];
+  const img = $(".screen img", el.live);
+  if (img && livePlaying && img.naturalWidth > 1) return [img.naturalWidth, img.naturalHeight];
+  return null;
+}
+
+/* "show me the hall camera", "open the kitchen cam", "show the cameras" -> that camera */
+function cameraIntent(message) {
+  const t = normText(message);
+  const named = [...state.cameras].sort((a, b) => String(b.name || b.id).length - String(a.name || a.id).length)
+    .find((c) => t.includes(normText(c.name || c.id)) || t.includes(normText(String(c.id).replace(/[-_]/g, " "))));
+  const camWord = / (camera|cameras|cam|feed|live view) /.test(t);
+  // "open the living room" counts too, but only as a command (verb first), so
+  // "where did you see my keys in the hall" stays a question
+  if (named && (camWord ? / (show|open|watch|see|view|look|switch|go) /.test(t) : /^ (open|show( me)?|watch|switch to|go to|view|look at) /.test(t))) return named;
+  if (!camWord || !/ (show|open|watch|see|view|look|switch|go) /.test(t)) return null;
+  const last = convo.lastItem != null ? findItem(convo.lastItem) : null;   // "show me that camera"
+  return (last && camById(last.camera)) || state.cameras.find((c) => c.live) || state.cameras[0] || null;
+}
+function liveLine(camId) {
+  const c = camById(camId), n = itemsOn(camId).length;
+  if (camUp(c) || (state.mode === "demo" && c && c.live))
+    return `Here's the ${camName(camId)} camera.${n ? ` I've marked ${n === 1 ? "the one thing" : `the ${n} things`} I remember there.` : ""}`;
+  return `I can't see through the ${camName(camId)} camera right now. I'll keep trying.`;
+}
+
+function openLive(camId, { log = false, announce = true } = {}) {
+  if (!state.power || camId == null) return;
+  const first = state.liveCam == null;
+  if (first) liveOpener = document.activeElement;
+  else stopStream();
+  state.liveCam = String(camId);
+  liveWasUp = null;
+  buildLive();
+  el.live.hidden = false;
+  syncInert();
+  if (first) {
+    el.live.scrollTop = 0;
+    el.live.animate(reduced() ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "none" }],
+      { duration: reduced() ? 150 : 260, easing: "cubic-bezier(.2,.8,.2,1)" });
+  }
+  $(first ? ".back-btn" : `.cam-tabs [data-cam="${CSS.escape(state.liveCam)}"]`, el.live)?.focus({ preventScroll: true });
+  clearInterval(liveClock);
+  liveClock = setInterval(tickLiveClock, 1000);
+  tickLiveClock();
+  if (announce) say(liveLine(camId), { log });   // a voice command speaks its own reply instead
+}
+function closeLive(returnFocus = true) {
+  if (state.liveCam == null) return;
+  stopStream();
+  clearInterval(liveClock);
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  state.liveCam = null;
+  el.live.hidden = true;
+  el.liveInner.innerHTML = "";
+  syncInert();
+  if (returnFocus && liveOpener && document.contains(liveOpener) && !liveOpener.closest("[inert]")) liveOpener.focus();
+  else if (returnFocus) $(`.cams [data-cam]`)?.focus();
+  liveOpener = null;
+}
+
+function buildLive() {
+  const id = state.liveCam, name = camName(id);
+  const d = camDims(id);
+  el.liveInner.innerHTML = `
+    <div class="live-bar">
+      <button type="button" class="back-btn">${icon("back")}<span>Back</span></button>
+      <h2 id="liveTitle">${esc(name)}</h2>
+      <span class="live-pill" data-f="pill"></span>
+    </div>
+    <div class="cam-tabs" role="group" aria-label="Switch camera">${state.cameras.map((k) =>
+      `<button type="button" data-cam="${esc(k.id)}" aria-pressed="${String(k.id) === id}">${icon(camUp(k) ? "camera" : "cameraOff")}${esc(k.name || k.id)}</button>`).join("")}</div>
+    <div class="live-grid">
+      <div>
+        <div class="screen-wrap">
+          <div class="screen" style="--ar:${d ? (d[0] / d[1]).toFixed(4) : "1.7778"}">
+            <img alt="Live view from the ${esc(name)} camera" hidden>
+            <div class="shot-state" data-f="state"></div>
+            <div data-f="boxes"></div>
+            <span class="shot-tag tl" data-f="tag"></span>
+            <span class="shot-tag tr" data-f="clock"></span>
+            <button type="button" class="screen-btn" data-f="fs" aria-label="Full screen">${icon("expand")}</button>
+          </div>
+        </div>
+        <div class="legend" aria-hidden="true"><span><i class="sw"></i>In view now</span><span><i class="sw out"></i>Last seen here</span></div>
+        <p class="live-note" data-f="note"></p>
+      </div>
+      <section aria-labelledby="onCamHead">
+        <div class="sec-head" style="margin-top:0"><h2 id="onCamHead">On this camera</h2><span class="count" data-f="count"></span><span class="rule"></span></div>
+        <ul class="cam-items" data-f="list"></ul>
+      </section>
+    </div>`;
+  const q = (f) => $(`[data-f="${f}"]`, el.liveInner);
+  $(".back-btn", el.liveInner).addEventListener("click", () => closeLive());
+  $(".cam-tabs", el.liveInner).addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cam]");
+    if (b && b.dataset.cam !== state.liveCam) { stopStream(); openLive(b.dataset.cam); }
+  });
+  const openItem = (e) => { const b = e.target.closest("[data-id]"); const it = b && findItem(b.dataset.id); if (it) openFound(it); };
+  q("boxes").addEventListener("click", openItem);
+  q("list").addEventListener("click", openItem);
+  const fs = q("fs"), wrap = $(".screen-wrap", el.liveInner);
+  if (!document.fullscreenEnabled) fs.hidden = true;
+  fs.addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else wrap.requestFullscreen?.().catch(() => {});
+  });
+  const img = $(".screen img", el.liveInner);
+  img.addEventListener("load", () => {
+    if (img.dataset.kind === "blank") return;
+    livePlaying = true;
+    img.hidden = false;
+    setLiveState(null);
+    const dd = camDims(state.liveCam);
+    if (dd) $(".screen", el.liveInner).style.setProperty("--ar", (dd[0] / dd[1]).toFixed(4));
+    updateLive(true);
+  });
+  img.addEventListener("error", () => {
+    if (img.dataset.kind === "blank") return;
+    livePlaying = false;
+    img.hidden = true;
+    setLiveState("down");
+    clearTimeout(liveRetry);
+    liveRetry = setTimeout(startStream, 5000);   // keep trying quietly
+  });
+  updateLive(true);
+  startStream();
+}
+
+function setLiveState(s) {
+  const st = $('[data-f="state"]', el.liveInner);
+  if (!st) return;
+  st.hidden = !s;
+  if (s === "loading") st.innerHTML = `<span class="spinner" aria-hidden="true"></span>Connecting to ${esc(camName(state.liveCam))}…`;
+  if (s === "down") st.innerHTML = state.mode === "offline"
+    ? `${icon("cloudOff")}<span>Can't reach the cameras right now.<br>Trace will keep trying.</span>`
+    : `${icon("cameraOff")}<span>No signal from ${esc(camName(state.liveCam))}.<br>Trace will keep trying.</span>`;
+}
+function startStream() {
+  clearTimeout(liveRetry);
+  const id = state.liveCam, img = $(".screen img", el.liveInner);
+  if (id == null || !img) return;
+  livePlaying = false;
+  const c = camById(id);
+  if (state.mode === "demo") {
+    if (!(c && c.live)) { setLiveState("down"); img.hidden = true; return; }
+    img.dataset.kind = "demo";
+    img.src = sceneSVG(id);
+    return;
+  }
+  if (!camUp(c) || document.hidden) { stopStream(); if (!document.hidden) setLiveState("down"); return; }
+  setLiveState("loading");
+  img.dataset.kind = "live";
+  img.src = `${API_BASE}/api/live/${encodeURIComponent(id)}.mjpg?t=${Date.now()}`;
+}
+function stopStream() {
+  clearTimeout(liveRetry);
+  livePlaying = false;
+  const img = $(".screen img", el.liveInner);
+  if (!img) return;
+  img.dataset.kind = "blank";   // swapping the source closes the MJPEG connection
+  img.src = BLANK;
+  img.hidden = true;
+}
+function tickLiveClock() {
+  const clk = $('[data-f="clock"]', el.liveInner);
+  if (!clk) return;
+  const show = livePlaying && state.mode === "live";
+  clk.hidden = !show;
+  if (show) setText(clk, new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+}
+
+function updateLive(force = false) {
+  const id = state.liveCam;
+  if (id == null || !el.liveInner.firstElementChild) return;
+  const q = (f) => $(`[data-f="${f}"]`, el.liveInner);
+  const c = camById(id), up = state.mode === "demo" ? !!(c && c.live) : camUp(c);
+
+  // header pill: words + shape, never colour alone
+  const pill = q("pill");
+  const kind = state.mode === "demo" && up ? "demo" : up ? "up" : "down";
+  if (pill.dataset.k !== kind) {
+    pill.dataset.k = kind;
+    pill.className = `live-pill ${kind === "up" ? "" : kind}`;
+    pill.innerHTML = kind === "up" ? `<span class="dot" aria-hidden="true"></span>Live` : kind === "demo" ? "Demo" : `${icon("cloudOff")}${state.mode === "offline" ? "No signal" : "Offline"}`;
+  }
+  const tag = q("tag");
+  const tagHTML = state.mode === "demo" ? "Demo snapshot" : `${icon("camera")}${esc(camName(id))}`;
+  if (tag.dataset.h !== tagHTML) { tag.dataset.h = tagHTML; tag.innerHTML = tagHTML; }
+  setText(q("note"), state.mode === "demo" ? "Demo mode shows a drawing of the room. Run multicam.py to see the real cameras." : "");
+  q("note").hidden = state.mode !== "demo";
+
+  for (const b of el.liveInner.querySelectorAll(".cam-tabs [data-cam]")) {
+    const k = camById(b.dataset.cam), u = state.mode === "demo" ? !!(k && k.live) : camUp(k);
+    if (b.dataset.u !== String(u)) { b.dataset.u = String(u); b.innerHTML = `${icon(u ? "camera" : "cameraOff")}${esc(camName(b.dataset.cam))}`; }
+  }
+
+  // stream follows the camera coming and going
+  if (liveWasUp !== null && up !== liveWasUp) { if (up) startStream(); else { stopStream(); setLiveState("down"); } }
+  liveWasUp = up;
+
+  // boxes over the picture
+  const items = itemsOn(id);
+  const dims = camDims(id);
+  const showBoxes = state.mode === "demo" ? up : livePlaying;
+  const boxSig = showBoxes ? items.map((it) => [it.id, it.box.join(), it.in_view, it.in_view ? "" : agoShort(it.last_time), nameOf(it)].join("|")).join(";") + (dims || "") : "";
+  const boxes = q("boxes");
+  if (force || boxes.dataset.sig !== boxSig) {
+    boxes.dataset.sig = boxSig;
+    boxes.innerHTML = !showBoxes ? "" : items.map((it) => {
+      const [w, h] = it.frame_w && it.frame_h ? [it.frame_w, it.frame_h] : (dims || [0, 0]);
+      if (!w || !h) return "";
+      const [x1, y1, x2, y2] = it.box.map(Number);
+      const L = Math.max(0, x1 / w), T = Math.max(0, y1 / h), R = Math.min(1, x2 / w), B = Math.min(1, y2 / h);
+      const status = it.in_view ? "in view now" : `last seen ${agoShort(it.last_time)}`;
+      return `<button type="button" class="lbox ${it.in_view ? "in" : "out"}${T < 0.12 ? " top-edge" : ""}${(L + R) / 2 > 0.5 ? " right-half" : ""}" data-id="${esc(it.id)}"
+        style="left:${L * 100}%;top:${T * 100}%;width:${(R - L) * 100}%;height:${(B - T) * 100}%"
+        aria-label="${esc(nameOf(it))}, ${esc(status)}. Show details"><span class="ltag">${esc(nameOf(it))}${it.in_view ? "" : ` · ${esc(agoShort(it.last_time))}`}</span></button>`;
+    }).join("");
+  }
+
+  // the list beside it
+  setText(q("count"), String(items.length));
+  const listSig = items.map((it) => [it.id, it.in_view, agoShort(it.last_time), it.zone, nameOf(it)].join("|")).join(";");
+  const list = q("list");
+  if (force || list.dataset.sig !== listSig) {
+    list.dataset.sig = listSig;
+    list.innerHTML = items.length ? items.map((it) => `<li><button type="button" data-id="${esc(it.id)}">
+        <span class="ico">${icon(it.category)}</span>
+        <span><span class="nm">${esc(nameOf(it))}</span>
+          <span class="sub ${it.in_view ? "in" : ""}">${icon(it.in_view ? "eye" : "eyeOff")}${it.in_view ? "In view now" : `Seen ${esc(agoShort(it.last_time))}`}${it.zone ? ` · ${esc(it.zone)}` : ""}</span></span>
+        <span class="go">${icon("chevron")}</span></button></li>`).join("")
+      : `<li><span class="empty">Nothing remembered on this camera yet.</span></li>`;
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (state.liveCam == null || state.mode === "demo") return;
+  if (document.hidden) stopStream(); else startStream();   // don't stream video to a hidden tab
+});
+document.addEventListener("fullscreenchange", () => {
+  const fs = $('[data-f="fs"]', el.liveInner);
+  if (!fs) return;
+  const on = !!document.fullscreenElement;
+  fs.innerHTML = icon(on ? "shrink" : "expand");
+  fs.setAttribute("aria-label", on ? "Exit full screen" : "Full screen");
+});
+
+/* ------------------------------------------------------------ power on / off */
+async function iris(open) {
+  const [x, y0] = agentCentre();
+  const y = y0 + window.scrollY;
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  const R = Math.hypot(Math.max(x, vw - x), Math.max(y0, vh - y0)) + 12;
+  const small = `circle(0px at ${x}px ${y}px)`, big = `circle(${R}px at ${x}px ${y}px)`;
+  const a = reduced()
+    ? el.app.animate([{ opacity: open ? 0 : 1 }, { opacity: open ? 1 : 0 }], { duration: 200, fill: "both" })
+    : el.app.animate([{ clipPath: open ? small : big }, { clipPath: open ? big : small }], { duration: 900, easing: "cubic-bezier(.65,0,.35,1)", fill: "both" });
+  await a.finished;
+  return a;
+}
+function setRow(step, s, detail = "") {
+  const row = $(`.ck-row[data-step="${step}"]`);
+  row.dataset.state = s;
+  $(".ck-detail", row).textContent = detail;
+  $(".ck-sr", row).textContent = s === "done" ? "done" : s === "active" ? "in progress" : "pending";
+  if (s === "done") el.bootLive.textContent = `${$(".ck-text > span", row).textContent}${detail ? `, ${detail}` : ""}. Done.`;
+}
+function resetChecklist() { for (const r of document.querySelectorAll(".ck-row")) setRow(r.dataset.step, "pending"); el.bootLive.textContent = ""; }
+function secureDetail() {
+  if (state.mode === "demo") return "demo";
+  try {
+    const u = new URL(API_BASE);
+    if (u.protocol === "https:") return "HTTPS";
+    if (/^(localhost|127\.|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u.hostname) || u.hostname.endsWith(".local")) return "local network";
+  } catch { /* ignore */ }
+  return "connected";
+}
+
+let powering = false;
+async function wake() {
+  if (powering || state.power) return;
+  powering = true;
+  el.wakeBtn.disabled = true;
+  el.bootTitle.textContent = "Waking up…";
+  el.bootSub.textContent = "Checking in with the cameras.";
+  setAgent("idle");
+
+  const pCams = getData("/api/cameras"), pItems = getData("/api/items"), pEvents = getData("/api/events?limit=20");
+  const t0 = performance.now();
+  const tickAt = (i) => wait(Math.max(0, t0 + 300 * (i + 1) - performance.now()));
+
+  setRow("cams", "active");
+  const [rc, ri] = await Promise.all([pCams, pItems, tickAt(0)]);
+  setMode(ri.ok || rc.ok);
+  state.cameras = rc.ok ? asList(rc.data, "cameras") : state.mode === "demo" ? mock.cameras() : state.cameras;
+  const live = state.cameras.filter((c) => c.live).length;
+  setRow("cams", "done", state.mode === "demo" ? `${live} live · demo` : live ? `${live} live` : "none live");
+
+  setRow("room", "active");
+  await tickAt(1);
+  state.items = ri.ok ? normItems(ri.data) : state.mode === "demo" ? mock.items() : (state.items || []);
+  const zones = new Set(state.items.map((i) => i.zone).filter(Boolean)).size;
+  setRow("room", "done", zones ? `${zones} place${zones === 1 ? "" : "s"}` : "none mapped");
+
+  setRow("items", "active");
+  const [re] = await Promise.all([pEvents, tickAt(2)]);
+  state.events = re.ok ? asList(re.data, "events") : state.mode === "demo" ? mock.events() : state.events;
+  setRow("items", "done", state.items.length ? `${state.items.length} item${state.items.length === 1 ? "" : "s"}` : "none yet");
+
+  setRow("secure", "active");
+  await tickAt(3);
+  setRow("secure", "done", secureDetail());
+
+  el.bootTitle.textContent = "Trace is awake";
+  el.bootSub.textContent = state.mode === "demo" ? "The cameras aren't reachable, so you'll see demo data." : "Opening your room.";
+  await wait(250);
+  if (!reduced()) { sonar(el.agent); el.bootStage.classList.remove("sonar-bg"); void el.bootStage.offsetWidth; el.bootStage.classList.add("sonar-bg"); await wait(750); }
+
+  render();
+  await checkVoiceEngine();                // so the greeting already uses the right path
+  state.power = true;
+  document.body.classList.add("on");
+  el.boot.inert = true;
+  el.boot.setAttribute("aria-hidden", "true");
+  const a = await iris(true);
+  syncInert();
+  a.cancel();
+  el.app.style.opacity = "";
+
+  await moveAgent("corner");
+  el.agent.tabIndex = 0;
+  el.offBtn.classList.remove("off");
+  el.main.focus({ preventScroll: true });
+  startPolling();
+
+  const met = store.get("trace.met");
+  const listening = ear.want && canListen() ? " Say Hey Trace whenever you need me." : "";
+  say((met ? "Hi again, Trace here." : "Hi, I'm Trace. I keep an eye on your room so you don't have to. Ask me where anything is.") + listening);
+  store.set("trace.met", "1");
+  startEar();                             // no-op until the greeting has finished speaking
+  powering = false;
+}
+
+async function turnOff() {
+  if (powering || !state.power) return;
+  powering = true;
+  el.offBtn.classList.add("off");
+  stopPolling();
+  convo.turn++;                            // drop any reply still waiting to ask a follow-up
+  endConvo();
+  stopSpeaking();
+  setAwake(false);
+  ear.once = false;
+  stopEar();
+  await closeChat(false);
+  closeFound(false);
+  closeLive(false);
+  hideBubble();
+  setAgent("idle");
+  el.agent.tabIndex = -1;
+  state.power = false;
+  syncInert();
+  await moveAgent("boot");
+  const a = await iris(false);
+  document.body.classList.remove("on");
+  a.cancel();
+  window.scrollTo(0, 0);
+  setAgent("asleep");
+  resetChecklist();
+  el.bootTitle.textContent = "Trace is asleep";
+  el.bootSub.textContent = "Wake Trace to connect the cameras and see where your things are.";
+  el.boot.inert = false;
+  el.boot.removeAttribute("aria-hidden");
+  el.wakeBtn.disabled = false;
+  el.wakeBtn.focus();
+  powering = false;
+}
+
+/* ------------------------------------------------------------ wiring */
+el.wakeBtn.addEventListener("click", wake);
+$("#voiceBtn").addEventListener("click", () => toggleVoicePanel());
+$("#voiceOn").addEventListener("click", () => {
+  voice.on = !voice.on;
+  store.set("trace.voice", voice.on ? "on" : "off");
+  renderVoiceBtn();
+  if (voice.on) speakOut("Voice on."); else stopSpeaking();
+});
+$("#genderSeg").addEventListener("click", (e) => { const r = e.target.closest("[data-g]"); if (r) setGender(r.dataset.g); });
+$("#genderSeg").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+  e.preventDefault();
+  setGender(voice.gender === "male" ? "female" : "male");
+  $("#genderSeg [aria-checked=true]").focus();
+});
+$("#voiceTry").addEventListener("click", () => {
+  if (!voice.on) { voice.on = true; store.set("trace.voice", "on"); renderVoiceBtn(); }
+  speakOut("Found them. Your keys are on the table, just left of the laptop.");
+});
+document.addEventListener("click", (e) => {
+  // composedPath, not target.closest: opening the panel redraws the button, so the clicked icon may already be gone
+  if (!$("#voicePanel").hidden && !e.composedPath().some((n) => n.classList?.contains("vwrap"))) toggleVoicePanel(false);
+});
+$("#earBtn").addEventListener("click", () => toggleEar(!(ear.want && canListen())));
+$("#micBtn").addEventListener("click", listenOnce);
+if ("speechSynthesis" in window) speechSynthesis.onvoiceschanged = () => {};   // load the voice list early
+el.offBtn.addEventListener("click", turnOff);
+el.agent.addEventListener("click", () => state.chatOpen ? closeChat() : openChat());
+el.bubble.addEventListener("click", openChat);
+$("#chatClose").addEventListener("click", () => closeChat());
+el.chatForm.addEventListener("submit", (e) => { e.preventDefault(); const v = el.chatInput.value; el.chatInput.value = ""; ask(v); });
+$("#suggest").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) ask(b.textContent); });
+el.q.addEventListener("input", renderItems);
+$("#searchForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const v = el.q.value.trim();
+  if (!v) { el.q.focus(); return; }
+  openChat();
+  ask(v);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("#voicePanel").hidden) { e.preventDefault(); toggleVoicePanel(false); $("#voiceBtn").focus(); }
+  else if (state.chatOpen) { e.preventDefault(); closeChat(); }
+  else if (state.foundId != null) { e.preventDefault(); closeFound(); }
+  else if (state.liveCam != null && !document.fullscreenElement) { e.preventDefault(); closeLive(); }
+});
+const reposition = () => { if (!powering) placeAgent(agentAt); };
+window.addEventListener("resize", reposition);
+el.boot.addEventListener("scroll", () => { if (agentAt === "boot") placeAgent("boot"); }, { passive: true });
+
+setAgent("asleep");
+renderVoiceBtn();
+renderEarBtn();
+state.chat = [];
+renderItems();
+placeAgent("boot");
+(document.fonts?.ready || Promise.resolve()).then(() => { if (agentAt === "boot" && !powering) placeAgent("boot"); });
+el.wakeBtn.focus({ preventScroll: true });
+})();
+</script>
+</body>
+</html>

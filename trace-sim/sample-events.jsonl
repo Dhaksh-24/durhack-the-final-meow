@@ -1,0 +1,20 @@
+{"time": "14:00:00", "t": 1794751200.0, "zone": "desk", "event": "person_here", "camera": "phone-2"}
+{"time": "14:00:20", "t": 1794751220.3, "item": "keys-1", "category": "keys", "zone": "desk", "event": "appeared", "confidence": 0.82, "camera": "phone-2", "floor": [7.4, 1.2]}
+{"time": "14:00:30", "t": 1794751230.1, "item": "wallet-1", "category": "wallet", "zone": "desk", "event": "appeared", "confidence": 0.74, "camera": "phone-2", "floor": [8.1, 1.0]}
+{"time": "14:03:00", "t": 1794751380.0, "zone": "desk", "event": "person_left", "camera": "phone-2"}
+{"time": "14:03:02", "t": 1794751382.0, "zone": "sofa", "event": "person_here", "camera": "phone-1"}
+{"time": "14:03:10", "t": 1794751390.4, "item": "glasses-1", "category": "glasses", "zone": "sofa", "event": "appeared", "confidence": 0.66, "camera": "phone-1"}
+{"time": "14:05:00", "t": 1794751500.0, "zone": "sofa", "event": "person_left", "camera": "phone-1"}
+{"time": "14:05:03", "t": 1794751503.0, "zone": "desk", "event": "person_here", "camera": "phone-2"}
+{"time": "14:05:40", "t": 1794751540.2, "item": "keys-1", "category": "keys", "zone": "desk", "event": "disappeared", "confidence": 0.8, "camera": "phone-2"}
+{"time": "14:06:00", "t": 1794751560.0, "zone": "desk", "event": "person_left", "camera": "phone-2"}
+{"time": "14:06:05", "t": 1794751565.0, "zone": "hook", "event": "person_here", "camera": "phone-4"}
+{"time": "14:08:00", "t": 1794751680.0, "zone": "kitchen", "event": "person_here", "camera": "phone-4"}
+{"time": "14:10:00", "t": 1794751800.0, "zone": "sofa", "event": "person_here", "camera": "phone-1"}
+{"time": "14:10:05", "t": 1794751805.6, "item": "keys-1", "category": "keys", "zone": "sofa", "event": "appeared", "confidence": 0.31, "camera": "phone-1"}
+{"time": "14:10:15", "t": 1794751815.6, "item": "keys-1", "category": "keys", "zone": "sofa", "event": "disappeared", "camera": "phone-1"}
+{"time": "14:10:40", "t": 1794751840.0, "item": "remote-1", "category": "remote", "zone": "sofa", "event": "appeared", "confidence": 0.5, "camera": "phone-1"}
+{"time": "14:11:00", "t": 1794751860.0, "zone": "sofa", "event": "something_changed", "camera": "phone-1"}
+{"time": "14:12:00", "t": 1794751920.0, "zone": "kitchen", "event": "person_here", "camera": "phone-4"}
+{"time": "14:14:00", "t": 1794752040.0, "zone": "desk", "event": "person_here", "camera": "phone-2"}
+{"time": "14:15:00", "t": 1794752100.0, "zone": "desk", "event": "person_left", "camera": "phone-2"}

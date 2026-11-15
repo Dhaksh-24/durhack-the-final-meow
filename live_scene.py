@@ -11,6 +11,8 @@
     python live_scene.py --gemini              # name the anchors nicely at startup
     python live_scene.py --anchor-conf=0.20 --item-conf=0.30
     python live_scene.py --no-window --frames=30   # headless benchmark
+    python live_scene.py --no-voice            # silent (see tts.py for the voice)
+    python live_scene.py --male                # start with the male voice
 
 Setup (--setup) detects the furniture once and shows each piece in turn:
     y / Enter   keep it
@@ -28,6 +30,14 @@ While it runs:
     r     re-map the furniture (ignored once a saved list is loaded)
     g     ask Gemini to name the anchors, once, for this frame
     f     toggle the floor tint
+    v     voice on / off
+    m     switch the voice between female and male
+
+Trace speaks each item's sentence once, and again only when the item moves
+to somewhere else (a different support: on the sofa -> under the table). It
+waits until the item has sat in the same place for STEADY frames first, so a
+box that flickers between two pieces of furniture is not read out twice.
+Without kokoro installed it prints how to get it and runs silently.
 
 With --jsonl, stdout carries JSON lines and nothing else -- every status
 message goes to stderr -- so it pipes straight into another program:
@@ -47,6 +57,7 @@ import time
 import cv2
 
 import scene
+import tts
 
 ITEMS = ["keys", "wallet", "glasses"]
 ITEM_IMGSZ = 640     # per-frame pass; anchors still use scene.CONFIG["imgsz"]
@@ -54,6 +65,7 @@ HOLD = 1.5           # keep the last sentence on screen this long after the
                      # item drops out, so the overlay does not flicker
 WARMUP = 5           # discard frames: the first off a webcam is often black
 DARK_MEAN = 40       # below this (of 255) the lens is probably covered
+STEADY = 3           # frames an item must stay put before Trace says where it is
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 WINDOW = "where is it"
 ANCHORS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anchors.json")
@@ -118,6 +130,45 @@ def review_anchors(frame, detected, mapper):
                 i = len(detected) - 1
 
 
+def voice_label(voice_on):
+    """"off", "female", "male", or the voice id if it is neither."""
+    if not voice_on:
+        return "off"
+    for gender, voice in tts.VOICES.items():
+        if voice == tts.current_voice():
+            return gender
+    return tts.current_voice()
+
+
+def place(desc):
+    """Where an item is, coarse enough not to flicker: its support."""
+    return desc["support"]["rel"], desc["support"]["anchor"]
+
+
+def to_announce(descs, lines, said, seen):
+    """The sentences worth saying this frame.
+
+    said: item -> the place we last said it was.
+    seen: item -> (place, frames it has been seen there since it last moved).
+    An item is announced once it has been seen in one place for STEADY
+    frames, and again only after it settles somewhere else. Both dicts are
+    updated.
+    """
+    out, done = [], set()
+    for desc, line in zip(descs, lines):
+        item, where = desc["item"], place(desc)
+        if item in done:
+            continue                      # two boxes for one item: the first wins
+        done.add(item)
+        last, count = seen.get(item, (None, 0))
+        count = count + 1 if where == last else 1
+        seen[item] = (where, count)
+        if count >= STEADY and said.get(item) != where:
+            said[item] = where
+            out.append(line)
+    return out
+
+
 def main():
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
     items, overrides = list(ITEMS), {"item_imgsz": ITEM_IMGSZ}
@@ -128,6 +179,7 @@ def main():
     json_path = None
     anchors_path = ANCHORS_FILE
     camera_id = "webcam"
+    voice_on = "--no-voice" not in flags
     if "--drop-guesses" in flags:
         overrides["drop_guesses"] = True
 
@@ -155,6 +207,22 @@ def main():
 
     if setup and not show:
         sys.exit("--setup needs the window to ask you about each piece: drop --no-window")
+
+    # The voice loads in the background while the camera and the item
+    # prompts get ready. The greeting is pre-rendered, so it plays at once.
+    has_voice = not tts.missing()
+    if not has_voice:
+        print('no voice: %s not installed -- pip install "kokoro>=0.9.4" '
+              "soundfile sounddevice (Python 3.10-3.12). Running silently."
+              % ", ".join(tts.missing()))
+    voice_on = voice_on and has_voice
+    if has_voice:
+        tts.set_voice("male" if "--male" in flags else "female")
+    if voice_on:
+        tts.warm_up(block=False)
+        tts.speak(tts.GREETING)
+    warmed = voice_on
+    said, seen = {}, {}             # see to_announce()
 
     mapper = scene.SceneMapper(overrides)
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)      # DSHOW opens fast on Windows
@@ -252,6 +320,13 @@ def main():
         dt = time.perf_counter() - t
         fps = 1 / dt if fps == 0 else 0.9 * fps + 0.1 / dt
 
+        # Say where things are -- once per item per place, never per frame.
+        # speak() returns at once; the audio plays on its own thread.
+        if voice_on:
+            news = to_announce(descs, sentences, said, seen)
+            if news:
+                tts.speak(" ".join(news))
+
         # The stream reports what THIS frame saw, nothing held over: each
         # line is one detection, stamped with the time of its frame.
         if lines_out is not None:
@@ -278,9 +353,12 @@ def main():
 
         canvas = scene.annotate(frame, anchors, found, held,
                                 floor if show_floor else None)
-        cv2.putText(canvas, "%4.1f fps | %d anchors%s | Esc quit  r re-map  g gemini"
+        cv2.putText(canvas, "%4.1f fps | %d anchors%s"
                     % (fps, len(anchors), " (fixed)" if fixed else ""),
                     (10, canvas.shape[0] - 10), FONT, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(canvas, "Esc quit  r re-map  g gemini  v voice (%s)  m male/female"
+                    % voice_label(voice_on),
+                    (10, canvas.shape[0] - 30), FONT, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
         if show:
             cv2.imshow(WINDOW, canvas)
@@ -303,6 +381,19 @@ def main():
                     print("gemini failed: %s: %s" % (type(exc).__name__, exc))
             if key == ord("f"):
                 show_floor = not show_floor
+            if key == ord("v"):
+                if not has_voice:
+                    print('no voice: pip install "kokoro>=0.9.4" soundfile sounddevice')
+                else:
+                    voice_on = not voice_on
+                    if voice_on and not warmed:      # started with --no-voice
+                        tts.warm_up(block=False)
+                        warmed = True
+                    print("voice %s" % voice_label(voice_on))
+            if key == ord("m") and has_voice:
+                male = tts.current_voice() == tts.VOICES["male"]
+                tts.set_voice("female" if male else "male")
+                print("voice: %s" % voice_label(voice_on))
 
         n += 1
         if limit and n >= limit:

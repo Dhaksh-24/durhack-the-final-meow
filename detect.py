@@ -3,15 +3,18 @@
 Standalone, with optional Gemini verification:
 
     python detect.py                          # live webcam, Esc to quit
-    python detect.py bus.jpg                  # one image
-    python detect.py --classes=keys,wallet    # override the prompts
-    python detect.py --imgsz=320              # smaller input, ~3x faster
+    python detect.py photo.jpg                # one image
+    python detect.py --classes=keys,glasses   # override the prompts
+    python detect.py --imgsz=1280              # smaller input, ~3x faster
     python detect.py --conf=0.02              # surface weaker detections
     python detect.py --no-verify              # detection only, no Gemini
     python detect.py --list-models            # what your key can reach
     python detect.py --no-window --frames=30  # headless benchmark
 
-YOLO-World runs deliberately loose (CONF is low) so it rarely misses, then
+For the tracker, Detector checks every YOLO-World box with a CLIP classifier
+(verifier.json, built by train_verifier.py) -- see "Second stage" below.
+
+Standalone, YOLO-World runs deliberately loose (CONF is low) so it rarely misses, then
 Gemini confirms or rejects each candidate crop. The API call happens on a
 background thread, so the video loop never waits on the network -- verdicts
 land a beat after the box does. Put GEMINI_API_KEY in a .env file beside
@@ -25,7 +28,8 @@ Used by the tracker (multicam.py):
                                                # (category, [x1, y1, x2, y2], conf)
 
 THE CONTRACT: multicam.py only ever calls Detector(conf=, imgsz=),
-Detector.detect(frames) and reads CONF and IMGSZ. Swap the model inside
+Detector.detect(frames), reads CONF and IMGSZ, and may use load_clip() and
+Detector.last_embeddings (the CLIP embedding of each returned box, or None). Swap the model inside
 freely -- as long as detect() returns the same shape, the tracker keeps
 working. Importing this module never opens a camera; the standalone code
 only runs under `python detect.py`.
@@ -55,9 +59,8 @@ MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3.8-flash"   # --list-models
 # category -> prompt synonyms. Synonyms are merged into ONE category, so a set
 # of keys that matches "keys" AND "keychain" is still one detection.
 PROMPTS = {
-    "keys": ["keys", "keychain", "car keys"],
+    "keys": ["keys", "keychain", "car keys", "key"],
     "glasses": ["glasses", "eyeglasses", "reading glasses"],
-    "wallet": ["wallet", "purse"],
 }
 WEIGHTS = "yolov8s-worldv2.pt"
 MERGE_IOU = 0.5     # synonym boxes overlapping more than this = the same object
@@ -72,10 +75,147 @@ def _iou(a, b):
     return inter / union if union > 0 else 0.0
 
 
+# ---------------------------------------------------------------------------
+# Second stage: a CLIP check on every candidate box (train_verifier.py).
+#
+# YOLO-World alone is a weak judge of small things (LVIS AP50: keys 0.11,
+# glasses 0.48, see targets.BEST) and it calls cards, keyboards and drinking
+# glasses keys or glasses. So it runs loose and only PROPOSES boxes; each box is cropped, put
+# through CLIP ViT-B/32 and scored by a small classifier over
+# {keys, glasses, other}, trained on LVIS photos, close-up web photos
+# and YOLO-World's own false alarms, and blended with CLIP's zero-shot
+# knowledge of look-alikes (cards, phones, keyboards, drinking glasses...).
+# A box survives only if "other" loses and its class clears a threshold
+# chosen for precision. The returned conf is then the classifier's
+# probability, not YOLO's score.
+# ---------------------------------------------------------------------------
+
+VERIFIER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "verifier.json")
+PROPOSE_CONF = 0.02  # YOLO-World threshold when the verifier is on: recall first
+MAX_AREA = 0.40      # drop boxes bigger than this share of the frame (sofas, tables);
+                     # the verifier rejects furniture itself, so this can be generous
+MIN_SIDE = 8         # px -- smaller boxes can't be judged
+TOP_K = 8            # most proposals verified per frame (CPU budget)
+CROP_PAD = 0.10      # context around each box for CLIP, as a share of its size
+
+_CLIP = None
+
+
+def load_clip():
+    """CLIP ViT-B/32, loaded once and shared (multicam.py's fingerprints use it too)."""
+    global _CLIP
+    if _CLIP is None:
+        import clip
+        import torch
+        from ultralytics.utils import WEIGHTS_DIR
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model, pre = clip.load("ViT-B/32", device=device, download_root=str(WEIGHTS_DIR / "clip"))
+        model.eval()
+        _CLIP = (model, pre, device)
+    return _CLIP
+
+
+def crop_box(frame, box, pad=CROP_PAD):
+    """BGR crop of box [x1, y1, x2, y2] with `pad` of its size around it."""
+    x1, y1, x2, y2 = box
+    px, py = (x2 - x1) * pad, (y2 - y1) * pad
+    h, w = frame.shape[:2]
+    x1, y1 = int(max(0, x1 - px)), int(max(0, y1 - py))
+    x2, y2 = int(min(w, x2 + px)), int(min(h, y2 + py))
+    c = frame[y1:y2, x1:x2]
+    return c if c.size else frame[0:2, 0:2]
+
+
+def embed(crops_bgr, batch=32):
+    """L2-normalised CLIP image embeddings, (n, 512) float32."""
+    import numpy as np
+    import torch
+    from PIL import Image
+    if not len(crops_bgr):
+        return np.zeros((0, 512), np.float32)
+    model, pre, device = load_clip()
+    out = []
+    with torch.no_grad():
+        for i in range(0, len(crops_bgr), batch):
+            x = torch.stack([pre(Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)))
+                             for c in crops_bgr[i:i + batch]])
+            f = model.encode_image(x.to(device)).float()
+            out.append((f / f.norm(dim=-1, keepdim=True)).cpu().numpy())
+    return np.concatenate(out).astype(np.float32)
+
+
+def embed_text(texts):
+    import clip
+    import torch
+    model, _, device = load_clip()
+    with torch.no_grad():
+        f = model.encode_text(clip.tokenize(texts).to(device)).float()
+    return (f / f.norm(dim=-1, keepdim=True)).cpu().numpy()
+
+
+def zero_shot_scores(embs, class_prompts, text=None):
+    """Per class, log-sum-exp over its prompts of CLIP's 100 * cosine: (n, classes)."""
+    import numpy as np
+    if text is None:
+        text = [embed_text(p) for p in class_prompts]
+    out = []
+    for t in text:
+        s = 100.0 * embs @ t.T
+        m = s.max(1, keepdims=True)
+        out.append((m + np.log(np.exp(s - m).sum(1, keepdims=True)))[:, 0])
+    z = np.stack(out, 1)
+    return z - z.mean(1, keepdims=True)
+
+
+class ClipVerifier:
+    """Scores crops with the classifier saved by train_verifier.py (verifier.json)."""
+
+    def __init__(self, path=VERIFIER_FILE):
+        import numpy as np
+        with open(path, encoding="utf-8") as fh:
+            v = json.load(fh)
+        self.classes = v["classes"]
+        self.W, self.b = np.array(v["W"], np.float32), np.array(v["b"], np.float32)
+        self.alpha = float(v["alpha"])
+        self.thresholds = v["thresholds"]
+        self.prompts = [v["prompts"][c] for c in self.classes]
+        self.text = [embed_text(p) for p in self.prompts]
+        self.report = v.get("report", {})
+
+    def logits(self, embs):
+        return embs @ self.W.T + self.b + self.alpha * zero_shot_scores(embs, None, self.text)
+
+    def probs(self, embs):
+        import numpy as np
+        z = self.logits(embs)
+        z = np.exp(z - z.max(1, keepdims=True))
+        return z / z.sum(1, keepdims=True)
+
+    def judge(self, probs_row):
+        """(category, probability) if the crop passes, else None."""
+        k = int(probs_row.argmax())
+        c = self.classes[k]
+        if c == "other" or probs_row[k] < self.thresholds.get(c, 1.0):
+            return None
+        return c, float(probs_row[k])
+
+
 class Detector:
-    def __init__(self, prompts=None, conf=CONF, imgsz=IMGSZ, weights=WEIGHTS):
+    def __init__(self, prompts=None, conf=None, imgsz=IMGSZ, weights=WEIGHTS, verify=True):
+        """verify: use the CLIP check from verifier.json if it exists (see above).
+        conf: YOLO-World threshold; defaults to PROPOSE_CONF with the check, CONF without."""
         prompts = prompts or PROMPTS
+        self.verifier = None
+        if verify and os.path.exists(VERIFIER_FILE):
+            self.verifier = ClipVerifier()
+            print("verifier on: %s (classes %s)" % (os.path.basename(VERIFIER_FILE),
+                                                     ", ".join(self.verifier.classes)))
+        elif verify:
+            print("no verifier.json -- YOLO-World only (run train_verifier.py)")
+        if conf is None:
+            conf = PROPOSE_CONF if self.verifier else CONF
         self.conf, self.imgsz = conf, imgsz
+        self.last_embeddings = []   # per frame, CLIP embedding of each returned detection
         self.categories = list(prompts)
         self.flat, self.cat_of = [], []
         for cat, words in prompts.items():
@@ -89,13 +229,55 @@ class Detector:
         self.model.set_classes(self.flat)
         print("ready in %.1fs" % (time.perf_counter() - t0))
 
+    def propose(self, frames):
+        """YOLO-World boxes per frame, synonyms merged, oversized/tiny boxes dropped,
+        at most TOP_K by score: [(category, box, score), ...]."""
+        results = self.model.predict(frames, imgsz=self.imgsz, conf=self.conf, verbose=False)
+        out = []
+        for f, r in zip(frames, results):
+            h, w = f.shape[:2]
+            items, others = [], []
+            for c, b, s in self._merge(r):
+                # the size limits are for small objects only: a person seen from above can
+                # fill half the frame, and multicam needs those boxes for person_here
+                if self.verifier is not None and c not in self.verifier.classes:
+                    others.append((c, b, s))
+                elif (b[2] - b[0]) * (b[3] - b[1]) <= MAX_AREA * w * h and min(b[2] - b[0], b[3] - b[1]) >= MIN_SIDE:
+                    items.append((c, b, s))
+            out.append(items[:TOP_K] + others)
+        return out
+
     def detect(self, frames):
         """frames: one image or a list. Returns a list (one per frame) of
-        [(category, [x1, y1, x2, y2], conf), ...] with synonyms merged."""
+        [(category, [x1, y1, x2, y2], conf), ...] with synonyms merged.
+        With the verifier, category may be corrected (YOLO said glasses, it's keys)
+        and conf is the verifier's probability."""
         single = not isinstance(frames, list)
-        results = self.model.predict(frames if not single else [frames],
-                                     imgsz=self.imgsz, conf=self.conf, verbose=False)
-        out = [self._merge(r) for r in results]
+        frames = [frames] if single else frames
+        props = self.propose(frames)
+        if self.verifier is None:
+            self.last_embeddings = [None] * len(frames)
+            return props[0] if single else props
+        import numpy as np
+        crops = [crop_box(f, b) for f, p in zip(frames, props) for _, b, _ in p]
+        embs = embed(crops)
+        probs = self.verifier.probs(embs) if len(crops) else []
+        out, self.last_embeddings, k = [], [], 0
+        for p in props:
+            kept, ke = [], []
+            for cat, box, score in p:
+                # a category the verifier wasn't trained on passes through unchecked
+                j = self.verifier.judge(probs[k]) if cat in self.verifier.classes else (cat, score)
+                if j is not None:
+                    kept.append((j[0], box, j[1], embs[k]))
+                k += 1
+            kept.sort(key=lambda d: -d[2])
+            final = []
+            for d in kept:   # relabelling can create duplicates: keep the best per object
+                if all(f[0] != d[0] or _iou(f[1], d[1]) < MERGE_IOU for f in final):
+                    final.append(d)
+            out.append([(c, b, s) for c, b, s, _ in final])
+            self.last_embeddings.append(np.stack([e for *_, e in final]) if final else np.zeros((0, 512), np.float32))
         return out[0] if single else out
 
     def _merge(self, r):

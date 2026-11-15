@@ -13,7 +13,9 @@ Setup
        python multicam.py --cam "Laptop=0" --cam "Hall=http://192.168.1.23:8080/video" --cam "Sofa=http://192.168.1.31:4747/video"
      or in cameras.json (see cameras.example.json) and just run:
        python multicam.py
-  3. Run api.py alongside it for the phone app, exactly as before.
+  3. Open Trace at http://localhost:8000/ - multicam serves it, with live video of every
+     camera (trace_api.py). --api-host 0.0.0.0 lets phones on your Wi-Fi open it too,
+     --api-port 0 turns the server off.
 
 What it looks for (prompts, threshold, model) is set in detect.py, which must sit in the
 same folder. --conf / --imgsz here override detect.py's defaults.
@@ -24,6 +26,7 @@ Controls (click the window first) - same as memory_demo.py:
   f                        find by name (type in terminal)
   1-9, 0                   highlight an item / clear
   d                        debug scores     c  clear zones of the camera under the mouse
+  h                        heatmap: where people walked, the places, and how long you've been at one
   Esc                      cancel mode      q  save and quit
 """
 
@@ -44,6 +47,15 @@ from PIL import Image
 
 # detection lives in detect.py (prompts, thresholds, model) - see its docstring
 import detect
+import room as roommod
+import trace_api
+import whereabouts
+
+try:                    # turns detections into SPEC 3.2 events for the Trace model page
+    import events_adapter
+except Exception as e:  # keep the tracker usable without it
+    events_adapter = None
+    print(f"events_adapter.py not loaded ({e}): no trace-events.jsonl")
 
 # ---- tuning ----
 SAMPLE_SECS = 0.5      # each camera is analysed at most every this many seconds
@@ -121,6 +133,98 @@ def atomic_write(path, text):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(text)
     os.replace(tmp, path)
+
+
+# ---- feeding the Trace model (trace-sim page) ----
+TRACE_EVENTS_FILE = Path("trace-events.jsonl")   # SPEC 3.2 events; bridge.py streams it to the page
+PERSON_CONF = 0.35      # YOLO-World "person" boxes below this are ignored
+PERSON_AT = 0.25        # a person box covering this much of a zone (or their feet in it) = at that zone
+MOTION_DIFF = 18        # grey-level change (0-255) that counts as movement (--no-people only)
+MOTION_FRAC = 0.02      # share of a zone that has to move for "someone is here" (--no-people only)
+PERSON_QUIET = 4.0      # s without a person at a zone before "person_left"
+
+
+def _area(r):
+    return max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
+
+
+def person_zone(box, zones):
+    """The one zone a person is at: the most covered zone, or the zone their feet are in.
+    The model keeps a single place for the person, so this picks one, never several."""
+    fx, fy = (box[0] + box[2]) / 2, box[3]
+    best, best_s = None, 0.0
+    for z in zones:
+        r = z["rect"]
+        inter = _area([max(r[0], box[0]), max(r[1], box[1]), min(r[2], box[2]), min(r[3], box[3])])
+        s = inter / max(1.0, min(_area(r), _area(box)))
+        if r[0] <= fx <= r[2] and r[1] <= fy <= r[3]:
+            s = max(s, PERSON_AT)
+        if s >= PERSON_AT and s > best_s:
+            best, best_s = z, s
+    return best
+
+
+class ZoneWatch:
+    """person_here / person_left per named zone. From YOLO-World "person" boxes found in the
+    same pass as the items (so a TV, a lamp or a shadow doesn't count as someone being there),
+    or from movement inside the zone when people aren't detected (--no-people).
+    No identity either way: only "a person is at this zone"."""
+
+    def __init__(self, feed):
+        self.feed, self.prev, self.state = feed, {}, {}
+
+    def zone_id(self, name):
+        return self.feed.zone_map.get(name) or events_adapter.slug(name)
+
+    def update(self, cam, frame, zones, now, people=None):
+        """people: [(box, conf)] from the detector, or None to fall back to movement."""
+        if people is None:
+            return self._motion(cam, frame, zones, now)
+        found = [person_zone(b, zones) for b, c in people if c >= PERSON_CONF]
+        at = {z["name"] for z in found if z is not None}
+        for z in zones:
+            self._mark(cam, z["name"], z["name"] in at, now)
+
+    def _mark(self, cam, name, present, now):
+        st = self.state.setdefault((cam, name), {"here": False, "last": 0.0})
+        if present:
+            st["last"] = now
+            if not st["here"]:
+                st["here"] = True
+                self.feed.person_event("person_here", self.zone_id(name), now, cam)
+        elif st["here"] and now - st["last"] > PERSON_QUIET:
+            st["here"] = False
+            self.feed.person_event("person_left", self.zone_id(name), now, cam)
+
+    def _motion(self, cam, frame, zones, now):
+        w = 240
+        small = cv2.resize(frame, (w, max(1, int(w * frame.shape[0] / frame.shape[1]))))
+        g = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        prev, self.prev[cam] = self.prev.get(cam), g
+        if prev is None or prev.shape != g.shape:
+            return
+        moved = cv2.absdiff(g, prev) > MOTION_DIFF
+        k = w / float(frame.shape[1])
+        for z in zones:
+            x1, y1, x2, y2 = [int(v * k) for v in z["rect"]]
+            roi = moved[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+            if roi.size == 0:
+                continue
+            self._mark(cam, z["name"], roi.mean() > MOTION_FRAC, now)
+
+
+def feed_frame(feed, cam, frame, dets, zones, now):
+    """One analysed frame -> the adapter, which applies SPEC 3.2's hysteresis
+    (appeared = 2 of 3 frames, disappeared = 5 missed, moved, boxes > 15% dropped).
+    Every analysed frame goes in, empty ones too, so misses are counted."""
+    h, w = frame.shape[:2]
+    rows = []
+    for cat, box, conf in dets:
+        zone = zone_for(box, zones)
+        rows.append({"item": cat, "box": [float(v) for v in box], "det_conf": float(conf),
+                     "image_w": w, "image_h": h, "camera_id": cam,
+                     "support": {"rel": "in", "anchor": zone} if zone else None})
+    feed.frame(cam, now, rows)
 
 
 def zone_for(box, zones):
@@ -511,6 +615,16 @@ class Memory:
         print(f"Loaded {len(self.objs)} remembered objects.")
 
 
+def api_item(o, now, cam_names):
+    """One remembered object in the shape trace.html reads from /api/items."""
+    fh, fw = o.frame.shape[:2] if o.frame is not None else (None, None)
+    return {"id": o.id, "name": o.label, "category": o.category, "camera": o.cam,
+            "camera_name": cam_names.get(o.cam, o.cam) if o.cam else None, "zone": o.zone,
+            "last_time": o.last_time, "box": [round(float(v), 1) for v in o.box] if o.box else None,
+            "frame_w": fw, "frame_h": fh, "sentence": None, "confidence": None,
+            "guess": False, "flag": None, "in_view": o.visible(now)}
+
+
 def log_event(o, now, cam_names):
     rec = {"id": o.id, "item": o.label, "category": o.category, "zone": o.zone, "source": "camera",
            "camera": o.cam, "camera_name": cam_names.get(o.cam, o.cam),
@@ -561,8 +675,11 @@ def ibox(b):
     return (int(b[0]), int(b[1])), (int(b[2]), int(b[3]))
 
 
-def draw_tile(view, cam, mem, zones, now, focus, drag, debug):
+def draw_tile(view, cam, mem, zones, now, focus, drag, debug, brain=None):
     """Draw one camera's frame (at VIEW_W coordinates)."""
+    if brain is not None:          # 'h': the heatmap + places replace the zone drawing
+        brain.overlay(cam.id, view, now)
+        zones = []
     for z in zones:
         x1, y1, x2, y2 = z["rect"]
         ov = view.copy()
@@ -729,6 +846,18 @@ def main():
                     help="detector input size (default from detect.py)")
     ap.add_argument("--conf", type=float, default=detect.CONF,
                     help="detector threshold (default from detect.py)")
+    ap.add_argument("--zone-map", default=None,
+                    help='JSON file renaming zones to the Trace room map ids, e.g. {"Hall table": "desk"}; '
+                         'without it a zone "Sofa" becomes "sofa"')
+    ap.add_argument("--no-people", action="store_true",
+                    help="don't look for people: someone at a zone comes from movement there, no heatmap, "
+                         "and Trace can't tell picked-up from covered")
+    ap.add_argument("--no-bridge", action="store_true",
+                    help="don't start bridge.py (which streams trace-events.jsonl to the Trace page)")
+    ap.add_argument("--api-port", type=int, default=8000,
+                    help="port for Trace (trace.html + live video); 0 turns it off")
+    ap.add_argument("--api-host", default="127.0.0.1",
+                    help="127.0.0.1 = this computer only; 0.0.0.0 = phones on your Wi-Fi too")
     args = ap.parse_args()
 
     cams = load_cameras(args)
@@ -738,10 +867,42 @@ def main():
         c.start()
 
     print("Loading models (first run downloads weights)...")
-    detector = detect.Detector(conf=args.conf, imgsz=args.imgsz)
+    # people ride along in the same YOLO-World pass at no extra cost; they feed
+    # person_here / person_left, the heatmap and whereabouts.py, never the item memory
+    prompts = dict(detect.PROMPTS) if args.no_people else {**detect.PROMPTS, "person": ["person"]}
+    detector = detect.Detector(prompts=prompts, conf=args.conf, imgsz=args.imgsz)
     mem = Memory(Embedder(), cam_names)
     zones = load_zones(cams[0].id)
+    brain = whereabouts.Whereabouts(roommod.Room(), cam_names)
+    brain.room.set_drawn(zones, cam_names)
+    brain.room.save()
+    show_heat = False
     layout = Layout(len(cams))
+    feed = watch = bridge = None
+    if events_adapter is not None:
+        zmap = {}
+        if args.zone_map:
+            try:
+                zmap = json.loads(Path(args.zone_map).read_text())
+            except Exception as e:
+                print(f"  couldn't read --zone-map {args.zone_map}: {e}")
+        feed = events_adapter.Adapter(str(TRACE_EVENTS_FILE), zmap, echo=False)
+        watch = ZoneWatch(feed)
+        print(f"Trace model events -> {TRACE_EVENTS_FILE} (zones must match the room map in the page)")
+        if not args.no_bridge:
+            import subprocess
+            try:
+                bridge = subprocess.Popen([sys.executable, str(Path(__file__).with_name("bridge.py")),
+                                           "--file", str(TRACE_EVENTS_FILE),
+                                           "--host", "0.0.0.0" if args.api_host == "0.0.0.0" else "localhost"])
+                print("  bridge.py started: open trace-sim/index.html (or /model) and press Connect live")
+            except Exception as e:
+                print(f"  couldn't start bridge.py ({e}); run it yourself: python bridge.py --file {TRACE_EVENTS_FILE}")
+    api = trace_api.TraceAPI(cams, MEM_DIR, EVENTS_FILE).start(
+        args.api_host, args.api_port) if args.api_port else None
+    if api:
+        api.brain = brain
+    last_pub = 0.0
 
     win = "FindIt - all cameras"
     cv2.namedWindow(win)
@@ -787,13 +948,25 @@ def main():
         if batch:
             per_frame = detector.detect([f for _, f, _ in batch])
             for (c, f, ft), dets in zip(batch, per_frame):
+                people = None if args.no_people else [(b, s) for cat, b, s in dets if cat == "person"]
+                dets = [d for d in dets if d[0] != "person"]
                 cz = [z for z in zones if z["camera"] == c.id]
                 c.assigned = mem.update(c.id, f, dets, now, cz)
+                if feed is not None:
+                    try:
+                        feed_frame(feed, c.id, f, dets, cz, now)
+                        watch.update(c.id, f, cz, now, people)
+                    except Exception as e:      # never let the model feed stop the tracker
+                        print(f"  [{c.name}] trace event error: {e}")
                 c.dets, c.debug = dets, dict(mem.debug_scores)
+                brain.frame(c.id, now, f.shape, people or [],
+                            [(oid, mem.objs[oid].category, mem.objs[oid].label, dets[d][1])
+                             for d, oid in c.assigned.items() if oid in mem.objs])
                 c.last_processed, c.processed_frame_time, c.processed_at = now, ft, now
             processed += len(batch)
         if now - rate_t >= 2:
             rate, processed, rate_t = processed / (now - rate_t), 0, now
+        brain.tick(now)
 
         # ---- out-of-sight events (no camera sees it any more)
         for o in mem.objs.values():
@@ -823,7 +996,8 @@ def main():
                 if a and b and a[0] == k == b[0]:
                     drag = ((int(a[1]), int(a[2])), (int(b[1]), int(b[2])))
             draw_tile(view, c, mem, [
-                      z for z in zones if z["camera"] == c.id], now, focus, drag, debug)
+                      z for z in zones if z["camera"] == c.id], now, focus, drag, debug,
+                      brain if show_heat else None)
             layout.place(canvas, k, view)
             cv2.rectangle(canvas, (tx, ty), (tx + layout.tw - 1,
                           ty + layout.th - 1), (60, 60, 60), 1)
@@ -856,6 +1030,7 @@ def main():
             elif mode == "forget":
                 print(f"  forgot {o.label}")
                 mem.forget(o.id)
+                brain.forget(o.id)
                 focus, mode = (None if focus == o.id else focus), None
             elif mode == "merge":
                 merge_first, mode = o.id, "merge2"
@@ -869,6 +1044,7 @@ def main():
                     print(
                         f"  merged {o.label} into {mem.objs[merge_first].label}")
                     mem.merge(merge_first, o.id)
+                    brain.forget(o.id)
                     focus, mode = (None if focus == o.id else focus), None
             elif mode is None and o is not None and x >= GRID_W:
                 focus = o.id
@@ -882,6 +1058,8 @@ def main():
                 zones.append(
                     {"name": name, "rect": rect, "camera": cams[k].id})
                 save_zones(zones)
+                brain.room.set_drawn(zones, cam_names)
+                brain.room.save()
 
         # ---- keys
         key = cv2.waitKey(1) & 0xFF
@@ -897,11 +1075,15 @@ def main():
             mode = "forget"
         elif key == ord("d"):
             debug = not debug
+        elif key == ord("h"):
+            show_heat = not show_heat
         elif key == ord("c"):
             m = layout.to_cam(*ms["pos"])
             if m:
                 zones = [z for z in zones if z["camera"] != cams[m[0]].id]
                 save_zones(zones)
+                brain.room.set_drawn(zones, cam_names)
+                brain.room.save()
                 print(f"  cleared zones on {cams[m[0]].name}")
         elif key == ord("0"):
             focus, mode = None, None
@@ -922,6 +1104,10 @@ def main():
                 print(f"  {o.label}: {where}" + (f" in {o.zone}" if o.zone else "")
                       + (f" ({cam_names.get(o.cam)})" if o.cam else ""))
 
+        if api and now - last_pub > 0.5:
+            api.items = [api_item(o, now, cam_names)
+                         for o in list(mem.objs.values()) if o.last_time]
+            last_pub = now
         if now - last_live > 1:
             mem.apply_edits()
             mem.save_live()
@@ -929,12 +1115,18 @@ def main():
             last_live = now
         if now - last_save > 10:
             mem.save()
+            brain.save()
             last_save = now
         if not batch:
             time.sleep(0.01)
 
     mem.save()
+    brain.save()
     print("Memory saved.")
+    if bridge is not None:
+        bridge.terminate()
+    if api:
+        api.stop()
     for c in cams:
         c.stopped = True
     cv2.destroyAllWindows()

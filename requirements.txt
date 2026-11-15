@@ -1,0 +1,19 @@
+# Python 3.10 - 3.12 (kokoro's spaCy dependency has no build for 3.13+)
+
+# detection and scene mapping
+ultralytics
+opencv-python
+numpy
+# YOLO-World's text encoder; ultralytics also installs this itself on first run
+clip @ git+https://github.com/ultralytics/CLIP.git
+
+# Trace's natural voice (tts.py): Microsoft neural voices, online, no API key
+edge-tts>=7
+
+# Trace's offline voice (tts.py), used when there's no internet
+kokoro>=0.9.4
+soundfile
+sounddevice
+
+# optional: scene.py --gemini
+# google-genai
