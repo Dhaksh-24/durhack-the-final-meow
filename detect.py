@@ -5,7 +5,7 @@ Standalone, with optional Gemini verification:
     python detect.py                          # live webcam, Esc to quit
     python detect.py photo.jpg                # one image
     python detect.py --classes=keys,glasses   # override the prompts
-    python detect.py --imgsz=320              # smaller input, ~3x faster
+    python detect.py --imgsz=1280              # smaller input, ~3x faster
     python detect.py --conf=0.02              # surface weaker detections
     python detect.py --no-verify              # detection only, no Gemini
     python detect.py --list-models            # what your key can reach
@@ -59,7 +59,7 @@ MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3.8-flash"   # --list-models
 # category -> prompt synonyms. Synonyms are merged into ONE category, so a set
 # of keys that matches "keys" AND "keychain" is still one detection.
 PROMPTS = {
-    "keys": ["keys", "keychain", "car keys"],
+    "keys": ["keys", "keychain", "car keys", "key"],
     "glasses": ["glasses", "eyeglasses", "reading glasses"],
 }
 WEIGHTS = "yolov8s-worldv2.pt"
