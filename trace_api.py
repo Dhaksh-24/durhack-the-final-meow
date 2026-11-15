@@ -12,6 +12,9 @@ plus OpenCV only; no keys, and nothing leaves your network.
   GET /api/snapshots/<id>.jpg    frame it was last seen in      (memory/snapshots)
   GET /api/live/<camera>.mjpg    live video of one camera (MJPEG, about LIVE_FPS frames a second)
   GET /api/live/<camera>.jpg     the latest single frame
+  POST /api/speech {"text"}      Trace's voice: a WAV of the line, made by tts.py (Kokoro,
+                                 offline). 503 when kokoro isn't installed; the page then
+                                 uses the browser's own voice instead.
 
 The live video is the raw camera picture; trace.html draws the item boxes on
 top itself. /api/ask is not served yet, so Trace answers from its built-in
@@ -22,21 +25,43 @@ on a phone, start multicam.py with --api-host 0.0.0.0 and browse to
 http://<this-computer's-ip>:8000/ -- but anyone on the same Wi-Fi can then see
 the cameras, so only do that on a network you trust.
 """
+import io
 import json
 import re
 import threading
 import time
+import wave
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import cv2
+import numpy as np
+
+try:                    # Trace's offline voice; optional (kokoro needs Python 3.10 - 3.12)
+    import tts
+    VOICE = not tts.missing()
+except Exception:
+    tts, VOICE = None, False
 
 ROOT = Path(__file__).resolve().parent
 LIVE_FPS = 8            # frames a second per viewer; phones on Wi-Fi cope well with this
 JPEG_QUALITY = 72
 STALL_SECS = 8          # end a live stream after this long without a new frame
+SPEECH_MAX = 600        # characters per /api/speech request; Trace's lines are far shorter
+
+
+def wav_bytes(audio, rate):
+    """float32 mono samples -> a 16-bit WAV file in memory."""
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
 
 
 class TraceAPI:
@@ -110,8 +135,26 @@ class TraceAPI:
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(n)
+                raw = self.rfile.read(min(n, 64 * 1024))
+                if urlparse(self.path).path == "/api/speech":
+                    return self._speech(raw)
                 self._json({"error": "not available yet"}, 501)
+
+            def _speech(self, raw):
+                if not VOICE:
+                    return self._json({"error": "voice not installed (pip install -r requirements.txt)"}, 503)
+                try:
+                    text = str(json.loads(raw or b"{}").get("text", "")).strip()[:SPEECH_MAX]
+                except ValueError:
+                    return self._json({"error": "bad json"}, 400)
+                if not text:
+                    return self._json({"error": "no text"}, 400)
+                try:
+                    audio = tts.synth(text)
+                except Exception as exc:       # model not downloaded, no espeak, ...
+                    print("tts: could not say %r: %s: %s" % (text, type(exc).__name__, exc))
+                    return self._json({"error": "voice failed"}, 503)
+                self._bytes(wav_bytes(audio, tts.RATE), "audio/wav")
 
             def do_GET(self):
                 url = urlparse(self.path)
@@ -178,6 +221,11 @@ class TraceAPI:
         shown = "localhost" if host in ("127.0.0.1", "localhost") else host
         print(f"Trace is at http://{shown}:{port}/" +
               ("  (cameras visible to anyone on this network)" if host == "0.0.0.0" else ""))
+        if VOICE:
+            tts.warm_up(block=False)           # load Kokoro now so the first reply isn't slow
+        else:
+            print("Trace's voice: kokoro not installed, the page will use the browser's voice "
+                  "(see README, Voice)")
         return self
 
     def stop(self):

@@ -1,5 +1,31 @@
 # durhack-the-final-meow
 
+## Run Trace (the app)
+
+```bash
+python multicam.py                    # cameras from cameras.json, or webcam 0
+```
+
+Then open **http://localhost:8000/** and press **Wake Trace**. `multicam.py` serves
+the page (`trace.html`) through `trace_api.py`, with:
+
+- **Live cameras:** press **Watch live** on a camera to see it live, with Trace's boxes
+  drawn on top. Opening `trace.html` as a file without `multicam.py` shows demo data
+  and a drawing of the room instead.
+- **Voice:** Trace reads every answer aloud, using Kokoro (`tts.py`) when it's
+  installed and the browser's voice otherwise. The **Voice** button turns it off.
+- **"Hey Trace":** turn on **Hey Trace** in the header. Then say "Hey Trace" (chime)
+  and your question, or "Hey Trace, where are my keys?" in one breath. You can also say
+  "say that again", "stop", "go back", or "show me the hall camera". The mic button in
+  the chat listens once without the wake word.
+  - Listening uses the browser's speech recognition (Chrome, Edge or Safari). In
+    Chrome the audio goes to Google to be turned into text; the camera video doesn't.
+  - Browsers only allow the microphone on a secure page, so voice commands work at
+    `http://localhost:8000` on this computer, but not on a phone at `http://<laptop-ip>:8000`.
+
+For phones on the same Wi-Fi, run `python multicam.py --api-host 0.0.0.0`, then open
+`http://<laptop-ip>:8000/`. Anyone on that network can then watch the cameras.
+
 ## Voice (offline)
 
 Trace speaks with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), running
