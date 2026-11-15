@@ -1,4 +1,21 @@
 <!DOCTYPE html>
+<!--
+  trace.html: the page you talk to Trace on (served at / by trace_api.py; works from disk with sample data).
+  Its answers come from the model in /sim, through /api/ask. Search for these markers:
+    <style>              mascot, corner agent, chat panel, power-on screen, app shell, found view, live camera view
+    <body>               power-on screen, main app, live camera view, found view, Trace the corner agent
+    <script>
+      Config               API_BASE and the ?api= / ?demo= switches; TRACE_RULES (the LLM's speaking rules)
+      helpers / mock data  formatting, and sample data in the same shapes as the API
+      backend / state      calls to trace_api.py, and what the page holds
+      Trace's voice        speaking out loud (server voice, then the browser's)
+      "Hey Trace"          the wake word and listening
+      conversation / chat  turns, the offline brain (follows TRACE_RULES), the chat panel
+      data refresh         polling the server
+      rendering            the item cards and room view
+      found view / live camera view / power on / off / wiring
+  How to talk to it: docs/voice.md.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">

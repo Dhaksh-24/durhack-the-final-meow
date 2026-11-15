@@ -1,4 +1,25 @@
 <!DOCTYPE html>
+<!--
+  trace-sim/index.html: Trace's model, the 3D room and the room tools, in one file (no build step).
+  Served at /sim by trace_api.py; also works opened straight from disk. Search for these markers:
+    <style>                              the page's CSS
+    <body>                               the page's HTML: controls, panels, Ask Trace, room tools
+    the core (between the START and END markers, no DOM): runs in Node too (tests: trace-sim/test-core.js)
+      false alarms and detector confidence   how much a sighting (or a miss) counts as evidence
+      the simulated world (ground truth)     the pretend person who moves, covers and pockets things
+      Trace's model: a Bayesian filter       the per-item hidden Markov model (predict, then update)
+      replaying recorded events              reading SPEC 3.2 events from a file or the live bridge
+      search                                 rank places by chance of finding it per second; "not there"
+    UI                                   state, the simulation loop, live connection
+      drawing / panels                   the top-down map, probability bars, event log, metrics
+      the guide                          Ask Trace: voice in, /api/ask, checks on the answer, voice out
+      evaluation                         Monte Carlo over simulated days vs the "last seen" baseline
+      room loading                       zone maps, room.json from the server
+      3D low-poly room                   three.js room built from the zone map
+      map a real room from camera photos homography from a sheet on the floor
+      wiring / draw the room from above  buttons, and the top-view room drawing tool
+  The design and the maths: docs/SPEC.md.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
