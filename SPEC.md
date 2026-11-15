@@ -84,6 +84,8 @@ never stores video, and only keeps where items and people were by zone.
 - `id` must equal the zone name `multicam.py` uses, lower-case and hyphenated (`slug(name)`).
 
 ### 3.2 Events (`events.jsonl`, one object per line)
+
+(The running system writes these to `trace-events.jsonl`: `multicam.py` keeps its own older log in `events.jsonl`.)
 ```json
 {"time": "14:05:10", "t": 1794696414.7, "item": "keys-1", "category": "keys",
  "zone": "sofa", "event": "appeared", "confidence": 0.82, "camera": "phone-1",

@@ -10,21 +10,23 @@ wallet and glasses probably are; Trace talks you to them, and shows it all on a 
 
 ## 1. Set up once (5 min)
 
-Branch: **`demo`**. Windows PowerShell, in the repo folder. Use a laptop where `multicam.py`
+Branch: **`demo`**. Python 3.10–3.12, in the repo folder (Windows PowerShell shown; on
+macOS/Linux use `python3` and `cp` instead of `copy`). Use a laptop where `multicam.py`
 already runs if you can (its Python is already set up).
 
 ```powershell
 git fetch origin
 git checkout demo
 git pull
-pip install -r requirements.txt websockets
+pip install -r requirements.txt
 ```
 
-If `kokoro` (the offline voice) fails to install, ignore it: Trace uses the browser's voice instead.
+`--demo` (no cameras) needs only `pip install websockets opencv-python numpy`. The offline voice
+is a separate, optional install (`pip install "kokoro>=0.9.4" soundfile sounddevice`); without
+it Trace uses Microsoft's online voice, then the browser's.
 
-Optional, for the LLM wording: create a file `.env` in the repo folder containing
-`GEMINI_API_KEY=your-key`. Without it, Trace still answers with its built-in sentences.
-**Never commit `.env`.**
+Optional, for the LLM wording: `copy .env.example .env` and put the key after `GEMINI_API_KEY=`.
+Without it, Trace still answers with its built-in sentences. **Never commit `.env`.**
 
 ---
 
@@ -37,8 +39,14 @@ Optional, for the LLM wording: create a file `.env` in the repo folder containin
 | Run the real thing | `python run_trace.py` | the camera window + the page |
 | Show the judges | add `--present` | a clean page: 3D room, cameras, where things are, Ask Trace |
 
-For the real thing, first copy `cameras.example.json` to `cameras.json` and put in each phone's
+For the real thing, first `copy cameras.example.json cameras.json` and put in each phone's
 DroidCam address (the phone app shows it, e.g. `http://192.168.1.23:4747/video`).
+`cameras.json` is git-ignored: never commit it.
+
+`run_trace.py` only takes the options above. The camera options in section 4 (`--no-people`,
+`--person-conf`, `--min-prob`, `--zone-map`) belong to `multicam.py`: to use them, run
+`python multicam.py <options>` (add `--api-host 0.0.0.0` to share) and open
+`http://localhost:8000/sim?live` and `http://localhost:8000/` yourself.
 
 It opens **two tabs**, and both matter:
 - **http://localhost:8000/sim**: the model and the 3D room. **Keep it open** (in Real events, which
@@ -60,8 +68,9 @@ Windows asks, or temporarily allow them.
 
 ## 3. Set up the demo room (15 min, once)
 
-1. **Put the phones on stands**, 1–1.5 m from the furniture they watch, pointing down at about 45°.
-   Lamp on. Bright keyring on the keys.
+1. **Put the phones on stands**, 1–1.5 m from the furniture they watch, pointing down at about 45°
+   (for the one-phone demo in section 5: taped high, pointing straight down). Lamp on. Bright
+   keyring on the keys.
 2. **Draw the room.** On the page: "Draw the room (top view)". Type the room's width and depth, add a
    phone photo or video frame, click the 4 floor corners (back-left, back-right, front-right,
    front-left), drag a box over each piece of furniture, name it (**Sofa, Desk, Coat hook…**), tick
@@ -79,7 +88,9 @@ Windows asks, or temporarily allow them.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Page won't open | the server isn't running | look for an error in the `run_trace.py` terminal |
-| No green boxes on the keys in the camera window | the detector can't see them | closer, more light, bright keyring, or use glasses |
+| No green boxes on the keys in the camera window | the detector can't see them, or the CLIP check rejects them (keys need 0.86) | closer, more light, bright keyring; then `python multicam.py --min-prob keys=0.7` |
+| No `person_here` when you stand at the box | a phone looking straight down sees a head and arms, not a person | `python multicam.py --person-conf 0.15`, or `--no-people` (movement in the zone instead) |
+| Items from an earlier rehearsal show up in `trace.html` | `multicam.py` remembers items in `memory/` | quit multicam, delete `memory/` (it holds photos: never commit it), start again |
 | Green boxes, but nothing happens on the page | zone names don't match the room | read the note under the event log ("zones not in the room map") and rename |
 | "Live: couldn't connect" | the bridge didn't start | `python bridge.py --file trace-events.jsonl` in another terminal |
 | Trace answers but doesn't speak | browser voice blocked | click anywhere on the page once, then ask again |
@@ -109,10 +120,12 @@ Camera laptop: `python run_trace.py --share --present`. Display laptop: the two 
 | 1:50 | Presenter | Back to slides: how it works, results, responsible AI | – |
 
 **Checks in each rehearsal:** `disappeared keys-1` appears in the event log within ~4 s of hiding;
-you appear as `person_here` at the box (if not, `--no-people`); the glasses never disappear.
+you appear as `person_here` at the box (if not, see section 4: `--person-conf 0.15` or
+`--no-people`, both `multicam.py` options); the glasses never disappear.
 
 **Fallback if live fails on stage:** "Real events" → "Load recorded events" → the `backup-run.jsonl`
-you recorded during a good rehearsal. Say "this is our recorded run from this morning".
+you recorded during a good rehearsal (it's git-ignored: copy it to the display laptop by USB
+or chat, or `git add -f` it). Say "this is our recorded run from this morning".
 
 ---
 
@@ -122,7 +135,7 @@ you recorded during a good rehearsal. Say "this is our recorded run from this mo
 |---|---|
 | `run_trace.py` | starts everything |
 | `multicam.py` | cameras: reads the phones, detects items, writes `trace-events.jsonl`, serves the page |
-| `detect.py` | the detector (YOLO-World); swap the model here |
+| `detect.py` + `verifier.json` | the detector: YOLO-World proposes boxes, a CLIP classifier (`verifier.json`, built by `train_verifier.py` with `pull_lvis.py`) keeps the real keys / glasses |
 | `events_adapter.py` | turns raw detections into events (2 of 3 frames in, 5 missed out, giant boxes dropped) |
 | `bridge.py` | streams `trace-events.jsonl` to the page |
 | `trace_api.py` | the web server: page, live video, voice, `/api/ask`, `/api/room`, phone beeper |
@@ -130,13 +143,19 @@ you recorded during a good rehearsal. Say "this is our recorded run from this mo
 | `trace-sim/index.html` | `/sim`: runs the model, 3D room, cameras, metrics (keep it open) |
 | `trace.html` | `/`: the front end you talk to ("Hey Trace", voice, mascot) |
 | `tts.py` | the voice: Microsoft neural (edge-tts) online, Kokoro offline |
-| `whereabouts.py` + `room.py` | backup answers: multicam's own person trail (where you stopped, how the item went missing). `/api/ask` uses it only when the `/sim` tab isn't posting the model. Its places live in `places.json` |
+| `whereabouts.py` + `room.py` | backup answers: multicam's own person trail (where you stopped, how the item went missing). `/api/ask` uses it only when the `/sim` tab isn't posting the model. Its places live in `places.json`; it uses `targets.py` (item names) and `room.py build` uses `scene.py` |
+| `snap.py` | optional: one photo per phone into `baseline/`, for drawing the room |
+| `simulate.py`, `test_guide.py`, `trace-sim/test-core.js` | tests (no camera, no network) |
 
-Not needed for the demo (benchmarking and earlier experiments): `bench.py`, `pull_lvis.py`,
-`pull_data.py`, `targets.py`, `scene.py`, `test_scene.py`, `live_scene.py`, `snap.py`, `index.html` (task board).
+`archive/`: earlier experiments, not used by the demo (detector benchmarking `bench.py`,
+`pull_data.py`, `results/`; the old one-camera chain `live_scene.py`, `test_scene.py`,
+`test_images/`; the Task Tree board). Run them from the repo root with the root on the path
+(`PYTHONPATH=.`), since they import `targets.py` / `scene.py`.
 
-Never commit: `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, `room.json`,
-`places.json`, `timeline.jsonl`, `cameras.json`, `.env`. They're git-ignored; keep it that way (some contain photos of people).
+Never commit: `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, recorded runs,
+phone videos, `room.json`, `zones.json`, `places.json`, `timeline.jsonl`, `cameras.json`, `.env`.
+They're git-ignored (`*.jsonl`, `*.mp4`…); keep it that way: some contain photos of people.
+Before `git add`, run `git status` and check nothing from that list appears.
 
 ---
 
@@ -153,7 +172,7 @@ Never commit: `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, `roo
 | **Your real keys seen by a phone in the demo room** | **Not tested: the biggest risk** | benchmark said keys are the hardest object; test tonight / first thing |
 | Real phones → page → voice, start to finish | **Not tested** | needs the demo room |
 | Confidence calibration from real placements | **Not done** (placeholder curves) | maths teammate |
-| Most likely story (Viterbi) for the LLM to tell | **Not done** | nice to have |
+| Most likely story (Viterbi), best question by value of information | **Done** | `node trace-sim/test-core.js` |
 | Blindfold rehearsal ×5, slides, pitch | **Not done** | everyone, morning |
 
 **Bottom line:** the software is built and each piece is tested; what's unproven is the physical

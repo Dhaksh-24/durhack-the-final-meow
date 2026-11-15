@@ -9,7 +9,7 @@ phones ─▶ multicam.py ─▶ trace-events.jsonl ─▶ bridge.py (started fo
 
 ```powershell
 git fetch origin; git checkout demo; git pull
-pip install websockets
+pip install -r requirements.txt
 python multicam.py --cam "Sofa=http://<phone1-ip>:4747/video" --cam "Desk=http://<phone2-ip>:4747/video"   # one --cam per phone
 ```
 
@@ -27,62 +27,28 @@ keys, wallet, glasses (2-of-3 frames in, 5 missed frames out, boxes over 15% of 
 and `person_here` / `person_left` per zone from YOLO-World `person` boxes in the same pass (no identity;
 `--no-people` uses movement inside the zone instead, which a TV or a lamp can set off).
 `--no-bridge` if you run `bridge.py --file trace-events.jsonl` yourself. Delete `trace-events.jsonl`
-between demo runs for a clean start.
+between demo runs for a clean start (`run_trace.py` does this for you).
 
-## One camera: live_scene.py
+Flags worth knowing for one phone looking straight down: `--person-conf 0.15` (it sees heads and
+arms, not whole people), `--min-prob keys=0.7` (verifier.json wants 0.86 for keys, which is strict),
+`--conf` (YOLO-World's proposal threshold; default 0.02 with the verifier).
 
-```
-live_scene.py --jsonl  →  events_adapter.py  →  events.jsonl  →  bridge.py  →  ws://localhost:8765  →  trace-sim/index.html
-(raw detections)         (SPEC 3.2 events)                       (tails it)                           ("Connect live")
-```
+## Test the chain without a camera
 
-Branch: `integration`. Windows PowerShell, from the repo folder. Three terminals.
-
-## Once
+`python run_trace.py --demo` does all of this for you. By hand, two terminals:
 
 ```powershell
-git fetch origin
-git checkout integration
-git pull
-pip install websockets
+python bridge.py --file trace-events.jsonl                      # terminal 1
+python events_adapter.py --demo --out trace-events.jsonl        # terminal 2
 ```
 
-## Test without a camera (demo)
+Open `http://localhost:8000/sim` (with `python trace_api.py` running) or `trace-sim\index.html`,
+press **Connect live**. Within a second: keys appear on the desk, disappear, then show up on the
+sofa. The demo uses the page's built-in "Demo flat" room (zones `desk`, `sofa`, …); press "Back to
+the demo flat" under "Load a different room" if the page remembers another room.
 
-```powershell
-# terminal 1
-python bridge.py
-# terminal 2
-python events_adapter.py --demo
-```
-
-Open `trace-sim\index.html` in Chrome (`start chrome trace-sim\index.html`), press **Connect live**.
-Within a second: keys appear on the desk, disappear, then show up on the sofa. The demo uses the
-page's built-in "Demo flat" room (zones `desk`, `sofa`, …); press "Back to the demo flat" under
-"Load a different room" if the page remembers another room.
-
-## With the real camera
-
-```powershell
-# once per room: confirm the furniture (writes anchors.json; ids like table_1, sofa_1)
-python live_scene.py --setup
-# terminal 1
-python bridge.py
-# terminal 2  (cmd /c keeps the pipe as plain text lines)
-cmd /c "python live_scene.py --jsonl --no-window | python events_adapter.py --zones zones_map.json"
-```
-
-`zones_map.json` renames furniture anchors to the room map's zone ids, e.g.
-`{"table_1": "desk", "sofa_1": "sofa"}`. Without it a zone id is the anchor id with `_` → `-`
-(`table_1` → `table-1`). Either way, **the room map loaded in the page must have zones with exactly
-those ids** (draw the room, or paste a zone map, and make sure the ids match), and at least one
-must have `"camera": true`. Anything else shows as "zones not in the room map" under the event log.
-
-`live_scene.py` opens webcam 0. A phone works through the DroidCam Windows client, which shows up
-as a webcam; if the laptop's own camera is 0, the phone is usually 1.
-
-Stop with Ctrl+C in each terminal. `events.jsonl` keeps growing across runs (it's git-ignored);
-delete it between demo runs if you want a clean start (`Remove-Item events.jsonl`).
+The old one-camera chain (`live_scene.py --jsonl | events_adapter.py`) is in `archive/`; any
+program that prints raw detections can still feed `events_adapter.py` (last section).
 
 ## Two pages: the front end and the analytics
 
@@ -131,7 +97,7 @@ Tests without a key or network: `python test_guide.py` and `node trace-sim/test-
 1. Print one JSON object per detection per frame on stdout (stderr for everything else), and flush each frame.
 2. Each line needs `time` (same value for every line of one frame), `camera_id`, `item` (`keys`, `wallet` or `glasses`), `det_conf` (0–1), `box` [x1,y1,x2,y2] with `image_w`/`image_h`, and `support: {"anchor": "<furniture id>"}` (or `null`).
 3. Use furniture ids that, after `--zones` mapping or slugging, equal the zone ids of the room map in the page.
-4. Pipe it: `cmd /c "python your_camera.py | python events_adapter.py"` (or write SPEC 3.2 events to `events.jsonl` yourself and skip the adapter).
-5. Run `python bridge.py`, open the page locally, press **Connect live**, and check the event log and "zones not in the room map" note.
+4. Pipe it: `cmd /c "python your_camera.py | python events_adapter.py --out trace-events.jsonl"` (or write SPEC 3.2 events yourself and skip the adapter).
+5. Run `python bridge.py --file trace-events.jsonl`, open the page locally, press **Connect live**, and check the event log and "zones not in the room map" note.
 
-Never commit `events.jsonl`, `memory/`, `baseline/` or `.env` (all git-ignored).
+Never commit `events.jsonl`, `trace-events.jsonl`, `memory/`, `baseline/`, `cameras.json`, `zones.json` or `.env` (all git-ignored).

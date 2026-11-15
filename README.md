@@ -1,13 +1,20 @@
 # durhack-the-final-meow
 
+**Start with [HANDOVER.md](HANDOVER.md)**: set-up, the one command, the demo script, honest
+status. Design and maths: [SPEC.md](SPEC.md). The live chain piece by piece: [RUN_LIVE.md](RUN_LIVE.md).
+
 ## Run Trace (the app)
 
 ```bash
-python multicam.py                    # cameras from cameras.json, or webcam 0
+pip install -r requirements.txt
+python run_trace.py --demo            # no cameras: check the pages work
+python run_trace.py                   # the phones in cameras.json (copy cameras.example.json)
 ```
 
-Then open **http://localhost:8000/** and press **Wake Trace**. `multicam.py` serves
-the page (`trace.html`) through `trace_api.py`, with:
+It starts `multicam.py` (cameras, detector, and the page server `trace_api.py`) and opens two
+tabs: **http://localhost:8000/sim** (the probability model and 3D room: keep it open) and
+**http://localhost:8000/** (`trace.html`, where you talk to Trace: press **Wake Trace**). The
+front end has:
 
 - **Live cameras:** press **Watch live** on a camera to see it live, with Trace's boxes
   drawn on top. Opening `trace.html` as a file without `multicam.py` shows demo data
@@ -31,8 +38,8 @@ the page (`trace.html`) through `trace_api.py`, with:
   - Browsers only allow the microphone on a secure page, so voice commands work at
     `http://localhost:8000` on this computer, but not on a phone at `http://<laptop-ip>:8000`.
 
-For phones on the same Wi-Fi, run `python multicam.py --api-host 0.0.0.0`, then open
-`http://<laptop-ip>:8000/`. Anyone on that network can then watch the cameras.
+For a second laptop on the same Wi-Fi, run `python run_trace.py --share`, then open the
+addresses it prints. Anyone on that network can then watch the cameras: use your own hotspot.
 
 ## Where did it go? (room model, heatmap, predictions)
 
@@ -102,7 +109,7 @@ The detector only knows where an item was last *seen*. Three files turn that int
 
 `python tts.py --audition-edge` writes the Microsoft voices to compare, and
 `EDGE_VOICES` at the top of `tts.py` picks the pair. The rest of this section is about
-Kokoro. `live_scene.py` uses it too.
+Kokoro.
 
 ### Install
 
@@ -114,9 +121,10 @@ py install 3.12
 py -V:3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+pip install "kokoro>=0.9.4" soundfile sounddevice
 ```
 
-(or just `pip install "kokoro>=0.9.4" soundfile sounddevice` into an existing 3.10–3.12 env)
+(Kokoro isn't in `requirements.txt`, so a failed Kokoro install doesn't stop the rest.)
 
 Kokoro uses **espeak-ng** for words that aren't in its dictionary, such as names:
 
@@ -156,15 +164,6 @@ tts.warm_up()                       # load the model once (~10 s), then replies 
 tts.speak("Let me have a look.")    # non-blocking; plays on a background thread
 ```
 
-In `live_scene.py`, Trace greets you at startup and says where each item is. It says
-it once, and again only if the item moves somewhere else. Keys:
-
-- `v`: voice on/off
-- `m`: switch between the female and male voice
-
-`--male` starts with the male voice and `--no-voice` runs silently. If kokoro isn't
-installed, it prints how to install it and carries on without a voice.
-
 ### Finding a warmer voice
 
 Kokoro can **blend** voices: `af_heart:0.6,af_bella:0.4` mixes two voices by weight,
@@ -182,7 +181,7 @@ re-run `python tts.py --prerender`.
 
 ### Switching voices
 
-- At runtime: press `m` in `live_scene.py`, or call `tts.set_voice("male")`,
+- At runtime: call `tts.set_voice("male")`,
   `tts.set_voice("female")` or `tts.set_voice("bf_emma")`.
 - Default pair: edit `VOICES = {"female": "af_heart:0.6,af_bella:0.4", "male": "am_michael:0.6,am_puck:0.4"}` in
   `tts.py`. Voice ids starting with `a` are American and `b` are British. The right

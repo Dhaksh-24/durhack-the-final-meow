@@ -16,11 +16,12 @@ innovation, effective use of AI, impact, prototype, responsible AI) and Marshall
 Worlds"; quant judges who value complexity, intelligence and elegance).
 
 ## Team streams
-- **Cameras / mapping** (branch `adelver`): `multicam.py` reads several phone streams
-  (DroidCam / IP Webcam), detects items with YOLO-World via `detect.py`, keeps identity across
-  cameras with CLIP fingerprints, logs to `events.jsonl`. Saves a baseline photo per camera to
-  `baseline/` at start-up and loads `baseline/calibration.json` to put sightings on the floor
-  in metres. Benchmarking work on prompts and thresholds per object is on `main`.
+- **Cameras / mapping**: `multicam.py` reads several phone streams (DroidCam / IP Webcam),
+  detects items with YOLO-World proposals checked by a CLIP verifier (`detect.py`,
+  `verifier.json`), keeps identity across cameras with CLIP fingerprints, and writes SPEC 3.2
+  events to `trace-events.jsonl` through `events_adapter.py` (its own log is `events.jsonl`).
+  `snap.py` saves one baseline photo per camera to `baseline/` for drawing the room in the page.
+  Old benchmarking and the one-camera chain are in `archive/`.
 - **Model / LLM** (branch `trace-model`): `trace-sim/index.html`, a single self-contained page.
 - **Maths**: calibrate detector confidence into evidence strength; stress-test the results.
 
@@ -66,8 +67,9 @@ Event (one JSON object per line):
   calls per reply for latency.
 - Honest wording: "last seen", "probably"; never "it is there"; never say who moved
   something. Probability → words is done in code; validate LLM output, fall back to a template.
-- Privacy: never commit `memory/`, `baseline/`, `events.jsonl`, `zones.json`, `cameras.json`
-  (they contain photos of people). The repo should be private.
+- Privacy: never commit `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, `zones.json`,
+  `cameras.json`, `.env`, phone videos (they contain photos of people, addresses or keys).
+  The repo should be private (it is public, and `origin/adelver` still holds `memory/` photos).
 - Results from the simulator are simulated; say so whenever they're shown.
 
 ## Next, in priority order
@@ -76,4 +78,4 @@ room, Ask Trace (voice + LLM wording + validation + beep), run_trace.py, present
 1. Real-room test: phones on stands, real keys, `python run_trace.py`; fix what the camera can't see.
 2. Confidence calibration from ≥40 real placements → `setCalibration(...)` (maths teammate).
 3. Rehearse the blindfold demo ×5; record a session as the stage fallback.
-4. Nice to have: most likely story (Viterbi) for the LLM to tell; best yes/no question.
+(Most likely story by Viterbi and the best question by value of information are done.)
