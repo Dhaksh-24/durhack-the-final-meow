@@ -21,3 +21,4 @@ test_out/
 memory/
 events.jsonl
 cameras.json
+zones.json

@@ -1,0 +1,1847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trace: room simulator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+:root {
+  --bg: #f4f5f2; --surface: #ffffff; --ink: #16201b; --muted: #5d6a62; --line: #dde3dc;
+  --accent: #1f6b8a; --accent-soft: #e2eef3; --good: #1f6b45; --good-soft: #e1eee5;
+  --warn: #a65f00; --warn-soft: #fbeed6;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1513; --surface: #161e1b; --ink: #e4ebe7; --muted: #97a49d; --line: #2a3530;
+    --accent: #6cb6d6; --accent-soft: #18303a; --good: #5cbf89; --good-soft: #17301f;
+    --warn: #f0a943; --warn-soft: #33270f; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 18px 16px 60px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-bottom: 14px; }
+header h1 { margin: 0; font-size: 26px; letter-spacing: -0.02em; }
+header p { margin: 0; color: var(--muted); flex: 1 1 380px; }
+.clock { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 920px) { .grid { grid-template-columns: 1fr; } }
+.col { display: grid; gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.card h2 { margin: 0 0 4px; font-size: 17px; letter-spacing: -0.01em; }
+.card .lead { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+canvas { display: block; width: 100%; border-radius: 10px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 9px; padding: 7px 13px; font-size: 14px; font-weight: 500; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+@media (prefers-color-scheme: dark) { .btn.primary { color: #0b1418; } }
+.btn.good { border-color: var(--good); color: var(--good); font-weight: 600; }
+.btn:disabled { opacity: .5; cursor: default; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 7px 11px; font-size: 14px; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+label.check { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.bars { display: grid; gap: 7px; }
+.barrow { display: grid; grid-template-columns: 1fr 52px; gap: 4px 10px; align-items: center; font-size: 14px; }
+.barrow .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barrow .name small { color: var(--muted); }
+.barrow .pct { font-family: var(--mono); font-size: 13px; text-align: right; }
+.barrow .track { grid-column: 1 / -1; height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.barrow .fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width .25s; }
+.lastseen { font-size: 14px; color: var(--muted); margin-bottom: 10px; }
+.say { background: var(--accent-soft); border-radius: 10px; padding: 12px 14px; font-size: 15px; margin: 10px 0; }
+.plan { display: grid; gap: 6px; margin: 10px 0; }
+.plan .step { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; font-size: 14px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; }
+.plan .step.first { border-color: var(--accent); background: var(--accent-soft); }
+.plan .n { font-family: var(--mono); color: var(--muted); }
+.plan .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.tried { font-size: 13px; color: var(--muted); }
+.result { padding: 10px 12px; border-radius: 10px; font-size: 14px; margin-top: 8px; }
+.result.good { background: var(--good-soft); }
+.result.warn { background: var(--warn-soft); }
+pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 10px; max-height: 260px; overflow: auto; }
+details summary { cursor: pointer; font-weight: 600; }
+details[open] summary { margin-bottom: 10px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+td.num { font-family: var(--mono); text-align: right; }
+th.num { text-align: right; }
+.win { color: var(--good); font-weight: 600; }
+.calib { display: grid; gap: 6px; margin-top: 8px; }
+.calib .row { display: grid; grid-template-columns: 110px 1fr 120px; gap: 10px; align-items: center; font-size: 13px; }
+.calib .track { position: relative; height: 10px; background: var(--line); border-radius: 999px; }
+.calib .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--good); border-radius: 999px; }
+.calib .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+.calib .mono { font-family: var(--mono); color: var(--muted); }
+textarea { width: 100%; min-height: 220px; font-family: var(--mono); font-size: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); resize: vertical; }
+.err { color: #b3261e; font-size: 13px; margin-top: 6px; }
+.note { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.tabs button { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 12px 5px 8px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+.tabs button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+ul.scen { margin: 4px 0 0; padding-left: 18px; font-size: 14px; }
+ul.scen li { margin: 2px 0; }
+.full { margin-top: 16px; display: grid; gap: 16px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 920px) { .two { grid-template-columns: 1fr; } }
+.headrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.headrow h2 { margin: 0; }
+#view3d { position: relative; }
+#room3d { touch-action: none; cursor: grab; background: var(--bg); }
+#room3d:active { cursor: grabbing; }
+#labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.lbl { position: absolute; transform: translate(-50%, -100%); background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--line); border-radius: 7px; padding: 2px 7px; font-size: 12px; line-height: 1.3; white-space: nowrap; text-align: center; }
+.lbl b { display: block; font-family: var(--mono); font-size: 13px; }
+.lbl.next { border-color: #e07a2e; box-shadow: 0 0 0 2px color-mix(in srgb, #e07a2e 35%, transparent); }
+.lbl.dim { opacity: .55; }
+#mapCard input[type="number"] { width: 70px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
+#mapCard input[type="text"] { padding: 4px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
+#mapCard select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
+ol.steps { margin: 0 0 6px; padding-left: 20px; font-size: 14px; color: var(--muted); }
+ol.steps li { margin: 2px 0; }
+.camcard { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 12px; }
+.camcard h3 { margin: 0; font-size: 15px; }
+.camcard .hint { margin: 6px 0 8px; }
+canvas.cam { width: 100%; border-radius: 8px; cursor: crosshair; touch-action: none; background: #000; }
+.boxlist { display: grid; gap: 6px; margin-top: 8px; }
+.boxrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.boxrow input[type="text"] { flex: 1 1 160px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.tile { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; }
+.tile .k { font-size: 12px; color: var(--muted); }
+.tile .v { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.tile .s { font-size: 12px; color: var(--muted); }
+h3.sub { font-size: 14px; margin: 16px 0 4px; }
+#metricsCard td, #metricsCard th { padding: 5px 6px; }
+.pill { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
+.pill.off { background: var(--line); color: var(--muted); }
+.progress { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Trace</h1>
+    <p>A simulated room where people move objects around. Phones see some zones but not others. Trace keeps a probability for where each item is and updates it as evidence arrives.</p>
+    <span class="clock" id="clock">08:00:00</span>
+  </header>
+
+  <div class="grid">
+    <div class="col">
+      <section class="card">
+        <div class="headrow">
+          <h2 id="mapTitle">The room</h2>
+          <div class="seg" role="group" aria-label="View" id="viewSeg">
+            <button type="button" data-v="3d" aria-pressed="true">3D</button>
+            <button type="button" data-v="2d" aria-pressed="false">Top-down</button>
+          </div>
+        </div>
+        <p class="lead" id="roomLead">Built automatically from the zone map: each zone becomes a piece of furniture, and each phone shows what it can see. The glowing columns show where Trace thinks the selected item is. Drag to turn, scroll to zoom.</p>
+        <div id="view3d"><canvas id="room3d" aria-label="3D view of the simulated room"></canvas><div id="labels" aria-hidden="true"></div></div>
+        <canvas id="room" aria-label="Top-down view of the simulated room" hidden></canvas>
+        <div class="controls">
+          <button class="btn primary" id="play" type="button">Pause</button>
+          <div class="seg" role="group" aria-label="Speed" id="speed">
+            <button type="button" data-s="0" aria-pressed="false">1×</button>
+            <button type="button" data-s="1" aria-pressed="true">5×</button>
+            <button type="button" data-s="2" aria-pressed="false">25×</button>
+          </div>
+          <button class="btn" id="skip" type="button">Skip 1 hour</button>
+          <button class="btn" id="reset" type="button">New day</button>
+          <label class="check"><input type="checkbox" id="truth" checked> Show where things really are</label>
+        </div>
+        <div class="controls" id="controls3d">
+          <button class="btn" id="rebuild" type="button">Rebuild the room</button>
+          <button class="btn" id="resetView" type="button">Reset view</button>
+          <label class="check"><input type="checkbox" id="spin"> Slowly turn</label>
+        </div>
+        <div class="legend" id="legend"></div>
+      </section>
+
+      <section class="card" id="metricsCard">
+        <h2>Live metrics</h2>
+        <p class="lead">Updated as the room runs. For now they come from the simulation; once the phones are connected the same panel reads real events.</p>
+        <div class="tiles" id="tiles"></div>
+        <h3 class="sub">What's in the room</h3>
+        <table id="furnTable"></table>
+        <h3 class="sub">Phone network</h3>
+        <table id="phoneTable"></table>
+        <h3 class="sub">How the model is doing today</h3>
+        <table id="modelTable"></table>
+        <div class="controls">
+          <button class="btn" id="nextPhone" type="button">Where should the next phone go?</button>
+          <span class="progress" id="nextPhoneProg"></span>
+        </div>
+        <div id="nextPhoneOut"></div>
+      </section>
+
+      <section class="card">
+        <h2>Events</h2>
+        <p class="lead">What the phones report, in the format agreed with the mapping stream. Trace only ever sees these, never the true positions.</p>
+        <pre id="events"></pre>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card">
+        <h2>Where Trace thinks it is</h2>
+        <div class="tabs" id="itemTabs" role="group" aria-label="Item"></div>
+        <div class="lastseen" id="lastSeen"></div>
+        <div class="bars" id="bars"></div>
+      </section>
+
+      <section class="card" id="askCard">
+        <h2>Ask Trace</h2>
+        <p class="lead">Pauses the room and plans a search: the best chance of finding it per second of effort.</p>
+        <div id="ask"></div>
+      </section>
+
+      <section class="card">
+        <details>
+          <summary>What the LLM is sent</summary>
+          <p class="lead">The LLM only words the answer and supplies common-sense starting guesses. The probabilities come from the model.</p>
+          <pre id="bundle"></pre>
+          <div class="controls"><button class="btn" id="copyBundle" type="button">Copy</button><span class="note" id="copyNote"></span></div>
+        </details>
+      </section>
+    </div>
+  </div>
+
+  <div class="full">
+    <section class="card" id="mapCard">
+      <h2>Map a real room from camera photos</h2>
+      <p class="lead">Turns a photo from each phone into the room above, in metres. A sheet of paper on the floor tells each photo how big things are. The photos stay in this browser and are never uploaded.</p>
+      <ol class="steps">
+        <li>Measure the room: its width along the back wall and its depth.</li>
+        <li>Lay a rectangle of known size flat on the floor where a phone can see it, long side parallel to the back wall: a flip-chart sheet or a 1 m square of tape works best, A4 at a pinch. Measure its back-left corner from the left wall and the back wall.</li>
+        <li>Add a photo from each phone, taken from where it will stand. Best: the baseline photos <code>multicam.py</code> saves in its <code>baseline</code> folder at start-up, one per camera, named after the camera.</li>
+        <li>Click the sheet's four corners. The room's grid appears; press <b>Turn the sheet</b> until it lines up with the walls.</li>
+        <li>For each piece of furniture, click the two ends of its front edge where it meets the floor, name it, then build the room.</li>
+      </ol>
+      <div class="controls">
+        <label class="check">Room name <input type="text" id="rmName" value="Mapped room" style="width:150px"></label>
+        <label class="check">Width <input type="number" id="rmW" value="6" step="0.1" min="1" max="30"> m</label>
+        <label class="check">Depth <input type="number" id="rmH" value="5" step="0.1" min="1" max="30"> m</label>
+      </div>
+      <div class="controls">
+        <label class="btn primary" for="camFile" style="display:inline-block">Add phone photos</label>
+        <input type="file" id="camFile" accept="image/*" multiple hidden>
+        <button class="btn" id="samplePhoto" type="button">Use a sample photo of the current room</button>
+      </div>
+      <div id="camCards"></div>
+      <div class="controls">
+        <button class="btn primary" id="buildRoom" type="button" disabled>Build the room</button>
+        <button class="btn" id="copyMap" type="button">Copy the zone map</button>
+        <span class="progress" id="mapStatus"></span>
+      </div>
+      <div class="err" id="mapErr2"></div><span class="note" id="copyMapNote"></span>
+      <details style="margin-top:10px">
+        <summary>Camera calibration for the tracker</summary>
+        <p class="lead">For each calibrated phone, the matrix that turns a pixel on the floor into metres. Save it as <code>baseline/calibration.json</code> next to <code>multicam.py</code> and every sighting it logs gets a floor position in metres.</p>
+        <pre id="calibOut">[]</pre>
+        <div class="controls"><button class="btn" id="copyCalib" type="button">Copy</button><span class="note" id="copyCalibNote"></span></div>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Test it on simulated days</h2>
+      <p class="lead">Each run plays out a random day, then loses one item at a moment when no phone can see it. Trace's search is compared with a simple rule: check where it was last seen, then its usual places, then your pockets, then outside. These are simulated results: they test the reasoning, not the cameras.</p>
+      <div class="controls" style="margin-top:0">
+        <div class="seg" role="group" aria-label="Number of days" id="nDays">
+          <button type="button" data-n="200" aria-pressed="false">200 days</button>
+          <button type="button" data-n="500" aria-pressed="true">500 days</button>
+          <button type="button" data-n="1000" aria-pressed="false">1,000 days</button>
+        </div>
+        <button class="btn primary" id="runEval" type="button">Run test</button>
+        <span class="progress" id="evalProgress"></span>
+      </div>
+      <div id="evalOut"></div>
+    </section>
+
+    <div class="two">
+      <section class="card">
+        <h2>How each item gets lost</h2>
+        <p class="lead">The scenario library the simulator plays out. Drafted with an LLM and checked by the team; the numbers are per 10-second step while someone is in the zone.</p>
+        <div id="scenarios"></div>
+      </section>
+      <section class="card">
+        <h2>Assumptions</h2>
+        <p class="lead">Every number the model relies on, in one place.</p>
+        <table id="assumptions"></table>
+      </section>
+    </div>
+
+    <section class="card">
+      <details>
+        <summary>Load a different room</summary>
+        <p class="lead">Paste the zone map from the mapping stream and the 3D room is rebuilt from it. Coordinates are in metres and optional; zones without them are laid out automatically. The furniture type (sofa, bed, chair, counter, shelf, hook, desk or table) is worked out from the name if you leave "type" out, and item habits follow the type.</p>
+        <textarea id="mapText" spellcheck="false"></textarea>
+        <div class="controls"><button class="btn primary" id="loadMap" type="button">Load room</button><button class="btn" id="bedroomMap" type="button">Try a bedroom</button><button class="btn" id="defaultMap" type="button">Back to the demo flat</button></div>
+        <div class="err" id="mapErr"></div>
+      </details>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+"use strict";
+
+// ================= CORE START (no DOM) =================
+const TICK_S = 10;          // seconds of simulated time per step
+const D_VIS = 0.90;         // phone spots an uncovered item in its zone
+const D_COV = 0.03;         // phone spots a covered item
+const S_VIS = 0.95;         // a person searching a zone finds an uncovered item
+const S_COV = 0.75;         // ...a covered one (under a cushion, in a coat)
+const S_PERSON = 0.95;      // checking hands and pockets finds it
+const S_OUT = 0.80;         // checking the car or bag finds it
+const T_PERSON = 5, T_OUT = 90;  // seconds each check takes
+const UNCOVER = 0.01;       // a covered item gets uncovered while someone is there
+const LEAK = 0.0005;        // small mixing back to the prior each step (model humility)
+const LEAVE_P = 0.03;       // person leaves the room when they finish in a zone
+const MAX_CHECKS = 25;
+
+const ITEMS = [
+  { id: "keys", name: "Keys", plural: true, color: "#d98a1f", pick: 0.05, drop: 0.12, pocket: 0.05, unpocket: 0.02, coverMult: 1.0, returnWith: 0.85,
+    habits: { hook: 5, desk: 3, kitchen: 2, counter: 2, table: 2, sofa: 1, shelf: 1, bed: 1, chair: 1 },
+    ways: ["Carried in and put down on the nearest surface, usually the coat hook or desk", "Slipped into a coat or trouser pocket", "Covered by post, a cushion or a coat", "Left in the car when you come back in (15%)"] },
+  { id: "wallet", name: "Wallet", plural: false, color: "#8a3b78", pick: 0.04, drop: 0.10, pocket: 0.08, unpocket: 0.02, coverMult: 0.8, returnWith: 0.9,
+    habits: { desk: 4, shelf: 3, table: 3, kitchen: 2, counter: 2, hook: 1, sofa: 1, bed: 1, chair: 1 },
+    ways: ["Usually goes straight into a pocket, so it often travels with you", "Put down on the desk or shelf when you empty your pockets", "Left on the kitchen counter after paying for a delivery", "Left in the car or a bag (10%)"] },
+  { id: "glasses", name: "Glasses", plural: true, color: "#2f8f5b", pick: 0.06, drop: 0.15, pocket: 0.01, unpocket: 0.02, coverMult: 1.6, returnWith: 0.95,
+    habits: { sofa: 4, bed: 4, table: 3, desk: 3, chair: 2, shelf: 2, kitchen: 1, counter: 1, hook: 0.3 },
+    ways: ["Taken off and put down wherever you are, most often the sofa", "Pushed under a cushion or a newspaper, so the phone can't see them", "Rarely pocketed", "Almost always come back in with you"] }
+];
+
+const DEFAULT_MAP = {
+  name: "Demo flat", width: 10, height: 7,
+  zones: [
+    { id: "sofa", name: "Sofa", camera: true, cover: 0.45, check: 20, x: 0.8, y: 0.6, w: 3.4, h: 1.6 },
+    { id: "desk", name: "Desk", camera: true, cover: 0.2, check: 10, x: 6.2, y: 0.6, w: 3.2, h: 1.4 },
+    { id: "shelf", name: "Shelf", camera: true, cover: 0.15, check: 8, x: 7.7, y: 3.0, w: 1.7, h: 2.6 },
+    { id: "kitchen", name: "Kitchen counter", camera: false, cover: 0.25, check: 15, x: 3.6, y: 5.0, w: 3.6, h: 1.4 },
+    { id: "hook", name: "Coat hook", camera: false, cover: 0.6, check: 12, x: 0.3, y: 4.6, w: 2.0, h: 1.6 }
+  ]
+};
+
+let MAP, Z, NS, ZI, DOOR, PLACES, PRIORS;
+
+function rnd() { return Math.random(); }
+function randInt(a, b) { return a + Math.floor(rnd() * (b - a + 1)); }
+function pickWeighted(arr, wf) {
+  let tot = 0; for (const x of arr) tot += wf(x);
+  let r = rnd() * tot;
+  for (const x of arr) { r -= wf(x); if (r <= 0) return x; }
+  return arr[arr.length - 1];
+}
+
+const FURN = [["sofa", /sofa|couch|settee/i], ["bed", /\bbed\b|bedroom bed/i], ["chair", /chair/i], ["counter", /kitchen|counter|worktop|island|sink/i],
+  ["shelf", /shelf|book|cabinet|drawer|dresser|wardrobe|cupboard/i], ["hook", /hook|coat|hall|entrance|rack|porch/i], ["desk", /desk|workbench/i], ["table", /table/i]];
+const TYPES = ["sofa", "bed", "chair", "counter", "shelf", "hook", "desk", "table"];
+function furnType(z) {
+  if (z.type && TYPES.includes(String(z.type))) return String(z.type);
+  const s = z.id + " " + (z.name || "");
+  for (const [t, re] of FURN) if (re.test(s)) return t;
+  return "table";
+}
+
+function layoutMissing(zones, W, H) {
+  const missing = zones.filter((z) => !(isFinite(z.x) && isFinite(z.y) && isFinite(z.w) && isFinite(z.h)));
+  if (!missing.length) return;
+  const cols = Math.min(3, missing.length), rows = Math.ceil(missing.length / cols);
+  const cw = (W - 0.6) / cols, rh = (H - 0.6) / rows;
+  missing.forEach((z, k) => {
+    const c = k % cols, r = Math.floor(k / cols);
+    z.x = 0.3 + c * cw + 0.25; z.y = 0.3 + r * rh + 0.25; z.w = cw - 0.5; z.h = Math.min(rh - 0.5, 1.8);
+  });
+}
+
+function setupMap(m) {
+  const W = +m.width || 10, H = +m.height || 7;
+  const zones = m.zones.map((z) => ({
+    id: String(z.id), name: String(z.name || z.id), camera: !!z.camera,
+    cover: isFinite(z.cover) ? Math.max(0, Math.min(0.95, +z.cover)) : 0.3,
+    check: isFinite(z.check) && +z.check > 0 ? +z.check : 10,
+    x: +z.x, y: +z.y, w: +z.w, h: +z.h, type: furnType(z)
+  }));
+  layoutMissing(zones, W, H);
+  MAP = { name: m.name || "Room", width: W, height: H, zones };
+  Z = zones.length; NS = 2 * Z + 2; ZI = {};
+  zones.forEach((z, i) => { ZI[z.id] = i; });
+  // the door is on the left wall, halfway down; the nearest zone is where you come in
+  let best = 0, bd = Infinity;
+  zones.forEach((z, i) => { const d = Math.hypot(z.x + z.w / 2, z.y + z.h / 2 - H / 2); if (d < bd) { bd = d; best = i; } });
+  DOOR = best;
+  PLACES = zones.map((z, i) => ({ kind: "zone", i, id: z.id, name: z.name, t: z.check }))
+    .concat([{ kind: "person", id: "person", name: "With you (hands or pockets)", t: T_PERSON },
+             { kind: "outside", id: "outside", name: "Outside the room (car or bag)", t: T_OUT }]);
+  PRIORS = {};
+  for (const it of ITEMS) PRIORS[it.id] = prior(it);
+}
+
+function habitW(it, zid) {
+  if (it.habits[zid] != null) return it.habits[zid];
+  const z = MAP.zones[ZI[zid]], v = z && it.habits[z.type];
+  return v == null ? 1 : v;
+}
+function coverP(it, z) { return Math.min(0.95, z.cover * it.coverMult); }
+function maxHabit(it) { return Math.max(...MAP.zones.map((z) => habitW(it, z.id)), 1e-9); }
+function dropRate(it, z) { return it.drop * habitW(it, z.id) / maxHabit(it); }
+function dropEff(it, z) {
+  const q = Math.min(0.7, it.pocket / (it.pocket + it.drop));
+  return (1 - q) * dropRate(it, z) + q * it.unpocket;
+}
+
+// Starting belief: habits for the zones (split into uncovered / covered),
+// plus common-sense mass for places no phone can see.
+function prior(it) {
+  const b = new Float64Array(NS);
+  let tot = 0; for (const z of MAP.zones) tot += habitW(it, z.id);
+  MAP.zones.forEach((z, i) => {
+    const w = 0.85 * habitW(it, z.id) / (tot || 1), c = coverP(it, z);
+    b[2 * i] = w * (1 - c); b[2 * i + 1] = w * c;
+  });
+  b[2 * Z] = 0.12; b[2 * Z + 1] = 0.03;
+  return normalize(b);
+}
+function normalize(b) {
+  let s = 0; for (let k = 0; k < b.length; k++) s += b[k];
+  if (!(s > 0)) return null;
+  for (let k = 0; k < b.length; k++) b[k] /= s;
+  return b;
+}
+
+// ---------- the simulated world (ground truth) ----------
+function newWorld() {
+  const w = { tick: 0, person: { zone: MAP.zones[DOOR].id, outside: false, dwell: randInt(4, 12), outsideFor: 0 }, items: {} };
+  for (const it of ITEMS) {
+    const z = pickWeighted(MAP.zones, (q) => habitW(it, q.id));
+    w.items[it.id] = { loc: z.id, covered: rnd() < coverP(it, z), pocket: false };
+  }
+  return w;
+}
+function putDown(it, s, z) { s.loc = z.id; s.covered = rnd() < coverP(it, z); s.pocket = false; }
+
+function stepWorld(w) {
+  const p = w.person, prev = p.outside ? "outside" : p.zone;
+  if (p.outside) {
+    if (--p.outsideFor <= 0) {
+      p.outside = false; p.zone = MAP.zones[DOOR].id; p.dwell = randInt(6, 20);
+      for (const it of ITEMS) {
+        const s = w.items[it.id];
+        if (s.loc === "outside" && rnd() < it.returnWith) { s.loc = "person"; s.pocket = rnd() < 0.5; }
+      }
+    }
+  } else if (--p.dwell <= 0) {
+    if (rnd() < LEAVE_P) {
+      p.outside = true; p.outsideFor = randInt(20, 90);
+      for (const it of ITEMS) { const s = w.items[it.id]; if (s.loc === "person") s.loc = "outside"; }
+    } else {
+      const others = MAP.zones.filter((z) => z.id !== p.zone);
+      if (others.length) p.zone = others[Math.floor(rnd() * others.length)].id;
+      p.dwell = randInt(6, 30);
+    }
+  }
+  if (!p.outside) {
+    const z = MAP.zones[ZI[p.zone]];
+    for (const it of ITEMS) {
+      const s = w.items[it.id];
+      if (s.loc === z.id) {
+        if (rnd() < it.pick) { s.loc = "person"; s.covered = false; s.pocket = false; }
+        else if (s.covered && rnd() < UNCOVER) s.covered = false;
+      } else if (s.loc === "person") {
+        const r = rnd();
+        if (s.pocket) { if (r < it.unpocket) putDown(it, s, z); }
+        else if (r < dropRate(it, z)) putDown(it, s, z);
+        else if (r < dropRate(it, z) + it.pocket) s.pocket = true;
+      }
+    }
+  }
+  w.tick++;
+  const det = {};
+  for (const it of ITEMS) {
+    const s = w.items[it.id]; det[it.id] = null;
+    if (s.loc === "person" || s.loc === "outside") continue;
+    const z = MAP.zones[ZI[s.loc]];
+    if (z.camera && rnd() < (s.covered ? D_COV : D_VIS)) det[it.id] = z.id;
+  }
+  return { prev, person: p.outside ? "outside" : p.zone, det };
+}
+
+// ---------- Trace's model: a Bayesian filter over hidden locations ----------
+// States: for each zone, "here and visible" and "here but covered"; plus "with the person" and "outside".
+function filterStep(b, it, obs) {
+  const nb = Float64Array.from(b), P = 2 * Z, O = 2 * Z + 1;
+  // 1. Predict: things only move when the person moves them.
+  if (obs.person === "outside") {
+    if (obs.prev !== "outside") { nb[O] += nb[P]; nb[P] = 0; }
+  } else {
+    if (obs.prev === "outside") { const m = nb[O] * it.returnWith; nb[O] -= m; nb[P] += m; }
+    const i = ZI[obs.person], z = MAP.zones[i];
+    const pv = nb[2 * i] * it.pick, pc = nb[2 * i + 1] * it.pick;
+    const d = nb[P] * dropEff(it, z), c = coverP(it, z);
+    nb[2 * i] -= pv; nb[2 * i + 1] -= pc;
+    const u = nb[2 * i + 1] * UNCOVER; nb[2 * i + 1] -= u; nb[2 * i] += u;
+    nb[P] -= d; nb[2 * i] += d * (1 - c); nb[2 * i + 1] += d * c;
+    nb[P] += pv + pc;
+  }
+  const pr = PRIORS[it.id];
+  for (let k = 0; k < NS; k++) nb[k] = nb[k] * (1 - LEAK) + LEAK * pr[k];
+  // 2. Update on what each phone did and didn't see.
+  MAP.zones.forEach((z, i) => {
+    if (!z.camera) return;
+    if (obs.det[it.id] === z.id) {
+      const v = nb[2 * i], cv = nb[2 * i + 1];
+      for (let k = 0; k < NS; k++) nb[k] *= 1e-4;
+      nb[2 * i] = v * D_VIS; nb[2 * i + 1] = cv * D_COV;
+    } else {
+      nb[2 * i] *= 1 - D_VIS; nb[2 * i + 1] *= 1 - D_COV;
+    }
+  });
+  return normalize(nb) || Float64Array.from(pr);
+}
+
+// ---------- search ----------
+function placeP(b, pl) { return pl.kind === "zone" ? b[2 * pl.i] + b[2 * pl.i + 1] : pl.kind === "person" ? b[2 * Z] : b[2 * Z + 1]; }
+function findP(b, pl) {
+  if (pl.kind === "zone") return b[2 * pl.i] * S_VIS + b[2 * pl.i + 1] * S_COV;
+  return pl.kind === "person" ? b[2 * Z] * S_PERSON : b[2 * Z + 1] * S_OUT;
+}
+function failUpdate(b, pl) {
+  const nb = Float64Array.from(b);
+  if (pl.kind === "zone") { nb[2 * pl.i] *= 1 - S_VIS; nb[2 * pl.i + 1] *= 1 - S_COV; }
+  else if (pl.kind === "person") nb[2 * Z] *= 1 - S_PERSON;
+  else nb[2 * Z + 1] *= 1 - S_OUT;
+  return normalize(nb) || nb;
+}
+// Best chance of finding it per second of effort.
+function rank(b) {
+  return PLACES.map((pl) => ({ pl, p: placeP(b, pl), f: findP(b, pl), t: pl.t }))
+    .filter((x) => x.p > 0.003)
+    .map((x) => Object.assign(x, { score: x.f / x.t }))
+    .sort((a, c) => c.score - a.score);
+}
+function truePlace(s) { return s.loc; }
+function trueFound(w, it, pl) {
+  const s = w.items[it.id];
+  if (pl.kind === "zone") return s.loc === pl.id && rnd() < (s.covered ? S_COV : S_VIS);
+  if (pl.kind === "person") return s.loc === "person" && rnd() < S_PERSON;
+  return s.loc === "outside" && rnd() < S_OUT;
+}
+function searchTrace(w, it, b0) {
+  let b = b0, n = 0, t = 0;
+  while (n < MAX_CHECKS) {
+    const r = rank(b); if (!r.length) break;
+    const best = r[0]; n++; t += best.t;
+    if (trueFound(w, it, best.pl)) return { n, t, found: true };
+    b = failUpdate(b, best.pl);
+  }
+  return { n, t, found: false };
+}
+function baselineOrder(it, lastZone) {
+  const order = [];
+  if (lastZone != null) order.push(PLACES[ZI[lastZone]]);
+  MAP.zones.slice().sort((a, c) => habitW(it, c.id) - habitW(it, a.id))
+    .forEach((z) => { if (z.id !== lastZone) order.push(PLACES[ZI[z.id]]); });
+  order.push(PLACES[Z], PLACES[Z + 1]);
+  return order;
+}
+function searchBaseline(w, it, lastZone) {
+  const order = baselineOrder(it, lastZone);
+  let n = 0, t = 0;
+  while (n < MAX_CHECKS) {
+    const pl = order[n % order.length]; n++; t += pl.t;
+    if (trueFound(w, it, pl)) return { n, t, found: true };
+  }
+  return { n, t, found: false };
+}
+
+function runEpisode() {
+  const w = newWorld(), B = {}, last = {};
+  for (const it of ITEMS) { B[it.id] = Float64Array.from(PRIORS[it.id]); last[it.id] = null; }
+  const T = randInt(150, 700);
+  let obs = null;
+  for (let t = 0; t < T; t++) {
+    obs = stepWorld(w);
+    for (const it of ITEMS) { B[it.id] = filterStep(B[it.id], it, obs); if (obs.det[it.id]) last[it.id] = obs.det[it.id]; }
+  }
+  const hidden = ITEMS.filter((it) => !obs.det[it.id]);
+  const it = hidden.length ? hidden[Math.floor(rnd() * hidden.length)] : ITEMS[Math.floor(rnd() * ITEMS.length)];
+  const b = B[it.id];
+  let top = PLACES[0], topP = -1;
+  for (const pl of PLACES) { const p = placeP(b, pl); if (p > topP) { topP = p; top = pl; } }
+  return {
+    item: it.id, topP, topHit: top.id === truePlace(w.items[it.id]),
+    trace: searchTrace(w, it, b), base: searchBaseline(w, it, last[it.id])
+  };
+}
+// ================= CORE END =================
+
+const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
+
+// ================= UI =================
+const $ = (s) => document.querySelector(s);
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+const pct = (p) => (p >= 0.995 ? "99" : p < 0.01 ? "<1" : String(Math.round(p * 100))) + "%";
+const TPS = [2, 10, 50];
+const OUT = 2.4, PAD = 0.25;
+
+let world, beliefs, lastSeen, visHist, events, running = true, speed = 1, selected = "keys", showTruth = true;
+let session = null, panelDirty = true, personPos = null, lastPersonZone = null;
+
+function clockAt(tick) {
+  const s = 8 * 3600 + tick * TICK_S, h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60, sec = s % 60;
+  return [h, m, sec].map((v) => String(v).padStart(2, "0")).join(":");
+}
+function agoText(ticks) {
+  const s = ticks * TICK_S;
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return m + (m === 1 ? " minute ago" : " minutes ago");
+  return Math.floor(m / 60) + " h " + (m % 60) + " min ago";
+}
+function itemById(id) { return ITEMS.find((i) => i.id === id); }
+
+let ST = null;
+function resetStats() {
+  ST = { ticks: 0, vis: {}, right: {}, sight: {}, lastSight: {}, ev: { appeared: 0, moved: 0, disappeared: 0, person_here: 0, person_left: 0 } };
+  for (const it of ITEMS) { ST.vis[it.id] = 0; ST.right[it.id] = 0; }
+  for (const z of MAP.zones) { ST.sight[z.id] = 0; ST.lastSight[z.id] = null; }
+}
+function topPlace(b) { let best = PLACES[0], bp = -1; for (const pl of PLACES) { const p = placeP(b, pl); if (p > bp) { bp = p; best = pl; } } return { pl: best, p: bp }; }
+function entropyBits(b) { let h = 0; for (const pl of PLACES) { const p = placeP(b, pl); if (p > 1e-12) h -= p * Math.log2(p); } return h; }
+
+function resetDay() {
+  resetStats();
+  world = newWorld(); beliefs = {}; lastSeen = {}; visHist = {}; events = [];
+  for (const it of ITEMS) { beliefs[it.id] = Float64Array.from(PRIORS[it.id]); lastSeen[it.id] = null; visHist[it.id] = [null, null, null]; }
+  session = null; personPos = null; lastPersonZone = world.person.zone;
+  logEvent({ time: clockAt(0), event: "person_here", zone: world.person.zone });
+  panelDirty = true;
+}
+function logEvent(e) { if (ST && ST.ev[e.event] != null) ST.ev[e.event]++; events.push(e); if (events.length > 60) events.shift(); }
+function visibleAt(id) { const h = visHist[id]; for (let k = h.length - 1; k >= 0; k--) if (h[k]) return h[k]; return null; }
+
+function liveTick() {
+  const before = {}; for (const it of ITEMS) before[it.id] = visibleAt(it.id);
+  const obs = stepWorld(world);
+  const time = clockAt(world.tick);
+  if (obs.person !== lastPersonZone) {
+    logEvent(obs.person === "outside" ? { time, event: "person_left" } : { time, event: "person_here", zone: obs.person });
+    lastPersonZone = obs.person;
+  }
+  ST.ticks++;
+  for (const it of ITEMS) {
+    beliefs[it.id] = filterStep(beliefs[it.id], it, obs);
+    if (obs.det[it.id]) { lastSeen[it.id] = { zone: obs.det[it.id], tick: world.tick }; ST.sight[obs.det[it.id]]++; ST.lastSight[obs.det[it.id]] = world.tick; }
+    const st = world.items[it.id];
+    if (topPlace(beliefs[it.id]).pl.id === st.loc) ST.right[it.id]++;
+    if (st.loc !== "person" && st.loc !== "outside" && MAP.zones[ZI[st.loc]].camera && !st.covered) ST.vis[it.id]++;
+    visHist[it.id].push(obs.det[it.id]); visHist[it.id].shift();
+    const now = visibleAt(it.id), was = before[it.id];
+    if (now && !was) logEvent({ time, item: it.id + "-1", zone: now, event: "appeared" });
+    else if (!now && was) logEvent({ time, item: it.id + "-1", zone: was, event: "disappeared" });
+    else if (now && was && now !== was) logEvent({ time, item: it.id + "-1", zone: now, event: "moved" });
+  }
+  panelDirty = true;
+}
+
+// ---------- drawing ----------
+function palette() {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  return dark
+    ? { floor: "#1b2421", wall: "#c9d3ce", zone: "#25302c", zoneLine: "#3b4842", text: "#e4ebe7", muted: "#97a49d", heat: [108, 182, 214], person: "#f2f5f3", outside: "#141b18" }
+    : { floor: "#fbfcfa", wall: "#2a3530", zone: "#eef2ed", zoneLine: "#c7d0c8", text: "#16201b", muted: "#5d6a62", heat: [31, 107, 138], person: "#16201b", outside: "#f0f2ee" };
+}
+function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+
+function zoneCenter(z) { return [OUT + z.x + z.w / 2, z.y + z.h / 2]; }
+function personTarget() {
+  if (world.person.outside) return [OUT * 0.45, MAP.height / 2];
+  const z = MAP.zones[ZI[world.person.zone]], c = zoneCenter(z);
+  return [c[0], Math.min(c[1] + z.h / 2 + 0.35, MAP.height - 0.25)];
+}
+
+function draw() {
+  const cv = $("#room"), ctx = cv.getContext("2d"), C = palette();
+  const W = MAP.width, H = MAP.height, totalW = OUT + W + PAD * 2, totalH = H + PAD * 2;
+  const cssW = cv.clientWidth || 600, s = cssW / totalW, cssH = Math.round(totalH * s), dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(cssW * dpr) || cv.height !== Math.round(cssH * dpr)) { cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr); cv.style.height = cssH + "px"; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const X = (u) => (PAD + u) * s, Y = (u) => (PAD + u) * s, L = (u) => u * s;
+  const b = session ? session.b : beliefs[selected];
+  const heat = (p, base) => "rgba(" + C.heat.join(",") + "," + (base + 0.72 * Math.min(1, p)).toFixed(3) + ")";
+  const fontPx = Math.max(10, Math.min(14, s * 0.26));
+
+  // outside strip
+  const pOut = b[2 * Z + 1];
+  rr(ctx, X(0), Y(0), L(OUT - 0.35), L(H), L(0.2)); ctx.fillStyle = C.outside; ctx.fill();
+  ctx.fillStyle = heat(pOut, 0); ctx.fill();
+  ctx.setLineDash([L(0.12), L(0.1)]); ctx.strokeStyle = C.zoneLine; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = C.muted; ctx.font = "600 " + fontPx + "px " + getComputedStyle(document.body).fontFamily;
+  ctx.fillText("Outside", X(0.18), Y(0.42));
+  ctx.font = fontPx * 0.9 + "px ui-monospace, Menlo, monospace"; ctx.fillText(pct(pOut), X(0.18), Y(H - 0.2));
+
+  // room floor and walls with a door gap on the left wall
+  ctx.fillStyle = C.floor; ctx.fillRect(X(OUT), Y(0), L(W), L(H));
+  const dz = MAP.zones[DOOR], doorY = Math.max(0.6, Math.min(H - 0.6, H / 2));
+  ctx.strokeStyle = C.wall; ctx.lineWidth = Math.max(2, L(0.06));
+  ctx.beginPath();
+  ctx.moveTo(X(OUT), Y(doorY - 0.55)); ctx.lineTo(X(OUT), Y(0)); ctx.lineTo(X(OUT + W), Y(0)); ctx.lineTo(X(OUT + W), Y(H)); ctx.lineTo(X(OUT), Y(H)); ctx.lineTo(X(OUT), Y(doorY + 0.55));
+  ctx.stroke();
+  ctx.fillStyle = C.muted; ctx.font = fontPx * 0.85 + "px " + getComputedStyle(document.body).fontFamily;
+  ctx.fillText("door", X(OUT + 0.12), Y(doorY + 0.1));
+
+  // zones
+  const baseFont = getComputedStyle(document.body).fontFamily;
+  MAP.zones.forEach((z, i) => {
+    const p = b[2 * i] + b[2 * i + 1];
+    rr(ctx, X(OUT + z.x), Y(z.y), L(z.w), L(z.h), L(0.15));
+    ctx.fillStyle = C.zone; ctx.fill(); ctx.fillStyle = heat(p, 0); ctx.fill();
+    ctx.strokeStyle = C.zoneLine; ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = C.text; ctx.font = "600 " + fontPx + "px " + baseFont;
+    const room = L(z.w - 0.3) - (z.camera ? L(0.45) : 0);
+    let nm = z.name; while (nm.length > 2 && ctx.measureText(nm).width > room) nm = nm.slice(0, -1);
+    if (nm !== z.name) nm = nm.slice(0, -1) + "…";
+    ctx.fillText(nm, X(OUT + z.x + 0.15), Y(z.y + 0.38));
+    ctx.font = fontPx * 0.9 + "px ui-monospace, Menlo, monospace"; ctx.fillStyle = C.muted;
+    ctx.fillText(pct(p), X(OUT + z.x + 0.15), Y(z.y + 0.38) + fontPx * 1.25);
+    if (z.camera) {
+      const cx = X(OUT + z.x + z.w) - L(0.5), cy = Y(z.y) + L(0.14);
+      ctx.fillStyle = C.muted; rr(ctx, cx, cy, L(0.34), L(0.24), L(0.04)); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + L(0.17), cy + L(0.12), L(0.07), 0, Math.PI * 2); ctx.fillStyle = C.zone; ctx.fill();
+    }
+  });
+
+  // person
+  const tgt = personTarget();
+  if (!personPos) personPos = tgt.slice();
+  personPos[0] += (tgt[0] - personPos[0]) * 0.12; personPos[1] += (tgt[1] - personPos[1]) * 0.12;
+  const pP = b[2 * Z];
+  if (pP > 0.01) { ctx.beginPath(); ctx.arc(X(personPos[0]), Y(personPos[1]), L(0.3 + 0.7 * pP), 0, Math.PI * 2); ctx.fillStyle = heat(pP, 0); ctx.fill(); }
+  ctx.beginPath(); ctx.arc(X(personPos[0]), Y(personPos[1]), L(0.2), 0, Math.PI * 2);
+  ctx.fillStyle = C.person; ctx.fill();
+  if (pP > 0.01) { ctx.font = fontPx * 0.85 + "px ui-monospace, Menlo, monospace"; ctx.fillStyle = C.text; ctx.fillText(pct(pP), X(personPos[0]) + L(0.3), Y(personPos[1]) - L(0.25)); }
+
+  // true item positions
+  if (showTruth) {
+    const counts = {};
+    ITEMS.forEach((it, idx) => {
+      const st = world.items[it.id]; let x, y;
+      if (st.loc === "person" || st.loc === "outside") {
+        const base = st.loc === "person" ? personPos : [OUT * 0.45, H / 2 + 0.9];
+        const k = (counts[st.loc] = (counts[st.loc] || 0) + 1);
+        x = base[0] - 0.45 + k * 0.32; y = base[1] + (st.loc === "person" ? 0.42 : 0);
+      } else {
+        const z = MAP.zones[ZI[st.loc]], k = (counts[st.loc] = (counts[st.loc] || 0) + 1) - 1;
+        x = OUT + z.x + 0.32 + k * 0.42; y = z.y + z.h - 0.32;
+      }
+      ctx.beginPath(); ctx.arc(X(x), Y(y), L(0.15), 0, Math.PI * 2);
+      if (st.covered) {
+        ctx.setLineDash([L(0.06), L(0.05)]); ctx.strokeStyle = it.color; ctx.lineWidth = 2; ctx.stroke(); ctx.setLineDash([]);
+      } else { ctx.fillStyle = it.color; ctx.fill(); }
+      ctx.fillStyle = st.covered ? it.color : "#fff"; ctx.font = "700 " + fontPx * 0.75 + "px " + baseFont;
+      const letter = it.name[0]; ctx.fillText(letter, X(x) - ctx.measureText(letter).width / 2, Y(y) + fontPx * 0.27);
+      if (it.id === selected) { ctx.beginPath(); ctx.arc(X(x), Y(y), L(0.24), 0, Math.PI * 2); ctx.strokeStyle = C.text; ctx.lineWidth = 1.5; ctx.stroke(); }
+    });
+  }
+}
+
+// ---------- panels ----------
+function renderTabs() {
+  const ex = document.querySelectorAll("#itemTabs button");
+  if (ex.length === ITEMS.length) { ex.forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.id === selected))); return; }
+  $("#itemTabs").innerHTML = ITEMS.map((it) =>
+    '<button type="button" data-id="' + it.id + '" aria-pressed="' + (it.id === selected) + '"><span class="dot" style="background:' + it.color + '"></span>' + esc(it.name) + "</button>").join("");
+}
+function lastSeenText(it) {
+  const ls = lastSeen[it.id], v = visibleAt(it.id);
+  if (v) return "The " + MAP.zones[ZI[v]].name.toLowerCase() + " phone can see " + (it.plural ? "them" : "it") + " right now.";
+  if (!ls) return "No phone has seen " + (it.plural ? "them" : "it") + " yet today.";
+  return "Last seen on the " + MAP.zones[ZI[ls.zone]].name.toLowerCase() + " at " + clockAt(ls.tick).slice(0, 5) + " (" + agoText(world.tick - ls.tick) + ").";
+}
+function renderBars() {
+  const it = itemById(selected), b = beliefs[selected];
+  $("#lastSeen").textContent = lastSeenText(it);
+  const rows = PLACES.map((pl) => ({ pl, p: placeP(b, pl) })).sort((a, c) => c.p - a.p);
+  $("#bars").innerHTML = rows.map((r) => {
+    let tag = "";
+    if (r.pl.kind === "zone") {
+      const z = MAP.zones[r.pl.i], cov = b[2 * r.pl.i + 1] / Math.max(r.p, 1e-12);
+      tag = z.camera ? " <small>· phone</small>" : " <small>· no phone</small>";
+      if (r.p > 0.05 && cov > 0.5) tag += " <small>· probably covered</small>";
+    }
+    return '<div class="barrow"><div class="name">' + esc(r.pl.name) + tag + '</div><div class="pct">' + pct(r.p) + '</div><div class="track"><div class="fill" style="width:' + (r.p * 100).toFixed(1) + '%"></div></div></div>';
+  }).join("");
+}
+function whereText(pl, b) {
+  if (pl.kind === "person") return "your pockets and hands";
+  if (pl.kind === "outside") return "outside the room, in the car or your bag";
+  const p = placeP(b, pl), cov = b[2 * pl.i + 1] / Math.max(p, 1e-12);
+  return (cov > 0.5 ? "under things on the " : "the ") + pl.name.toLowerCase();
+}
+function sentence(it, b, tries) {
+  const name = it.name.toLowerCase(), r = rank(b);
+  if (!r.length) return "I don't have a good idea where " + (it.plural ? "they are" : "it is") + ".";
+  const v = visibleAt(it.id);
+  if (!tries && v) return "Your " + name + " " + (it.plural ? "are" : "is") + " on the " + MAP.zones[ZI[v]].name.toLowerCase() + ". The phone there can see " + (it.plural ? "them" : "it") + " right now.";
+  let s = tries ? "Not there. " : "";
+  const ls = lastSeen[it.id];
+  if (!tries) s += ls ? "Your " + name + " " + (it.plural ? "were" : "was") + " last seen on the " + MAP.zones[ZI[ls.zone]].name.toLowerCase() + " " + agoText(world.tick - ls.tick) + ". "
+                      : "No phone has seen your " + name + " today. ";
+  s += "Check " + whereText(r[0].pl, b) + (tries ? " next" : " first") + ": " + pct(r[0].p) + " likely, about " + r[0].t + " seconds.";
+  if (r[1]) s += " If not, try " + whereText(r[1].pl, b) + " (" + pct(r[1].p) + ").";
+  return s;
+}
+function renderAsk() {
+  const el = $("#ask"), it = itemById(selected);
+  if (!session) {
+    const cur = $("#startAsk");
+    if (cur && cur.dataset.id === selected) return;
+    el.innerHTML = '<button class="btn primary" type="button" id="startAsk" data-id="' + selected + '">Where ' + (it.plural ? "are" : "is") + " my " + esc(it.name.toLowerCase()) + "?</button>";
+    $("#startAsk").onclick = () => { session = { item: selected, b: Float64Array.from(beliefs[selected]), tried: [], result: null }; renderAll(); };
+    return;
+  }
+  const sit = itemById(session.item), r = rank(session.b);
+  let html = '<div class="say">' + esc(session.result ? session.result.text : sentence(sit, session.b, session.tried.length)) + "</div>";
+  if (session.result) {
+    html += '<div class="result ' + (session.result.ok ? "good" : "warn") + '">' + esc(session.result.detail) + "</div>";
+    html += '<div class="controls"><button class="btn primary" type="button" id="endAsk">Back to the room</button></div>';
+  } else {
+    html += '<div class="plan">' + r.slice(0, 4).map((x, k) =>
+      '<div class="step' + (k === 0 ? " first" : "") + '"><span class="n">' + (k + 1) + "</span><span>" + esc(x.pl.name) +
+      '</span><span class="meta">' + pct(x.p) + " · " + x.t + " s</span></div>").join("") + "</div>";
+    if (session.tried.length) html += '<div class="tried">Already checked: ' + esc(session.tried.join(", ")) + "</div>";
+    html += '<div class="controls">' +
+      '<button class="btn primary" type="button" id="simCheck">Check it in the simulation</button>' +
+      '<button class="btn" type="button" id="notThere">Not there</button>' +
+      '<button class="btn good" type="button" id="foundIt">Found it</button>' +
+      '<button class="btn" type="button" id="endAsk">Cancel</button></div>' +
+      '<p class="note">"Check it in the simulation" uses the true position, like a person actually looking. Searches find uncovered things 95% of the time and covered things 75%.</p>';
+  }
+  el.innerHTML = html;
+  const end = $("#endAsk"); if (end) end.onclick = () => { session = null; renderAll(); };
+  const nt = $("#notThere"); if (nt) nt.onclick = () => fail(r[0]);
+  const fi = $("#foundIt"); if (fi) fi.onclick = () => done(true, r[0]);
+  const sc = $("#simCheck"); if (sc) sc.onclick = () => {
+    if (!r.length) return;
+    if (trueFound(world, sit, r[0].pl)) done(true, r[0]); else fail(r[0]);
+  };
+  function fail(x) {
+    if (!x) return;
+    session.tried.push(x.pl.name); session.b = failUpdate(session.b, x.pl);
+    if (session.tried.length >= MAX_CHECKS) session.result = { ok: false, text: "I've run out of good places to suggest.", detail: "Stopped after " + MAX_CHECKS + " checks." };
+    renderAll();
+  }
+  function done(ok, x) {
+    const n = session.tried.length + 1, secs = session.tried.reduce((a, nm) => a + PLACES.find((p) => p.name === nm).t, 0) + x.t;
+    session.result = { ok, text: "Found " + (sit.plural ? "them" : "it") + ": " + x.pl.name.toLowerCase() + ".", detail: "Found on check " + n + ", after about " + secs + " seconds of searching." };
+    renderAll();
+  }
+}
+function renderEvents() {
+  $("#events").textContent = events.slice(-14).reverse().map((e) => JSON.stringify(e)).join("\n");
+}
+function bundleFor(it) {
+  const b = session && session.item === it.id ? session.b : beliefs[it.id];
+  return {
+    task: "Tell the user where to look, in one or two short sentences. Use only these facts. Say 'last seen' and 'likely', never that it is definitely there. Never say who moved it.",
+    item: it.id + "-1",
+    zones: MAP.zones.map((z) => ({ id: z.id, name: z.name, phone: z.camera })),
+    last_seen: lastSeen[it.id] ? { zone: lastSeen[it.id].zone, time: clockAt(lastSeen[it.id].tick).slice(0, 5), ago: agoText(world.tick - lastSeen[it.id].tick) } : null,
+    recent_events: events.filter((e) => e.item === it.id + "-1").slice(-6),
+    already_checked: session && session.item === it.id ? session.tried : [],
+    search_plan: rank(b).slice(0, 4).map((x) => ({ place: x.pl.name, probability: +x.p.toFixed(3), seconds: x.t }))
+  };
+}
+function renderBundle() { $("#bundle").textContent = JSON.stringify(bundleFor(itemById(selected)), null, 2); }
+function renderLegend() {
+  $("#legend").innerHTML = ITEMS.map((it) => '<span><span class="dot" style="background:' + it.color + '"></span>' + esc(it.name) + "</span>").join("") +
+    '<span><span class="dot" style="border:2px dashed var(--muted);width:10px;height:10px"></span>covered</span>' +
+    '<span><span class="dot" style="background:var(--ink)"></span>person</span>' +
+    '<span><span class="dot" style="background:var(--muted);border-radius:2px"></span>phone watching the zone</span>';
+}
+function tile(k, v, sub) { return '<div class="tile"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + "</div>" + (sub ? '<div class="s">' + esc(sub) + "</div>" : "") + "</div>"; }
+function durText(ticks) { const m = Math.round(ticks * TICK_S / 60); return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min"; }
+function renderMetrics() {
+  const W = MAP.width, H = MAP.height, zs = MAP.zones, cams = zs.filter((z) => z.camera);
+  const furnArea = zs.reduce((a, z) => a + z.w * z.h, 0), camArea = cams.reduce((a, z) => a + z.w * z.h, 0);
+  const sightTotal = Object.values(ST.sight).reduce((a, v) => a + v, 0), hours = ST.ticks * TICK_S / 3600;
+  $("#tiles").innerHTML =
+    tile("Room", W.toFixed(1) + " × " + H.toFixed(1) + " m", MAP.name) +
+    tile("Floor area", (W * H).toFixed(1) + " m²", "furniture covers " + Math.round(furnArea / (W * H) * 100) + "%") +
+    tile("Places", String(zs.length), "plus with you and outside") +
+    tile("Phones", cams.length + " of " + zs.length, cams.length === zs.length ? "every zone watched" : (zs.length - cams.length) + " blind spot" + (zs.length - cams.length === 1 ? "" : "s")) +
+    tile("Watched area", camArea.toFixed(1) + " m²", Math.round(camArea / Math.max(furnArea, 1e-9) * 100) + "% of the furniture") +
+    tile("Simulated time", durText(ST.ticks), clockAt(world.tick).slice(0, 5) + " now") +
+    tile("Sightings", String(sightTotal), hours > 0.05 ? Math.round(sightTotal / hours) + " per hour" : "") +
+    tile("Events", String(ST.ev.appeared + ST.ev.moved + ST.ev.disappeared), ST.ev.appeared + " appeared · " + ST.ev.moved + " moved · " + ST.ev.disappeared + " gone");
+  $("#furnTable").innerHTML = "<tr><th>Place</th><th>Type</th><th class=\"num\">Size</th><th class=\"num\">Position</th><th>Phone</th></tr>" +
+    zs.map((z) => "<tr><td>" + esc(z.name) + "</td><td>" + esc(z.type) + '</td><td class="num">' + z.w.toFixed(1) + " × " + z.h.toFixed(1) + ' m</td><td class="num">' +
+      (z.x + z.w / 2).toFixed(1) + ", " + (z.y + z.h / 2).toFixed(1) + " m</td><td>" + (z.camera ? '<span class="pill">watched</span>' : '<span class="pill off">blind spot</span>') + "</td></tr>").join("");
+  $("#phoneTable").innerHTML = cams.length
+    ? "<tr><th>Phone</th><th>Status</th><th class=\"num\">Sightings</th><th>Last sighting</th></tr>" +
+      cams.map((z, k) => "<tr><td>Phone " + (k + 1) + " · " + esc(z.name) + '</td><td><span class="pill">online (simulated)</span></td><td class="num">' + ST.sight[z.id] + "</td><td>" +
+        (ST.lastSight[z.id] == null ? "none yet" : agoText(world.tick - ST.lastSight[z.id])) + "</td></tr>").join("")
+    : "<tr><td>No phones yet.</td></tr>";
+  $("#modelTable").innerHTML = "<tr><th>Item</th><th>Most likely now</th><th class=\"num\">Top guess right</th><th class=\"num\">Uncertainty</th><th class=\"num\">In a phone's view</th></tr>" +
+    ITEMS.map((it) => {
+      const b = beliefs[it.id], t = topPlace(b), n = Math.max(ST.ticks, 1);
+      return '<tr><td><span class="dot" style="background:' + it.color + '"></span>' + esc(it.name) + "</td><td>" + esc(t.pl.name) + " · " + pct(t.p) + '</td><td class="num">' +
+        (ST.ticks ? Math.round(ST.right[it.id] / n * 100) + "%" : "–") + '</td><td class="num">' + entropyBits(b).toFixed(1) + ' bits</td><td class="num">' +
+        (ST.ticks ? Math.round(ST.vis[it.id] / n * 100) + "%" : "–") + "</td></tr>";
+    }).join("") +
+    '<tr><td colspan="5" class="note">Top guess right: how much of the day the most likely place was the true one. Uncertainty: 0 bits means certain; ' + Math.log2(PLACES.length).toFixed(1) + " bits means no idea at all.</td></tr>";
+}
+
+// Try a phone on each blind spot and replay simulated days to see which one cuts search time most.
+let nextRunning = false;
+function nextPhone() {
+  if (nextRunning) return;
+  const blind = MAP.zones.filter((z) => !z.camera);
+  if (!blind.length) { $("#nextPhoneOut").innerHTML = '<p class="note">Every zone already has a phone.</p>'; return; }
+  nextRunning = true; $("#nextPhone").disabled = true;
+  const wasRunning = running; running = false;
+  const N = 200, options = [null].concat(blind), results = [];
+  let oi = 0, k = 0, acc = [];
+  const step = () => {
+    const opt = options[oi];
+    if (opt) opt.camera = true;
+    const stop = Math.min(N, k + 25);
+    for (; k < stop; k++) acc.push(runEpisode());
+    if (opt) opt.camera = false;
+    $("#nextPhoneProg").textContent = "testing " + (opt ? "a phone on the " + opt.name.toLowerCase() : "the current set-up") + " · " + k + " / " + N + " days";
+    if (k >= N) {
+      const n = acc.length;
+      results.push({ opt, secs: acc.reduce((a, r) => a + r.trace.t, 0) / n, first: acc.filter((r) => r.trace.found && r.trace.n === 1).length / n, checks: acc.reduce((a, r) => a + r.trace.n, 0) / n });
+      oi++; k = 0; acc = [];
+    }
+    if (oi < options.length) { setTimeout(step, 0); return; }
+    nextRunning = false; $("#nextPhone").disabled = false; running = wasRunning; $("#nextPhoneProg").textContent = "";
+    const base = results[0], rest = results.slice(1).sort((a, c) => a.secs - c.secs);
+    $("#nextPhoneOut").innerHTML = '<table style="margin-top:8px"><tr><th>Set-up</th><th class="num">Average search</th><th class="num">Found first check</th><th class="num">Checks</th></tr>' +
+      '<tr><td>As it is now (' + MAP.zones.filter((z) => z.camera).length + " phones)</td><td class=\"num\">" + Math.round(base.secs) + ' s</td><td class="num">' + Math.round(base.first * 100) + '%</td><td class="num">' + base.checks.toFixed(2) + "</td></tr>" +
+      rest.map((r, i) => "<tr><td>" + (i === 0 ? "<b>+ phone on the " + esc(r.opt.name.toLowerCase()) + "</b>" : "+ phone on the " + esc(r.opt.name.toLowerCase())) + '</td><td class="num' + (i === 0 ? " win" : "") + '">' + Math.round(r.secs) + " s (" + (r.secs <= base.secs ? "−" : "+") + Math.abs(Math.round(base.secs - r.secs)) + ' s)</td><td class="num">' + Math.round(r.first * 100) + '%</td><td class="num">' + r.checks.toFixed(2) + "</td></tr>").join("") +
+      '</table><p class="note">' + N + " simulated days per option. Differences of a few seconds are within noise.</p>";
+  };
+  step();
+}
+
+function renderAll() {
+  $("#clock").textContent = MAP.name + " · " + clockAt(world.tick);
+  $("#play").textContent = session ? "Paused while searching" : running ? "Pause" : "Play";
+  $("#play").disabled = !!session;
+  renderTabs(); renderBars(); renderAsk(); renderEvents(); renderBundle(); renderMetrics();
+  panelDirty = false;
+}
+function renderScenarios() {
+  $("#scenarios").innerHTML = ITEMS.map((it) =>
+    '<h3 style="margin:10px 0 2px;font-size:15px"><span class="dot" style="background:' + it.color + '"></span>' + esc(it.name) + "</h3>" +
+    '<ul class="scen">' + it.ways.map((w) => "<li>" + esc(w) + "</li>").join("") + "</ul>" +
+    '<p class="note" style="margin-top:4px">Picked up ' + pct(it.pick) + " · put down " + pct(it.drop) + " · pocketed " + pct(it.pocket) + " · comes back in with you " + pct(it.returnWith) + "</p>").join("");
+}
+function renderAssumptions() {
+  const rows = [
+    ["One simulation step", TICK_S + " seconds"],
+    ["Phone spots an uncovered item in its zone", pct(D_VIS)],
+    ["Phone spots a covered item", pct(D_COV)],
+    ["Searching a zone finds an uncovered / covered item", pct(S_VIS) + " / " + pct(S_COV)],
+    ["Checking hands and pockets finds it", pct(S_PERSON) + " in " + T_PERSON + " s"],
+    ["Checking the car or bag finds it", pct(S_OUT) + " in " + T_OUT + " s"],
+    ["Person leaves the room after finishing in a zone", pct(LEAVE_P)],
+    ["Starting belief", "85% spread over zones by habit, 12% with you, 3% outside"],
+    ["Where Trace knows the person is", "Always (phones are good at seeing people)"]
+  ];
+  $("#assumptions").innerHTML = "<tr><th>Assumption</th><th>Value</th></tr>" + rows.map((r) => "<tr><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td></tr>").join("");
+}
+
+// ---------- evaluation ----------
+let evalN = 500, evalRunning = false;
+function runEval() {
+  if (evalRunning) return;
+  evalRunning = true; $("#runEval").disabled = true; $("#evalOut").innerHTML = "";
+  const res = []; let k = 0;
+  const chunk = () => {
+    const stop = Math.min(evalN, k + 20);
+    for (; k < stop; k++) res.push(runEpisode());
+    $("#evalProgress").textContent = k + " / " + evalN + " days";
+    if (k < evalN) setTimeout(chunk, 0);
+    else { evalRunning = false; $("#runEval").disabled = false; $("#evalProgress").textContent = evalN + " days done"; showEval(res); }
+  };
+  chunk();
+}
+function showEval(res) {
+  const n = res.length;
+  const stat = (key) => {
+    const f1 = res.filter((r) => r[key].found && r[key].n === 1).length / n;
+    const f3 = res.filter((r) => r[key].found && r[key].n <= 3).length / n;
+    const checks = res.reduce((a, r) => a + r[key].n, 0) / n;
+    const secs = res.reduce((a, r) => a + r[key].t, 0) / n;
+    return { f1, f3, checks, secs };
+  };
+  const t = stat("trace"), b = stat("base");
+  const row = (label, a, c, fmt, higherBetter) => {
+    const aw = higherBetter ? a > c : a < c;
+    return "<tr><td>" + label + '</td><td class="num' + (aw ? " win" : "") + '">' + fmt(a) + '</td><td class="num' + (!aw && a !== c ? " win" : "") + '">' + fmt(c) + "</td></tr>";
+  };
+  const pf = (v) => Math.round(v * 100) + "%", nf = (v) => v.toFixed(2), sf = (v) => Math.round(v) + " s";
+  let html = '<table style="margin-top:12px"><tr><th>Measure</th><th class="num">Trace</th><th class="num">Last seen, then habits</th></tr>' +
+    row("Found on the first check", t.f1, b.f1, pf, true) +
+    row("Found within three checks", t.f3, b.f3, pf, true) +
+    row("Average number of checks", t.checks, b.checks, nf, false) +
+    row("Average time spent searching", t.secs, b.secs, sf, false) + "</table>";
+  // calibration
+  const bins = [[0, 0.4], [0.4, 0.6], [0.6, 0.8], [0.8, 0.95], [0.95, 1.01]];
+  html += '<h3 style="margin:18px 0 2px;font-size:15px">Are the percentages honest?</h3><p class="note" style="margin-top:0">When Trace\'s top guess has a given probability, how often is it right? A well-calibrated model lands near the black mark.</p><div class="calib">';
+  for (const [lo, hi] of bins) {
+    const inBin = res.filter((r) => r.topP >= lo && r.topP < hi);
+    if (!inBin.length) continue;
+    const hit = inBin.filter((r) => r.topHit).length / inBin.length;
+    const mean = inBin.reduce((a, r) => a + r.topP, 0) / inBin.length;
+    html += '<div class="row"><span class="mono">said ' + Math.round(lo * 100) + "–" + Math.min(100, Math.round(hi * 100)) + '%</span><div class="track"><div class="fill" style="width:' + (hit * 100).toFixed(1) +
+      '%"></div><div class="mark" style="left:' + (mean * 100).toFixed(1) + '%"></div></div><span class="mono">right ' + Math.round(hit * 100) + "% · n=" + inBin.length + "</span></div>";
+  }
+  html += '</div><p class="note">Items a phone could see at that moment were skipped, since finding those is trivial. The model and the simulator share the same assumptions, so these numbers show the search logic works, not how it will do in a real flat.</p>';
+  $("#evalOut").innerHTML = html;
+}
+
+// ---------- room loading ----------
+function mapToText() {
+  return JSON.stringify({ name: MAP.name, width: MAP.width, height: MAP.height, zones: MAP.zones.map((z) => ({ id: z.id, name: z.name, type: z.type, camera: z.camera, cover: z.cover, check: z.check, x: +z.x.toFixed(2), y: +z.y.toFixed(2), w: +z.w.toFixed(2), h: +z.h.toFixed(2) })) }, null, 2);
+}
+function loadMap(obj) {
+  if (!obj || !Array.isArray(obj.zones) || !obj.zones.length) throw new Error("Needs a \"zones\" list with at least one zone.");
+  const ids = new Set();
+  for (const z of obj.zones) {
+    if (!z || z.id == null) throw new Error("Every zone needs an \"id\".");
+    if (ids.has(String(z.id))) throw new Error("Zone id \"" + z.id + "\" appears twice.");
+    ids.add(String(z.id));
+  }
+  if (!obj.zones.some((z) => z.camera)) throw new Error("At least one zone needs \"camera\": true, or Trace can never see anything.");
+  setupMap(obj); resetDay(); build3D(); $("#mapTitle").textContent = MAP.name; $("#mapText").value = mapToText(); renderAll();
+}
+
+// ---------- 3D low-poly room, built from the zone map ----------
+const HAS3D = typeof THREE !== "undefined";
+let view = HAS3D ? "3d" : "2d", R3 = null;
+const SURF = { sofa: 0.47, bed: 0.64, desk: 0.78, shelf: 0.97, counter: 0.95, hook: 1.16, chair: 0.5, table: 0.52 };
+const TOP = { sofa: 0.95, bed: 0.7, desk: 1.15, shelf: 1.9, counter: 1.2, hook: 1.95, chair: 1.0, table: 0.6 };
+const BEDROOM_MAP = {
+  name: "Bedroom", width: 6, height: 5,
+  zones: [
+    { id: "desk", name: "Desk", camera: true, cover: 0.2, check: 10, x: 0.3, y: 0.3, w: 1.5, h: 0.9 },
+    { id: "bed", name: "Bed", camera: true, cover: 0.5, check: 20, x: 2.3, y: 0.3, w: 2.0, h: 2.3 },
+    { id: "bedside", name: "Bedside table", camera: true, cover: 0.1, check: 6, x: 4.7, y: 0.4, w: 0.9, h: 0.8 },
+    { id: "drawers", name: "Chest of drawers", camera: false, cover: 0.5, check: 15, x: 4.2, y: 3.8, w: 1.5, h: 0.8 },
+    { id: "hook", name: "Door hook", camera: false, cover: 0.6, check: 10, x: 0.3, y: 3.5, w: 1.6, h: 1.2 }
+  ]
+};
+
+function pal3() {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  return dark ? {
+    bg: 0x0f1513, floor: 0x3a3229, plank: 0x342d25, wall: 0x46524c, ground: 0x1c2620, road: 0x262c2a, fabric: 0x4f6b80, cushion: 0x5d7c93,
+    wood: 0x7b5a3d, woodDark: 0x5c432d, white: 0x9aa39e, metal: 0x7b8589, coat: 0x8a4636, car: 0xb88a32, person: 0xe4ebe7, skin: 0xd8b49a,
+    phone: 0x111111, accent: 0x6cb6d6, next: 0xf08a3e, rug: 0x3d4a5c, sheet: 0xb8c4cc, books: [0x9b5d4a, 0x4d7a63, 0x5a6f99, 0xa58b3c]
+  } : {
+    bg: 0xe9ede7, floor: 0xd8c4a5, plank: 0xc9b493, wall: 0xf4f2ec, ground: 0xb7c9ad, road: 0x9ea6a1, fabric: 0x7f9cb0, cushion: 0x93afc2,
+    wood: 0xb98a5e, woodDark: 0x8a6542, white: 0xf3f1ea, metal: 0x9aa3a7, coat: 0xa4553f, car: 0xe0a83c, person: 0x2b3a33, skin: 0xe6c2a6,
+    phone: 0x1b1b1b, accent: 0x1f6b8a, next: 0xe07a2e, rug: 0xc7cfd9, sheet: 0xffffff, books: [0xc0634e, 0x5f9a7a, 0x6a83b5, 0xd1ad4a]
+  };
+}
+
+function mat(c, opts) { return new THREE.MeshStandardMaterial(Object.assign({ color: c, flatShading: true, roughness: 0.85, metalness: 0 }, opts || {})); }
+function mesh(geo, m, x, y, z) {
+  const o = new THREE.Mesh(geo, m); o.position.set(x || 0, y || 0, z || 0);
+  o.castShadow = true; o.receiveShadow = true; return o;
+}
+function box(w, h, d, c, x, y, z) { return mesh(new THREE.BoxGeometry(w, h, d), typeof c === "number" ? mat(c) : c, x, y, z); }
+function cyl(rt, rb, h, seg, c, x, y, z) { return mesh(new THREE.CylinderGeometry(rt, rb, h, seg), typeof c === "number" ? mat(c) : c, x, y, z); }
+
+// Each builder works in local space: L along x (the long side), D along z, with z = -D/2 the back.
+const BUILD = {
+  sofa(L, D, P) {
+    const g = new THREE.Group(), w = L * 0.92, d = Math.min(D * 0.9, 1.1);
+    g.add(box(w, 0.26, d, P.fabric, 0, 0.17, 0));
+    const n = Math.max(1, Math.round(w / 0.85)), cw = (w - 0.36) / n;
+    for (let k = 0; k < n; k++) g.add(box(cw - 0.04, 0.12, d * 0.68, P.cushion, -w / 2 + 0.18 + cw * (k + 0.5), 0.36, d * 0.1));
+    g.add(box(w, 0.48, 0.2, P.fabric, 0, 0.5, -d / 2 + 0.1));
+    g.add(box(0.18, 0.4, d, P.fabric, -w / 2 + 0.09, 0.4, 0));
+    g.add(box(0.18, 0.4, d, P.fabric, w / 2 - 0.09, 0.4, 0));
+    const rug = box(L * 0.8, 0.012, 1.2, P.rug, 0, 0.006, d / 2 + 0.55); rug.castShadow = false; g.add(rug);
+    return g;
+  },
+  bed(L, D, P) {
+    const g = new THREE.Group(), w = L * 0.92, d = D * 0.92;
+    g.add(box(w, 0.32, d, P.wood, 0, 0.16, 0));
+    g.add(box(w * 0.97, 0.2, d * 0.97, P.sheet, 0, 0.42, 0));
+    g.add(box(0.12, 0.8, d, P.woodDark, -w / 2 + 0.06, 0.4, 0));
+    g.add(box(0.36, 0.1, d * 0.38, P.white, -w / 2 + 0.38, 0.57, -d * 0.22));
+    g.add(box(0.36, 0.1, d * 0.38, P.white, -w / 2 + 0.38, 0.57, d * 0.22));
+    g.add(box(w * 0.55, 0.07, d * 0.98, P.fabric, w * 0.2, 0.55, 0));
+    return g;
+  },
+  desk(L, D, P) {
+    const g = new THREE.Group(), w = L * 0.9, d = Math.min(D * 0.85, 0.9);
+    g.add(box(w, 0.05, d, P.wood, 0, 0.74, 0));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.add(cyl(0.03, 0.03, 0.72, 5, P.metal, sx * (w / 2 - 0.06), 0.36, sz * (d / 2 - 0.06)));
+    g.add(box(0.56, 0.32, 0.04, P.phone, w * 0.15, 1.0, -d / 2 + 0.12));
+    g.add(cyl(0.02, 0.02, 0.14, 4, P.metal, w * 0.15, 0.82, -d / 2 + 0.12));
+    g.add(box(0.36, 0.015, 0.12, P.white, w * 0.15, 0.775, 0.05));
+    g.add(BUILD.chair(0.5, 0.5, P).translateZ(d / 2 + 0.25).translateX(w * 0.15));
+    return g;
+  },
+  chair(L, D, P) {
+    const g = new THREE.Group();
+    g.add(box(0.46, 0.06, 0.44, P.wood, 0, 0.46, 0));
+    g.add(box(0.46, 0.45, 0.05, P.wood, 0, 0.71, 0.2));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.add(cyl(0.025, 0.025, 0.44, 4, P.woodDark, sx * 0.19, 0.22, sz * 0.18));
+    return g;
+  },
+  table(L, D, P) {
+    const g = new THREE.Group(), w = Math.min(L * 0.85, 1.6), d = Math.min(D * 0.85, 1.0);
+    g.add(box(w, 0.05, d, P.wood, 0, 0.5, 0));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.add(cyl(0.03, 0.025, 0.48, 5, P.woodDark, sx * (w / 2 - 0.06), 0.24, sz * (d / 2 - 0.06)));
+    g.add(cyl(0.05, 0.08, 0.06, 6, P.white, -w * 0.25, 0.555, -d * 0.15));
+    g.add(cyl(0.015, 0.015, 0.18, 4, P.metal, -w * 0.25, 0.67, -d * 0.15));
+    g.add(mesh(new THREE.ConeGeometry(0.1, 0.12, 6, 1, true), mat(P.white, { side: THREE.DoubleSide }), -w * 0.25, 0.8, -d * 0.15));
+    return g;
+  },
+  shelf(L, D, P) {
+    const g = new THREE.Group(), w = L * 0.85, d = Math.min(D * 0.8, 0.45), H = 1.8;
+    g.add(box(0.04, H, d, P.wood, -w / 2, H / 2, 0));
+    g.add(box(0.04, H, d, P.wood, w / 2, H / 2, 0));
+    g.add(box(w, H, 0.02, P.woodDark, 0, H / 2, -d / 2));
+    for (const y of [0.05, 0.5, 0.95, 1.4, 1.8]) g.add(box(w, 0.03, d, P.wood, 0, y, 0));
+    let k = 0;
+    for (const y of [0.065, 0.515, 1.415]) {
+      let x = -w / 2 + 0.06;
+      while (x < w / 2 - 0.12) {
+        const bw = 0.05 + ((k * 37) % 5) * 0.012, bh = 0.26 + ((k * 13) % 4) * 0.035;
+        g.add(box(bw, bh, d * 0.75, P.books[k % P.books.length], x + bw / 2, y + bh / 2 + 0.015, 0));
+        x += bw + 0.01 + ((k * 7) % 3 === 0 ? 0.08 : 0); k++;
+      }
+    }
+    return g;
+  },
+  counter(L, D, P) {
+    const g = new THREE.Group(), w = L * 0.95, d = Math.min(D * 0.75, 0.7);
+    g.add(box(w, 0.88, d, P.white, 0, 0.44, 0));
+    g.add(box(w * 1.01, 0.05, d * 1.05, P.woodDark, 0, 0.905, 0));
+    const doors = Math.max(1, Math.round(w / 0.6));
+    for (let k = 1; k < doors; k++) g.add(box(0.012, 0.8, 0.01, P.metal, -w / 2 + (w / doors) * k, 0.44, d / 2 + 0.005));
+    g.add(cyl(0.07, 0.09, 0.2, 7, P.metal, w / 2 - 0.25, 1.03, -d * 0.15));
+    g.add(mesh(new THREE.SphereGeometry(0.12, 6, 4), mat(P.books[1]), -w / 2 + 0.3, 1.0, -d * 0.1));
+    return g;
+  },
+  hook(L, D, P) {
+    const g = new THREE.Group(), x0 = -L / 2 + 0.3;
+    g.add(cyl(0.025, 0.025, 1.8, 5, P.woodDark, x0, 0.9, 0));
+    g.add(cyl(0.18, 0.2, 0.04, 6, P.woodDark, x0, 0.02, 0));
+    g.add(mesh(new THREE.ConeGeometry(0.26, 0.95, 6), mat(P.coat), x0, 1.15, 0.08));
+    g.add(box(0.42, 0.04, 0.2, P.wood, x0 + 0.36, 1.12, 0));
+    const mat_ = box(Math.min(L * 0.6, 1.0), 0.02, Math.min(D * 0.5, 0.6), P.rug, L * 0.12, 0.01, 0.1); mat_.castShadow = false; g.add(mat_);
+    g.add(box(0.12, 0.08, 0.26, P.person, L * 0.05, 0.05, 0.1));
+    g.add(box(0.12, 0.08, 0.26, P.person, L * 0.05 + 0.16, 0.05, 0.12));
+    return g;
+  }
+};
+
+function zoneFrame(z) {
+  const cx = z.x + z.w / 2, cz = z.y + z.h / 2, rot = z.h > z.w ? -Math.PI / 2 : 0;
+  return { cx, cz, L: Math.max(z.w, z.h), D: Math.min(z.w, z.h), rot, along: rot ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0) };
+}
+
+function makeItem(it) {
+  const g = new THREE.Group(), m = mat(new THREE.Color(it.color).getHex(), { roughness: 0.4, metalness: it.id === "keys" ? 0.5 : 0, transparent: true });
+  if (it.id === "keys") {
+    g.add(mesh(new THREE.TorusGeometry(0.05, 0.013, 4, 8), m, 0, 0.015, 0).rotateX(Math.PI / 2));
+    g.add(box(0.1, 0.02, 0.035, m, 0.08, 0.012, 0.02));
+    g.add(box(0.09, 0.02, 0.03, m, 0.06, 0.012, -0.05));
+  } else if (it.id === "wallet") {
+    g.add(box(0.13, 0.035, 0.1, m, 0, 0.02, 0));
+  } else if (it.id === "glasses") {
+    g.add(mesh(new THREE.TorusGeometry(0.04, 0.009, 4, 8), m, -0.05, 0.04, 0));
+    g.add(mesh(new THREE.TorusGeometry(0.04, 0.009, 4, 8), m, 0.05, 0.04, 0));
+    g.add(box(0.03, 0.01, 0.01, m, 0, 0.05, 0));
+  } else g.add(box(0.1, 0.05, 0.1, m, 0, 0.025, 0));
+  g.scale.setScalar(2);
+  const ring = mesh(new THREE.TorusGeometry(0.12, 0.008, 3, 16), new THREE.MeshBasicMaterial({ color: new THREE.Color(it.color) }), 0, 0.005, 0);
+  ring.rotation.x = Math.PI / 2; ring.castShadow = false; ring.visible = false; g.add(ring);
+  g.userData = { m, ring };
+  return g;
+}
+
+function beam(P) {
+  const m = new THREE.MeshBasicMaterial({ color: P.accent, transparent: true, opacity: 0.32, depthWrite: false });
+  const o = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 6), m);
+  o.userData = { h: 0, m }; o.renderOrder = 2; return o;
+}
+
+function build3D() {
+  if (!HAS3D) return;
+  const cv = $("#room3d");
+  if (!R3) {
+    const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(40, 1.6, 0.1, 200);
+    R3 = { renderer, scene, camera, root: null, theta: 0.35, phi: 0.95, radius: 12, target: new THREE.Vector3(), spin: false, t0: 0 };
+    let drag = null;
+    cv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY }; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      R3.theta -= (e.clientX - drag.x) * 0.008; R3.phi = Math.max(0.2, Math.min(1.42, R3.phi - (e.clientY - drag.y) * 0.006));
+      drag = { x: e.clientX, y: e.clientY };
+    });
+    const end = () => { drag = null; };
+    cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+    cv.addEventListener("wheel", (e) => { e.preventDefault(); R3.radius = Math.max(3, Math.min(40, R3.radius * (1 + e.deltaY * 0.001))); }, { passive: false });
+  }
+  const P = pal3(), S = R3.scene;
+  if (R3.root) {
+    S.remove(R3.root);
+    R3.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  }
+  S.clear();
+  S.background = new THREE.Color(P.bg);
+  const W = MAP.width, H = MAP.height, OX = -OUT;
+  S.add(new THREE.HemisphereLight(0xffffff, 0x7a8a80, 0.55));
+  const sun = new THREE.DirectionalLight(0xfff4e6, 0.62);
+  sun.position.set(W * 0.35, 9, H + 3); sun.target.position.set(W / 2, 0, H / 2);
+  sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera, ext = Math.max(W + OUT, H) * 0.85;
+  sc.left = -ext; sc.right = ext; sc.top = ext; sc.bottom = -ext; sc.near = 1; sc.far = 40; sun.shadow.bias = -0.0008;
+  S.add(sun, sun.target);
+
+  const root = new THREE.Group(), anim = [];
+  R3.root = root; S.add(root);
+  const add = (o, delay, mode) => { root.add(o); anim.push({ o, delay, mode: mode || "all" }); return o; };
+
+  // ground outside, floor, planks, walls (low front wall so the room stays visible)
+  const ground = box(OUT + W + 3, 0.08, H + 3, P.ground, OX + (OUT + W) / 2 - 0.5, -0.06, H / 2); ground.castShadow = false; root.add(ground);
+  const road = box(OUT - 0.3, 0.02, H + 3, P.road, OX + (OUT - 0.3) / 2, -0.01, H / 2); road.castShadow = false; root.add(road);
+  add(box(W, 0.1, H, P.floor, W / 2, -0.05, H / 2), 0, "y");
+  for (let x = 0.6; x < W; x += 0.6) { const p = box(0.02, 0.003, H, P.plank, x, 0.0015, H / 2); p.castShadow = false; p.receiveShadow = false; add(p, 0, "y"); }
+  const doorZ = Math.max(0.6, Math.min(H - 0.6, H / 2)), WH = 1.15, WT = 0.1, wm = mat(P.wall);
+  add(box(W + WT, WH, WT, wm, W / 2, WH / 2, -WT / 2), 0.1, "y");
+  add(box(WT, WH, H + WT, wm, W + WT / 2, WH / 2, H / 2), 0.15, "y");
+  add(box(W + WT, 0.25, WT, wm, W / 2, 0.125, H + WT / 2), 0.2, "y");
+  add(box(WT, WH, doorZ - 0.55, wm, -WT / 2, WH / 2, (doorZ - 0.55) / 2), 0.25, "y");
+  add(box(WT, WH, H - doorZ - 0.55, wm, -WT / 2, WH / 2, (doorZ + 0.55 + H) / 2), 0.25, "y");
+
+  // car outside
+  const car = new THREE.Group();
+  car.add(box(0.85, 0.38, 1.7, P.car, 0, 0.35, 0));
+  car.add(box(0.75, 0.32, 0.95, P.car, 0, 0.7, -0.1));
+  car.add(box(0.77, 0.22, 0.8, mat(0x9fc3d6, { roughness: 0.2 }), 0, 0.72, -0.1));
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const wh = cyl(0.17, 0.17, 0.12, 8, P.phone, sx * 0.43, 0.17, sz * 0.55); wh.rotation.z = Math.PI / 2; car.add(wh); }
+  car.position.set(OX + (OUT - 0.3) / 2, 0, Math.min(H - 1, Math.max(1, doorZ - 1.6)));
+  add(car, 0.4 + MAP.zones.length * 0.14 + 0.2);
+
+  // zones: floor glow, furniture, phone with view cone, probability column, label
+  const zones = MAP.zones.map((z, i) => {
+    const f = zoneFrame(z), delay = 0.45 + i * 0.14;
+    const glowM = new THREE.MeshBasicMaterial({ color: P.accent, transparent: true, opacity: 0, depthWrite: false });
+    const glow = new THREE.Mesh(new THREE.PlaneGeometry(z.w, z.h), glowM);
+    glow.rotation.x = -Math.PI / 2; glow.position.set(f.cx, 0.006, f.cz); root.add(glow);
+    const g = BUILD[z.type](f.L, f.D, P); g.position.set(f.cx, 0, f.cz); g.rotation.y = f.rot;
+    add(g, delay);
+    let phone = null;
+    if (z.camera) {
+      const centre = new THREE.Vector3(W / 2, 0, H / 2), zc = new THREE.Vector3(f.cx, 0, f.cz);
+      const dir = centre.clone().sub(zc); if (dir.lengthSq() < 0.01) dir.set(0, 0, 1);
+      dir.normalize();
+      const pos = zc.clone().add(dir.multiplyScalar(f.D / 2 + 0.55));
+      pos.x = Math.max(0.2, Math.min(W - 0.2, pos.x)); pos.z = Math.max(0.2, Math.min(H - 0.2, pos.z));
+      const py = Math.max(1.35, TOP[z.type] + 0.35);
+      const pg = new THREE.Group();
+      pg.add(cyl(0.012, 0.012, py, 4, P.metal, pos.x, py / 2, pos.z));
+      pg.add(cyl(0.12, 0.12, 0.02, 3, P.metal, pos.x, 0.01, pos.z));
+      const body = box(0.09, 0.17, 0.012, P.phone, pos.x, py + 0.04, pos.z);
+      const tgt = new THREE.Vector3(f.cx, SURF[z.type], f.cz);
+      body.lookAt(tgt);
+      const ledM = new THREE.MeshBasicMaterial({ color: 0x3ad17a });
+      const led = new THREE.Mesh(new THREE.SphereGeometry(0.018, 6, 4), ledM);
+      led.position.copy(body.position).add(tgt.clone().sub(body.position).normalize().multiplyScalar(0.02)); led.position.y += 0.06;
+      pg.add(body, led);
+      const span = tgt.clone().sub(body.position), len = span.length();
+      const coneM = new THREE.MeshBasicMaterial({ color: P.accent, transparent: true, opacity: 0.06, depthWrite: false, side: THREE.DoubleSide });
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(Math.min(f.L * 0.5, 1.4), len, 12, 1, true), coneM);
+      cone.position.copy(body.position).add(span.clone().multiplyScalar(0.5));
+      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), span.clone().normalize());
+      cone.renderOrder = 1; pg.add(cone);
+      add(pg, delay + 0.12);
+      phone = { coneM, ledM };
+    }
+    const bm = beam(P); bm.scale.set(Math.min(0.42, f.D * 0.3 + 0.08), 0.01, Math.min(0.42, f.D * 0.3 + 0.08)); root.add(bm);
+    const lbl = document.createElement("div"); lbl.className = "lbl";
+    return { z, f, glowM, beam: bm, phone, lbl, base: TOP[z.type] };
+  });
+
+  // person
+  const person = new THREE.Group();
+  person.add(cyl(0.16, 0.2, 0.75, 6, P.person, 0, 0.62, 0));
+  person.add(cyl(0.06, 0.06, 0.28, 5, P.person, -0.08, 0.13, 0));
+  person.add(cyl(0.06, 0.06, 0.28, 5, P.person, 0.08, 0.13, 0));
+  person.add(mesh(new THREE.IcosahedronGeometry(0.15, 0), mat(P.skin), 0, 1.16, 0));
+  person.add(box(0.06, 0.06, 0.08, P.person, 0, 1.16, 0.13));
+  root.add(person);
+  const pBeam = beam(P); pBeam.scale.set(0.3, 0.01, 0.3); root.add(pBeam);
+  const oBeam = beam(P); oBeam.scale.set(0.5, 0.01, 0.5); root.add(oBeam);
+
+  const items = {};
+  for (const it of ITEMS) { items[it.id] = makeItem(it); root.add(items[it.id]); }
+
+  const labels = $("#labels"); labels.innerHTML = "";
+  zones.forEach((zo) => labels.appendChild(zo.lbl));
+  const pL = document.createElement("div"); pL.className = "lbl"; labels.appendChild(pL);
+  const oL = document.createElement("div"); oL.className = "lbl"; labels.appendChild(oL);
+
+  for (const a of anim) { if (a.mode === "y") a.o.scale.y = 0.001; else a.o.scale.setScalar(0.001); }
+  Object.assign(R3, { P, zones, person, pBeam, oBeam, car, items, pL, oL, anim, W, H, doorZ,
+    personPos: null, t0: performance.now(), buildEnd: 0.4 + MAP.zones.length * 0.14 + 0.9 });
+  resetView();
+}
+
+function resetView() {
+  if (!R3) return;
+  const W = MAP.width, H = MAP.height;
+  R3.target.set((W - OUT) / 2, 0.4, H / 2);
+  R3.theta = -0.22; R3.phi = 0.88; R3.radius = Math.max(W + OUT, H * 1.4) * 1.05;
+}
+
+function easeBack(t) { const c = 1.70158, u = t - 1; return 1 + (c + 1) * u * u * u + c * u * u; }
+
+function personTarget3() {
+  if (world.person.outside) return new THREE.Vector3(R3.car.position.x + 0.7, 0, R3.car.position.z + 0.6);
+  const zo = R3.zones[ZI[world.person.zone]], f = zo.f;
+  const dir = new THREE.Vector3(R3.W / 2 - f.cx, 0, R3.H / 2 - f.cz);
+  if (dir.lengthSq() < 0.01) dir.set(0, 0, 1);
+  dir.normalize();
+  const p = new THREE.Vector3(f.cx, 0, f.cz).add(dir.multiplyScalar(f.D / 2 + 0.3));
+  p.x = Math.max(0.25, Math.min(R3.W - 0.25, p.x)); p.z = Math.max(0.25, Math.min(R3.H - 0.25, p.z));
+  return p;
+}
+
+function itemSpot(it, st, k, n) {
+  const off = (k - (n - 1) / 2) * 0.3;
+  if (st.loc === "person") {
+    const pp = R3.personPos, a = R3.person.rotation.y;
+    const side = new THREE.Vector3(Math.cos(a), 0, -Math.sin(a));
+    return pp.clone().add(side.multiplyScalar(st.pocket ? 0.17 : 0.27)).setY(st.pocket ? 0.62 + k * 0.07 : 0.75 + k * 0.12);
+  }
+  if (st.loc === "outside") return R3.car.position.clone().add(new THREE.Vector3(0, 0.62, -0.2 + k * 0.3));
+  const zo = R3.zones[ZI[st.loc]], f = zo.f, t = zo.z.type;
+  const p = new THREE.Vector3(f.cx, SURF[t] + 0.01, f.cz).add(f.along.clone().multiplyScalar(off));
+  if (t === "desk" || t === "counter") p.add(new THREE.Vector3(0, 0, 0).add(f.rot ? new THREE.Vector3(-0.12, 0, 0) : new THREE.Vector3(0, 0, 0.12)));
+  if (t === "hook") {
+    p.copy(new THREE.Vector3(f.cx, 0, f.cz).add(f.along.clone().multiplyScalar(-f.L / 2 + 0.66 + k * 0.12)));
+    p.y = st.covered ? 1.0 : SURF.hook + 0.01;
+    if (st.covered) p.add(f.along.clone().multiplyScalar(-0.36));
+  } else if (st.covered) p.y -= t === "sofa" ? 0.08 : 0.03;
+  return p;
+}
+
+function setBeam(bm, base, p, x, z, isNext, P, k) {
+  const target = p < 0.005 ? 0 : 0.06 + 2.3 * p;
+  bm.userData.h += (target - bm.userData.h) * 0.15;
+  const h = Math.max(0.001, bm.userData.h);
+  bm.scale.y = h; bm.position.set(x, base + h / 2, z); bm.visible = h > 0.01;
+  bm.userData.m.color.setHex(isNext ? P.next : P.accent);
+  bm.userData.m.opacity = (0.18 + 0.3 * Math.min(1, p * 1.5)) * k;
+}
+
+function placeLabel(el, v3, html, cls, w, h) {
+  const v = v3.clone().project(R3.camera);
+  if (v.z > 1) { el.style.display = "none"; return; }
+  const px = Math.max(50, Math.min(w - 50, (v.x + 1) / 2 * w)), py = Math.max(42, Math.min(h - 4, (1 - v.y) / 2 * h));
+  el.style.display = ""; el.style.left = px.toFixed(1) + "px"; el.style.top = py.toFixed(1) + "px";
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+  if (el._cls !== cls) { el.className = cls; el._cls = cls; }
+}
+
+function draw3D(now) {
+  const cv = $("#room3d"), w = cv.clientWidth || 600, h = Math.max(320, Math.round(w * 0.62));
+  const { renderer, camera, P } = R3;
+  const sz = renderer.getSize(new THREE.Vector2());
+  if (sz.x !== w || sz.y !== h) { renderer.setSize(w, h, false); cv.style.height = h + "px"; camera.aspect = w / h; camera.updateProjectionMatrix(); }
+  const t = (now - R3.t0) / 1000;
+  for (const a of R3.anim) {
+    const s = Math.max(0.001, easeBack(Math.max(0, Math.min(1, (t - a.delay) / 0.55))));
+    if (a.mode === "y") a.o.scale.y = s; else a.o.scale.setScalar(s);
+  }
+  const built = Math.max(0, Math.min(1, (t - R3.buildEnd + 0.4) / 0.6));
+  if (R3.spin && !session) R3.theta += 0.0012;
+  const sp = Math.sin(R3.phi);
+  camera.position.set(R3.target.x + R3.radius * sp * Math.sin(R3.theta), R3.target.y + R3.radius * Math.cos(R3.phi), R3.target.z + R3.radius * sp * Math.cos(R3.theta));
+  camera.lookAt(R3.target);
+
+  const b = session ? session.b : beliefs[selected], it = itemById(selected);
+  const nextId = session && !session.result ? (rank(session.b)[0] || {}).pl : null;
+  const seen = visibleAt(selected);
+
+  // person
+  const tgt = personTarget3();
+  if (!R3.personPos) R3.personPos = tgt.clone();
+  const d = tgt.clone().sub(R3.personPos), dist = d.length();
+  if (dist > 0.02) { R3.personPos.add(d.multiplyScalar(Math.min(1, 0.06))); R3.person.rotation.y = Math.atan2(tgt.x - R3.personPos.x, tgt.z - R3.personPos.z); }
+  R3.person.position.copy(R3.personPos);
+  R3.person.position.y = dist > 0.05 ? Math.abs(Math.sin(now / 90)) * 0.04 : 0;
+  R3.person.scale.setScalar(Math.max(0.001, built));
+
+  const cw = cv.clientWidth, ch = h;
+  R3.zones.forEach((zo, i) => {
+    const p = placeP(b, PLACES[i]), isNext = nextId && nextId.kind === "zone" && nextId.i === i;
+    zo.glowM.opacity = Math.min(0.5, p * 0.55) * built;
+    zo.glowM.color.setHex(isNext ? P.next : P.accent);
+    setBeam(zo.beam, zo.base, p, zo.f.cx, zo.f.cz, isNext, P, built);
+    if (zo.phone) {
+      const sees = seen === zo.z.id;
+      zo.phone.coneM.opacity = (sees ? 0.2 : 0.055) * built;
+      zo.phone.ledM.color.setHex(sees ? 0x3ad17a : (Math.floor(now / 600) % 2 ? 0x3ad17a : 0x1d6b3e));
+    }
+    const top = new THREE.Vector3(zo.f.cx, zo.base + zo.beam.userData.h + 0.12, zo.f.cz);
+    const cls = "lbl" + (isNext ? " next" : "") + (p < 0.02 && !isNext ? " dim" : "");
+    placeLabel(zo.lbl, top, esc(zo.z.name) + "<b>" + pct(p) + "</b>", cls, cw, ch);
+  });
+  const pP = b[2 * Z], pO = b[2 * Z + 1];
+  const nextP = nextId && nextId.kind === "person", nextO = nextId && nextId.kind === "outside";
+  setBeam(R3.pBeam, 1.35, pP, R3.personPos.x, R3.personPos.z, nextP, P, built);
+  setBeam(R3.oBeam, 1.05, pO, R3.car.position.x, R3.car.position.z, nextO, P, built);
+  placeLabel(R3.pL, new THREE.Vector3(R3.personPos.x, 1.47 + R3.pBeam.userData.h, R3.personPos.z), "With the person<b>" + pct(pP) + "</b>",
+    "lbl" + (nextP ? " next" : "") + (pP < 0.02 && !nextP ? " dim" : ""), cw, ch);
+  placeLabel(R3.oL, new THREE.Vector3(R3.car.position.x, 1.17 + R3.oBeam.userData.h, R3.car.position.z), "Outside (car or bag)<b>" + pct(pO) + "</b>",
+    "lbl" + (nextO ? " next" : "") + (pO < 0.02 && !nextO ? " dim" : ""), cw, ch);
+
+  // the real items (ground truth), only when "show where things really are" is on
+  const groups = {};
+  for (const x of ITEMS) { const l = world.items[x.id].loc; (groups[l] = groups[l] || []).push(x.id); }
+  for (const x of ITEMS) {
+    const g = R3.items[x.id], st = world.items[x.id];
+    g.visible = showTruth && built > 0.5;
+    if (!g.visible) continue;
+    const grp = groups[st.loc], pos = itemSpot(x, st, grp.indexOf(x.id), grp.length);
+    g.position.lerp(pos, g.position.lengthSq() === 0 ? 1 : 0.25);
+    g.rotation.y = st.loc === "person" ? R3.person.rotation.y : 0.4;
+    g.userData.m.opacity = st.covered || st.pocket ? 0.35 : 1;
+    g.userData.ring.visible = x.id === selected;
+    g.userData.ring.scale.setScalar(1 + 0.15 * Math.sin(now / 250));
+  }
+  renderer.render(R3.scene, camera);
+}
+
+function setView(v) {
+  if (v === "3d" && !HAS3D) v = "2d";
+  view = v;
+  $("#view3d").hidden = v !== "3d"; $("#room").hidden = v !== "2d"; $("#controls3d").hidden = v !== "3d";
+  document.querySelectorAll("#viewSeg button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.v === v)));
+  $("#roomLead").textContent = v === "3d"
+    ? "Built automatically from the zone map: each zone becomes a piece of furniture, and each phone shows what it can see. The glowing columns show where Trace thinks the selected item is. Drag to turn, scroll to zoom."
+    : "Zones with a phone can see items that aren't covered. Shading shows where Trace thinks the selected item is.";
+}
+
+// ---------- map a real room from camera photos ----------
+// Each photo is calibrated with a sheet of known size lying on the floor: its four corners give a
+// homography from image pixels to floor metres. Furniture boxes are dropped onto the floor
+// through it (bottom edge = where it meets the floor) and given a typical depth by type.
+const DEPTH = { sofa: 0.9, bed: 2.0, desk: 0.7, table: 0.8, chair: 0.5, counter: 0.6, shelf: 0.4, hook: 0.5 };
+const COVER = { sofa: 0.45, bed: 0.5, desk: 0.2, table: 0.15, chair: 0.2, counter: 0.25, shelf: 0.2, hook: 0.6 };
+const CHECK = { sofa: 20, bed: 20, desk: 10, table: 8, chair: 6, counter: 15, shelf: 10, hook: 12 };
+const REFS = { a4: ["A4 sheet", 0.297, 0.21], a3: ["A3 sheet", 0.42, 0.297], a1: ["A1 flip-chart sheet", 0.841, 0.594], tape: ["1 m square of tape", 1, 1] };
+const SHEET_L = REFS.a1[1], SHEET_S = REFS.a1[2];
+const mcams = []; let mcamSeq = 0;
+
+function solveH(src, dst) {
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i], [u, v] = dst[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+  }
+  for (let c = 0; c < 8; c++) {
+    let p = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    if (Math.abs(A[p][c]) < 1e-12) return null;
+    [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
+    for (let r = 0; r < 8; r++) {
+      if (r === c) continue;
+      const f = A[r][c] / A[c][c];
+      if (!f) continue;
+      for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k];
+      b[r] -= f * b[c];
+    }
+  }
+  const h = b.map((v, i) => v / A[i][i]);
+  return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+function hApply(H, x, y) {
+  const w = H[6] * x + H[7] * y + H[8];
+  return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w, w];
+}
+function clockwise(pts) {
+  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length, cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  return pts.slice().sort((a, c) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(c[1] - cy, c[0] - cx));
+}
+function roomDims() {
+  const W = Math.max(1, Math.min(30, +$("#rmW").value || 6)), H = Math.max(1, Math.min(30, +$("#rmH").value || 5));
+  return { W, H };
+}
+function calibrate(c) {
+  c.Hif = c.Hfi = null;
+  if (c.corners.length < 4) return;
+  const s = clockwise(c.corners), x0 = +c.sheet.x || 0, y0 = +c.sheet.y || 0, L = REFS[c.ref][1], S = REFS[c.ref][2];
+  const R = [[x0, y0], [x0 + L, y0], [x0 + L, y0 + S], [x0, y0 + S]];
+  const img = R.map((_, i) => s[(i + c.turn) % 4]);
+  c.Hif = solveH(img, R); c.Hfi = solveH(R, img);
+  if (c.Hif && c.Hfi) {
+    const ctr = [img.reduce((a, p) => a + p[0], 0) / 4, img.reduce((a, p) => a + p[1], 0) / 4];
+    c.signI = Math.sign(hApply(c.Hif, ctr[0], ctr[1])[2]);
+    c.signF = Math.sign(hApply(c.Hfi, x0 + L / 2, y0 + S / 2)[2]);
+  }
+}
+function toFloor(c, x, y) { const p = hApply(c.Hif, x, y); return Math.sign(p[2]) === c.signI && isFinite(p[0]) && isFinite(p[1]) ? p : null; }
+function toImage(c, X, Y) { const p = hApply(c.Hfi, X, Y); return Math.sign(p[2]) === c.signF && isFinite(p[0]) && isFinite(p[1]) ? p : null; }
+
+// Where a piece of furniture sits: two clicks where its front edge meets the floor,
+// extended away from the camera by its depth (typical for its type, or measured).
+function sideOf(c, A, B) {
+  const ux = B[0] - A[0], uy = B[1] - A[1], L = Math.hypot(ux, uy), n = [-uy / L, ux / L], M = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2];
+  const i0 = toImage(c, M[0], M[1]), i1 = toImage(c, M[0] + n[0] * 0.1, M[1] + n[1] * 0.1);
+  return i0 && i1 && i1[1] > i0[1] ? -1 : 1;   // the side that is higher in the photo is further away
+}
+function footprint(c, it) {
+  if (!c.Hif || !it.b) return null;
+  const A = toFloor(c, it.a[0], it.a[1]), B = toFloor(c, it.b[0], it.b[1]);
+  if (!A || !B) return null;
+  const ux = B[0] - A[0], uy = B[1] - A[1], L = Math.hypot(ux, uy);
+  if (!(L > 0.05 && L < 30)) return null;
+  const sg = sideOf(c, A, B) * (it.flip ? -1 : 1), n = [-uy / L * sg, ux / L * sg], d = Math.max(0.1, +it.depth || DEPTH[it.type] || 0.6);
+  const pts = [A, B, [B[0] + n[0] * d, B[1] + n[1] * d], [A[0] + n[0] * d, A[1] + n[1] * d]];
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  return { pts, x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+}
+
+function addCamera(name, url, sample) {
+  const img = new Image();
+  const c = { id: ++mcamSeq, name, img, corners: [], turn: 0, sheet: { x: 1, y: 1 }, boxes: [], ref: sample ? "a1" : "a4", sample: sample || null, pending: null, Hif: null, Hfi: null };
+  if (sample) { c.sheet = { x: +sample.sheet.x.toFixed(2), y: +sample.sheet.y.toFixed(2) }; }
+  img.onload = () => { mcams.push(c); renderCamCards(); };
+  img.onerror = () => { $("#mapStatus").textContent = "Couldn't open that image."; };
+  img.src = url;
+}
+
+function camEl(c) { return document.querySelector('.camcard[data-id="' + c.id + '"]'); }
+
+function renderCamCards() {
+  const host = $("#camCards");
+  host.innerHTML = mcams.map((c) =>
+    '<div class="camcard" data-id="' + c.id + '">' +
+      '<div class="headrow"><h3>' + esc(c.name) + '</h3><button class="btn" type="button" data-act="remove">Remove</button></div>' +
+      '<p class="note hint"></p>' +
+      '<canvas class="cam"></canvas>' +
+      '<div class="controls">' +
+        '<label class="check">On the floor: <select data-f="ref">' + Object.entries(REFS).map(([k, v]) => '<option value="' + k + '"' + (k === c.ref ? " selected" : "") + ">" + v[0] + "</option>").join("") + "</select></label>" +
+        '<label class="check">its back-left corner: <input type="number" step="0.05" min="0" data-f="sx" value="' + c.sheet.x + '"> m from the left wall,</label>' +
+        '<label class="check"><input type="number" step="0.05" min="0" data-f="sy" value="' + c.sheet.y + '"> m from the back wall</label>' +
+      '</div>' +
+      '<div class="controls">' +
+        '<button class="btn" type="button" data-act="turn">Turn the sheet ↻</button>' +
+        '<button class="btn" type="button" data-act="redo">Redo corners</button>' +
+        (c.sample ? '<button class="btn primary" type="button" data-act="fill">Fill in for me</button>' : "") +
+      '</div>' +
+      '<div class="boxlist"></div>' +
+    "</div>").join("");
+  for (const c of mcams) wireCam(c);
+  mapSummary();
+}
+
+function wireCam(c) {
+  const el = camEl(c), cv = el.querySelector("canvas");
+  const maxW = 1280, s = Math.min(1, maxW / c.img.naturalWidth);
+  cv.width = Math.round(c.img.naturalWidth * s); cv.height = Math.round(c.img.naturalHeight * s); c.scale = s;
+  const pos = (e) => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * (cv.width / r.width) / s, (e.clientY - r.top) * (cv.height / r.height) / s]; };
+  cv.addEventListener("pointerdown", (e) => {
+    const p = pos(e);
+    if (c.corners.length < 4) { c.corners.push(p); calibrate(c); drawCam(c); renderBoxList(c); mapSummary(); return; }
+    if (!c.pending) { c.pending = p; drawCam(c); return; }
+    const n = mcams.reduce((a, k) => a + k.boxes.length, 0) + 1;
+    c.boxes.push({ a: c.pending, b: p, name: "Zone " + n, type: "table", auto: true, watch: true, depth: DEPTH.table, flip: false });
+    c.pending = null; renderBoxList(c); drawCam(c); mapSummary();
+  });
+  el.addEventListener("click", (e) => {
+    const bt = e.target.closest("button[data-act]"); if (!bt) return;
+    const act = bt.dataset.act;
+    if (act === "remove") { mcams.splice(mcams.indexOf(c), 1); renderCamCards(); return; }
+    if (act === "turn") c.turn = (c.turn + 1) % 4;
+    if (act === "redo") { c.corners = []; c.pending = null; }
+    if (act === "fill" && c.sample) {
+      c.corners = c.sample.corners.map((p) => p.slice(0, 2));
+      const sorted = clockwise(c.corners);
+      c.turn = sorted.findIndex((p) => p === c.corners[0]);
+      c.sheet = { x: +c.sample.sheet.x.toFixed(3), y: +c.sample.sheet.y.toFixed(3) };
+      el.querySelector('[data-f="sx"]').value = c.sheet.x; el.querySelector('[data-f="sy"]').value = c.sheet.y;
+      c.boxes = c.sample.boxes.map((b) => Object.assign({}, b));
+      calibrate(c);
+      for (const b of c.boxes) {
+        const fp = footprint(c, b);
+        if (fp && Math.hypot(fp.x + fp.w / 2 - b.want[0], fp.y + fp.h / 2 - b.want[1]) > 0.3) b.flip = !b.flip;
+      }
+    }
+    calibrate(c); drawCam(c); renderBoxList(c); mapSummary();
+  });
+  el.addEventListener("input", (e) => {
+    const f = e.target.dataset.f;
+    if (f === "ref") { c.ref = e.target.value; calibrate(c); drawCam(c); renderBoxList(c); mapSummary(); return; }
+    if (f === "sx" || f === "sy") { c.sheet[f === "sx" ? "x" : "y"] = +e.target.value; calibrate(c); drawCam(c); mapSummary(); return; }
+    const row = e.target.closest("[data-b]"); if (!row) return;
+    const b = c.boxes[+row.dataset.b]; if (!b) return;
+    const setType = (t) => { b.type = t; b.depth = DEPTH[t]; row.querySelector('[data-f="depth"]').value = b.depth; };
+    if (f === "name") { b.name = e.target.value; if (b.auto) { setType(furnType({ id: "", name: b.name })); row.querySelector('[data-f="type"]').value = b.type; } }
+    if (f === "type") { setType(e.target.value); b.auto = false; }
+    if (f === "depth") b.depth = +e.target.value;
+    if (f === "watch") b.watch = e.target.checked;
+    drawCam(c); mapSummary();
+  });
+  calibrate(c); drawCam(c); renderBoxList(c);
+}
+
+function renderBoxList(c) {
+  const el = camEl(c); if (!el) return;
+  el.querySelector(".hint").textContent = c.corners.length < 4
+    ? "Click the four corners of the " + REFS[c.ref][0] + " on the floor (" + c.corners.length + " of 4), long side parallel to the back wall. Bigger is more accurate: a flip-chart sheet or a 1 m square of tape beats A4."
+    : "If the grid doesn't line up with the walls, press Turn the sheet. Then, for each piece of furniture, click where its front edge meets the floor: one end, then the other. The shaded area shows where it lands; press Flip if it points the wrong way.";
+  el.querySelector(".boxlist").innerHTML = c.boxes.length
+    ? c.boxes.map((b, i) =>
+      '<div class="boxrow" data-b="' + i + '">' +
+        '<input type="text" data-f="name" value="' + esc(b.name) + '" aria-label="Zone name">' +
+        '<select data-f="type" aria-label="Furniture type">' + TYPES.map((t) => '<option' + (t === b.type ? " selected" : "") + ">" + t + "</option>").join("") + "</select>" +
+        '<label class="check">depth <input type="number" step="0.05" min="0.1" data-f="depth" value="' + b.depth + '"> m</label>' +
+        '<label class="check"><input type="checkbox" data-f="watch"' + (b.watch ? " checked" : "") + "> a phone watches it</label>" +
+        '<button class="btn" type="button" data-flip="' + i + '">Flip</button>' +
+        '<button class="btn" type="button" data-del="' + i + '" aria-label="Remove">✕</button>' +
+      "</div>").join("")
+    : "";
+  el.querySelectorAll("[data-flip]").forEach((bt) => { bt.onclick = () => { const b = c.boxes[+bt.dataset.flip]; b.flip = !b.flip; drawCam(c); mapSummary(); }; });
+  el.querySelectorAll("[data-del]").forEach((bt) => { bt.onclick = () => { c.boxes.splice(+bt.dataset.del, 1); renderBoxList(c); drawCam(c); mapSummary(); }; });
+}
+
+function drawCam(c) {
+  const el = camEl(c); if (!el) return;
+  const cv = el.querySelector("canvas"), ctx = cv.getContext("2d"), s = c.scale;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(c.img, 0, 0, cv.width, cv.height);
+  ctx.setTransform(s, 0, 0, s, 0, 0);
+  const lw = 1 / s, { W, H } = roomDims();
+  const poly = (pts, close) => {
+    let pen = false; ctx.beginPath();
+    for (const p of pts) { if (!p) { pen = false; continue; } if (pen) ctx.lineTo(p[0], p[1]); else { ctx.moveTo(p[0], p[1]); pen = true; } }
+    if (close) ctx.closePath();
+  };
+  const floorLine = (ax, ay, bx, by) => { const pts = []; for (let k = 0; k <= 40; k++) pts.push(toImage(c, ax + (bx - ax) * k / 40, ay + (by - ay) * k / 40)); return pts; };
+  if (c.Hfi) {
+    ctx.lineWidth = 1.2 * lw; ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    for (let x = 0.5; x < W; x += 0.5) { poly(floorLine(x, 0, x, H)); ctx.stroke(); }
+    for (let y = 0.5; y < H; y += 0.5) { poly(floorLine(0, y, W, y)); ctx.stroke(); }
+    ctx.lineWidth = 3 * lw; ctx.strokeStyle = "#2b8fb5";
+    poly([...floorLine(0, 0, W, 0), ...floorLine(W, 0, W, H), ...floorLine(W, H, 0, H), ...floorLine(0, H, 0, 0)]); ctx.stroke();
+    ctx.font = 14 * lw + "px system-ui, sans-serif"; ctx.fillStyle = "#2b8fb5";
+    const bw = toImage(c, W / 2, 0.15), lwp = toImage(c, 0.15, H / 2);
+    if (bw) ctx.fillText("back wall", bw[0] - 30 * lw, bw[1]);
+    if (lwp) ctx.fillText("left wall", lwp[0], lwp[1]);
+  }
+  // furniture: the clicked front edge and where it lands on the floor
+  c.boxes.forEach((b) => {
+    const fp = footprint(c, b);
+    if (fp && c.Hfi) {
+      const ip = fp.pts.map((p) => toImage(c, p[0], p[1]));
+      if (ip.every(Boolean)) { poly(ip, true); ctx.fillStyle = "rgba(224,122,46,0.35)"; ctx.fill(); ctx.lineWidth = 1.5 * lw; ctx.strokeStyle = "#e07a2e"; ctx.stroke(); }
+    }
+    ctx.lineWidth = 4 * lw; ctx.strokeStyle = "#e07a2e"; ctx.beginPath(); ctx.moveTo(b.a[0], b.a[1]); ctx.lineTo(b.b[0], b.b[1]); ctx.stroke();
+    for (const p of [b.a, b.b]) { ctx.beginPath(); ctx.arc(p[0], p[1], 5 * lw, 0, Math.PI * 2); ctx.fillStyle = "#e07a2e"; ctx.fill(); }
+    ctx.font = "600 " + 15 * lw + "px system-ui, sans-serif";
+    const label = b.name + (b.watch ? " 📷" : ""), tw = ctx.measureText(label).width;
+    const lx = (b.a[0] + b.b[0]) / 2 - tw / 2, ly = Math.max(b.a[1], b.b[1]) + 24 * lw;
+    ctx.fillStyle = "#e07a2e"; ctx.fillRect(lx - 5 * lw, ly - 15 * lw, tw + 10 * lw, 20 * lw);
+    ctx.fillStyle = "#fff"; ctx.fillText(label, lx, ly);
+  });
+  if (c.pending) { ctx.beginPath(); ctx.arc(c.pending[0], c.pending[1], 6 * lw, 0, Math.PI * 2); ctx.fillStyle = "#e07a2e"; ctx.fill(); ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+  // the sheet
+  if (c.corners.length === 4) { poly(clockwise(c.corners), true); ctx.lineWidth = 2.5 * lw; ctx.strokeStyle = "#3ad17a"; ctx.stroke(); }
+  c.corners.forEach((p, i) => {
+    ctx.beginPath(); ctx.arc(p[0], p[1], 7 * lw, 0, Math.PI * 2); ctx.fillStyle = "#3ad17a"; ctx.fill();
+    ctx.fillStyle = "#06351c"; ctx.font = "700 " + 10 * lw + "px system-ui, sans-serif"; ctx.fillText(String(i + 1), p[0] - 3 * lw, p[1] + 3.5 * lw);
+  });
+}
+
+function collectZones() {
+  const { W, H } = roomDims(), raw = [];
+  for (const c of mcams) for (const b of c.boxes) {
+    const fp = footprint(c, b);
+    if (!fp) continue;
+    const x = Math.max(0.05, fp.x), y = Math.max(0.05, fp.y);
+    const w = Math.min(W - 0.05, fp.x + fp.w) - x, h = Math.min(H - 0.05, fp.y + fp.h) - y;
+    if (w < 0.15 || h < 0.15) continue;
+    raw.push({ name: (b.name || "Zone").trim() || "Zone", type: b.type, watch: b.watch, x, y, w, h, cam: c.name });
+  }
+  // the same furniture seen by two phones: same type, centres within 0.8 m
+  const out = []; let merged = 0;
+  for (const r of raw) {
+    const m = out.find((o) => o.type === r.type && Math.hypot(o.x + o.w / 2 - r.x - r.w / 2, o.y + o.h / 2 - r.y - r.h / 2) < 0.8);
+    if (m) {
+      const n = m.n + 1;
+      for (const k of ["x", "y", "w", "h"]) m[k] = (m[k] * m.n + r[k]) / n;
+      m.n = n; m.watch = m.watch || r.watch; m.cams.push(r.cam); merged++;
+    } else out.push(Object.assign({ n: 1, cams: [r.cam] }, r));
+  }
+  const ids = new Set();
+  const zones = out.map((o) => {
+    let id = o.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "zone", base = id, k = 2;
+    while (ids.has(id)) id = base + "-" + k++;
+    ids.add(id);
+    return { id, name: o.name, type: o.type, camera: !!o.watch, cover: COVER[o.type], check: CHECK[o.type],
+      x: +o.x.toFixed(2), y: +o.y.toFixed(2), w: +o.w.toFixed(2), h: +o.h.toFixed(2), seen_by: o.cams };
+  });
+  return { zones, merged, W, H };
+}
+
+function mapSummary() {
+  const ready = mcams.filter((c) => c.Hif).length, boxes = mcams.reduce((a, c) => a + c.boxes.length, 0);
+  const { zones, merged } = collectZones();
+  $("#mapStatus").textContent = mcams.length
+    ? mcams.length + " photo" + (mcams.length === 1 ? "" : "s") + ", " + ready + " calibrated · " + boxes + " furniture box" + (boxes === 1 ? "" : "es") + " → " + zones.length + " zone" + (zones.length === 1 ? "" : "s") + (merged ? " (" + merged + " merged across phones)" : "")
+    : "";
+  $("#buildRoom").disabled = !zones.length;
+  $("#calibOut").textContent = JSON.stringify(mcams.filter((c) => c.Hif).map((c) => ({
+    camera: c.name, camera_id: c.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), reference: REFS[c.ref][0], image_w: c.img.naturalWidth, image_h: c.img.naturalHeight,
+    image_to_floor: c.Hif.map((v) => +v.toPrecision(8)),
+    note: "Multiply [x, y, 1] in this image's pixels, divide by the third value: floor metres from the back-left corner. Scale x and y first if the stream is a different size."
+  })), null, 2);
+}
+
+function buildFromCameras() {
+  const { zones, W, H } = collectZones();
+  $("#mapErr2").textContent = "";
+  if (!zones.length) { $("#mapErr2").textContent = "No furniture boxes landed inside the room yet."; return; }
+  if (!zones.some((z) => z.camera)) { $("#mapErr2").textContent = "Tick \"a phone watches it\" on at least one zone."; return; }
+  try {
+    loadMap({ name: ($("#rmName").value || "Mapped room").trim(), width: W, height: H, zones: zones.map((z) => { const o = Object.assign({}, z); delete o.seen_by; return o; }) });
+    setView(R3 ? "3d" : "2d");
+    $("#mapTitle").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (err) { $("#mapErr2").textContent = err.message; }
+}
+
+// A test photo: the current 3D room seen from a phone above the front wall, with a flip-chart sheet on the floor.
+function samplePhoto() {
+  if (!R3) { $("#mapStatus").textContent = "The sample photo needs the 3D view, which isn't available in this browser."; return; }
+  const W = MAP.width, H = MAP.height, iw = 1280, ih = 720;
+  const cam = new THREE.PerspectiveCamera(58, iw / ih, 0.1, 100);
+  cam.position.set(W * 0.5, 4.6, H + 2.2); cam.lookAt(W * 0.5, 0, H * 0.5);
+  cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+  const sx = W * 0.42, sy = H * 0.5;
+  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(SHEET_L, SHEET_S), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  sheet.rotation.x = -Math.PI / 2; sheet.position.set(sx + SHEET_L / 2, 0.004, sy + SHEET_S / 2); R3.root.add(sheet);
+  const hide = [R3.pBeam, R3.oBeam, R3.person].concat(Object.values(R3.items), R3.zones.map((z) => z.beam));
+  const vis = hide.map((o) => o.visible); hide.forEach((o) => { o.visible = false; });
+  const glow = R3.zones.map((z) => z.glowM.opacity), cones = R3.zones.map((z) => z.phone ? z.phone.coneM.opacity : 0);
+  R3.zones.forEach((z) => { z.glowM.opacity = 0; if (z.phone) z.phone.coneM.opacity = 0; });
+  R3.anim.forEach((a) => { if (a.mode === "y") a.o.scale.y = 1; else a.o.scale.setScalar(1); });
+  const rd = R3.sampleRenderer || (R3.sampleRenderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true }));
+  rd.setPixelRatio(1); rd.setSize(iw, ih, false); rd.shadowMap.enabled = true; rd.shadowMap.type = THREE.PCFSoftShadowMap;
+  rd.render(R3.scene, cam);
+  const url = rd.domElement.toDataURL("image/jpeg", 0.9);
+  hide.forEach((o, i) => { o.visible = vis[i]; });
+  R3.zones.forEach((z, i) => { z.glowM.opacity = glow[i]; if (z.phone) z.phone.coneM.opacity = cones[i]; });
+  R3.root.remove(sheet); sheet.geometry.dispose(); sheet.material.dispose();
+  const proj = (x, y, z) => { const v = new THREE.Vector3(x, y, z).project(cam); return [(v.x + 1) / 2 * iw, (1 - v.y) / 2 * ih, v.z]; };
+  const corners = [[sx, sy], [sx + SHEET_L, sy], [sx + SHEET_L, sy + SHEET_S], [sx, sy + SHEET_S]].map(([x, y]) => proj(x, 0, y));
+  const boxes = [];
+  MAP.zones.forEach((z) => {
+    const f = zoneFrame(z);
+    // the front edge as the 3D builder draws it: the bottom edge, or the left edge for turned furniture
+    const e = f.rot ? [[z.x, z.y + z.h], [z.x, z.y]] : [[z.x, z.y + z.h], [z.x + z.w, z.y + z.h]];
+    const a = proj(e[0][0], 0, e[0][1]), b = proj(e[1][0], 0, e[1][1]);
+    const inside = (p) => p[2] < 1 && p[0] >= 0 && p[0] <= iw && p[1] >= 0 && p[1] <= ih;
+    if (!inside(a) || !inside(b)) return;
+    boxes.push({ a: a.slice(0, 2), b: b.slice(0, 2), name: z.name, type: z.type, auto: false, watch: z.camera,
+      depth: +(f.rot ? z.w : z.h).toFixed(2), flip: false, want: [z.x + z.w / 2, z.y + z.h / 2] });
+  });
+  $("#rmW").value = W; $("#rmH").value = H; $("#rmName").value = MAP.name + " (from a photo)";
+  addCamera("Sample photo: " + MAP.name, url, { sheet: { x: sx, y: sy }, corners, boxes });
+}
+
+// ---------- wiring ----------
+$("#camFile").addEventListener("change", (e) => {
+  for (const f of e.target.files) addCamera(f.name.replace(/\.[^.]+$/, ""), URL.createObjectURL(f));
+  e.target.value = "";
+});
+$("#samplePhoto").onclick = samplePhoto;
+$("#nextPhone").onclick = nextPhone;
+$("#copyCalib").onclick = async () => {
+  try { await navigator.clipboard.writeText($("#calibOut").textContent); $("#copyCalibNote").textContent = "Copied. Save it as baseline/calibration.json."; }
+  catch (e) { $("#copyCalibNote").textContent = "Couldn't copy here. Select the text above and copy it instead."; }
+};
+
+$("#buildRoom").onclick = buildFromCameras;
+["#rmW", "#rmH"].forEach((q) => $(q).addEventListener("input", () => { mcams.forEach(drawCam); mapSummary(); }));
+$("#copyMap").onclick = async () => {
+  try { await navigator.clipboard.writeText($("#mapText").value); $("#copyMapNote").textContent = "Copied the current room's zone map."; }
+  catch (e) { $("#copyMapNote").textContent = "Couldn't copy here. It's in \"Load a different room\" below."; }
+};
+$("#viewSeg").addEventListener("click", (e) => { const bt = e.target.closest("button[data-v]"); if (bt) setView(bt.dataset.v); });
+$("#rebuild").onclick = () => build3D();
+$("#resetView").onclick = () => resetView();
+$("#spin").onchange = (e) => { if (R3) R3.spin = e.target.checked; };
+$("#bedroomMap").onclick = () => { $("#mapErr").textContent = ""; loadMap(JSON.parse(JSON.stringify(BEDROOM_MAP))); };
+$("#itemTabs").addEventListener("click", (e) => { const bt = e.target.closest("button[data-id]"); if (!bt || session) return; selected = bt.dataset.id; renderAll(); });
+$("#play").onclick = () => { running = !running; renderAll(); };
+$("#speed").addEventListener("click", (e) => { const bt = e.target.closest("button[data-s]"); if (!bt) return; speed = +bt.dataset.s; document.querySelectorAll("#speed button").forEach((x) => x.setAttribute("aria-pressed", String(x === bt))); });
+$("#skip").onclick = () => { if (session) return; for (let k = 0; k < 360; k++) liveTick(); renderAll(); };
+$("#reset").onclick = () => { resetDay(); renderAll(); };
+$("#truth").onchange = (e) => { showTruth = e.target.checked; };
+$("#nDays").addEventListener("click", (e) => { const bt = e.target.closest("button[data-n]"); if (!bt) return; evalN = +bt.dataset.n; document.querySelectorAll("#nDays button").forEach((x) => x.setAttribute("aria-pressed", String(x === bt))); });
+$("#runEval").onclick = runEval;
+$("#loadMap").onclick = () => { $("#mapErr").textContent = ""; try { loadMap(JSON.parse($("#mapText").value)); } catch (err) { $("#mapErr").textContent = err.message; } };
+$("#defaultMap").onclick = () => { $("#mapErr").textContent = ""; loadMap(JSON.parse(JSON.stringify(DEFAULT_MAP))); };
+$("#copyBundle").onclick = async () => {
+  try { await navigator.clipboard.writeText($("#bundle").textContent); $("#copyNote").textContent = "Copied."; }
+  catch (e) { $("#copyNote").textContent = "Couldn't copy here. Select the text and copy it instead."; }
+};
+
+setupMap(JSON.parse(JSON.stringify(DEFAULT_MAP)));
+$("#mapText").value = mapToText();
+resetDay(); renderLegend(); renderScenarios(); renderAssumptions(); renderAll();
+if (HAS3D) { try { build3D(); } catch (err) { console.warn(err); } }
+if (!R3) { $("#viewSeg").hidden = true; }
+setView(R3 ? "3d" : "2d");
+
+let lastT = performance.now(), acc = 0, lastPanel = 0;
+function frame(now) {
+  const dt = Math.min(0.25, (now - lastT) / 1000); lastT = now;
+  if (running && !session) {
+    acc += dt * TPS[speed];
+    let n = Math.floor(acc); acc -= n;
+    while (n-- > 0) liveTick();
+  }
+  if (panelDirty && now - lastPanel > 250) { renderAll(); lastPanel = now; }
+  if (view === "3d" && R3) draw3D(now); else draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
