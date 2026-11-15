@@ -13,7 +13,9 @@ Setup
        python multicam.py --cam "Laptop=0" --cam "Hall=http://192.168.1.23:8080/video" --cam "Sofa=http://192.168.1.31:4747/video"
      or in cameras.json (see cameras.example.json) and just run:
        python multicam.py
-  3. Run api.py alongside it for the phone app, exactly as before.
+  3. Open Trace at http://localhost:8000/ - multicam serves it, with live video of every
+     camera (trace_api.py). --api-host 0.0.0.0 lets phones on your Wi-Fi open it too,
+     --api-port 0 turns the server off.
 
 What it looks for (prompts, threshold, model) is set in detect.py, which must sit in the
 same folder. --conf / --imgsz here override detect.py's defaults.
@@ -44,6 +46,7 @@ from PIL import Image
 
 # detection lives in detect.py (prompts, thresholds, model) - see its docstring
 import detect
+import trace_api
 
 # ---- tuning ----
 SAMPLE_SECS = 0.5      # each camera is analysed at most every this many seconds
@@ -511,6 +514,16 @@ class Memory:
         print(f"Loaded {len(self.objs)} remembered objects.")
 
 
+def api_item(o, now, cam_names):
+    """One remembered object in the shape trace.html reads from /api/items."""
+    fh, fw = o.frame.shape[:2] if o.frame is not None else (None, None)
+    return {"id": o.id, "name": o.label, "category": o.category, "camera": o.cam,
+            "camera_name": cam_names.get(o.cam, o.cam) if o.cam else None, "zone": o.zone,
+            "last_time": o.last_time, "box": [round(float(v), 1) for v in o.box] if o.box else None,
+            "frame_w": fw, "frame_h": fh, "sentence": None, "confidence": None,
+            "guess": False, "flag": None, "in_view": o.visible(now)}
+
+
 def log_event(o, now, cam_names):
     rec = {"id": o.id, "item": o.label, "category": o.category, "zone": o.zone, "source": "camera",
            "camera": o.cam, "camera_name": cam_names.get(o.cam, o.cam),
@@ -729,6 +742,10 @@ def main():
                     help="detector input size (default from detect.py)")
     ap.add_argument("--conf", type=float, default=detect.CONF,
                     help="detector threshold (default from detect.py)")
+    ap.add_argument("--api-port", type=int, default=8000,
+                    help="port for Trace (trace.html + live video); 0 turns it off")
+    ap.add_argument("--api-host", default="127.0.0.1",
+                    help="127.0.0.1 = this computer only; 0.0.0.0 = phones on your Wi-Fi too")
     args = ap.parse_args()
 
     cams = load_cameras(args)
@@ -742,6 +759,9 @@ def main():
     mem = Memory(Embedder(), cam_names)
     zones = load_zones(cams[0].id)
     layout = Layout(len(cams))
+    api = trace_api.TraceAPI(cams, MEM_DIR, EVENTS_FILE).start(
+        args.api_host, args.api_port) if args.api_port else None
+    last_pub = 0.0
 
     win = "FindIt - all cameras"
     cv2.namedWindow(win)
@@ -922,6 +942,10 @@ def main():
                 print(f"  {o.label}: {where}" + (f" in {o.zone}" if o.zone else "")
                       + (f" ({cam_names.get(o.cam)})" if o.cam else ""))
 
+        if api and now - last_pub > 0.5:
+            api.items = [api_item(o, now, cam_names)
+                         for o in list(mem.objs.values()) if o.last_time]
+            last_pub = now
         if now - last_live > 1:
             mem.apply_edits()
             mem.save_live()
@@ -935,6 +959,8 @@ def main():
 
     mem.save()
     print("Memory saved.")
+    if api:
+        api.stop()
     for c in cams:
         c.stopped = True
     cv2.destroyAllWindows()

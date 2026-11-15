@@ -330,8 +330,15 @@ main { padding-bottom: 128px; }
 
 /* cameras */
 .cams { list-style: none; margin: 0; padding: 0 0 4px; display: flex; gap: 10px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-.cam { flex: none; min-width: 156px; scroll-snap-align: start; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.cams > li { flex: none; scroll-snap-align: start; display: flex; }
+.cam {
+  min-width: 168px; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px 14px; color: var(--text); transition: border-color .15s;
+}
+button.cam:hover { border-color: var(--teal-line); }
 .cam-name { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--text); }
+.cam-name .watch { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-body); font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--mint); }
+.cam-name .watch .i { width: 14px; height: 14px; color: var(--mint); }
 .cam-name .i { color: var(--teal); }
 .cam.down .cam-name .i { color: var(--quiet); }
 .cam-foot { margin-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
@@ -487,6 +494,77 @@ main { padding-bottom: 128px; }
 .next li .n { font-family: var(--font-mono); font-size: 12px; color: var(--muted); width: 18px; }
 .next li .i { color: var(--teal); }
 .found-missing { text-align: center; padding: 60px 16px; }
+.found-actions { margin-top: 14px; }
+
+/* ------------------------------------------------------------ live camera view */
+.live-view { position: fixed; inset: 0; z-index: 28; background: var(--bg); overflow-y: auto; overscroll-behavior: contain; }
+.live-inner { max-width: 1160px; margin: 0 auto; padding: 14px 16px 132px; }
+.live-bar { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.live-bar h2 { margin: 0; flex: 1; min-width: 0; font-family: var(--font-display); font-weight: 600; font-size: 20px; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--mint); border: 1px solid var(--teal-line);
+}
+.live-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); animation: blink 1.8s ease-in-out infinite; }
+.live-pill .i { width: 14px; height: 14px; }
+.live-pill.down { color: var(--quiet); border: 1px dashed var(--quiet); }
+.live-pill.demo { color: var(--mint-2); border: 1px dashed var(--mint-2); }
+@keyframes blink { 50% { opacity: .3; } }
+.cam-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 14px 0 2px; scrollbar-width: none; }
+.cam-tabs::-webkit-scrollbar { display: none; }
+.cam-tabs button {
+  flex: none; display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px; border-radius: 999px;
+  background: transparent; border: 1px solid var(--line); color: var(--muted);
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+}
+.cam-tabs button:hover { border-color: var(--teal-line); color: var(--text); }
+.cam-tabs button .i { width: 15px; height: 15px; }
+.cam-tabs button[aria-pressed="true"] { background: var(--teal); border-color: var(--teal); color: var(--navy); }
+.live-grid { display: grid; gap: 22px; margin-top: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 960px) { .live-grid { grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 28px; align-items: start; } }
+.screen-wrap { position: relative; }
+.screen { position: relative; width: 100%; aspect-ratio: var(--ar, 16 / 9); border-radius: 12px; overflow: hidden; background: var(--card); border: 1px solid var(--line); }
+.screen img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: fill; }
+.screen-wrap:fullscreen { display: flex; align-items: center; justify-content: center; background: var(--navy); }
+.screen-wrap:fullscreen .screen { width: min(100vw, calc(100vh * var(--ar, 1.7778))); border-radius: 0; border: 0; }
+.screen-btn {
+  position: absolute; right: 10px; bottom: 10px; width: 38px; height: 38px; border-radius: 9px; display: grid; place-items: center;
+  background: var(--bg); border: 1px solid var(--line); color: var(--text);
+}
+.screen-btn:hover { border-color: var(--teal-line); }
+.lbox { position: absolute; padding: 0; margin: 0; background: transparent; border-radius: 4px; cursor: pointer; }
+.lbox.in { border: 2px solid var(--teal); }
+.lbox.out { border: 2px dashed var(--quiet); }
+.lbox .ltag {
+  position: absolute; left: -2px; bottom: calc(100% + 5px); white-space: nowrap;
+  font-size: 12px; font-weight: 600; line-height: 1.5; padding: 1px 8px; border-radius: 6px;
+}
+.lbox.in .ltag { background: var(--teal); color: var(--navy); }
+.lbox.out .ltag { background: var(--bg); color: var(--muted); border: 1px dashed var(--quiet); font-weight: 500; }
+.lbox.top-edge .ltag { bottom: auto; top: calc(100% + 5px); }
+.lbox.right-half .ltag, .box.right-half .box-tag { left: auto; right: -2px; }
+@media (max-width: 480px) { .lbox .ltag { font-size: 11px; padding: 0 6px; } }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend .sw { width: 18px; height: 12px; border-radius: 3px; border: 2px solid var(--teal); }
+.legend .sw.out { border: 2px dashed var(--quiet); }
+.cam-items { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.cam-items li + li { border-top: 1px solid var(--line); }
+.cam-items button {
+  width: 100%; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 12px 14px; background: transparent; border: 0; text-align: left; color: var(--text);
+}
+.cam-items button:hover { background: var(--card-hi); }
+.cam-items .ico { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; color: var(--teal); }
+.cam-items .ico .i { width: 16px; height: 16px; }
+.cam-items .nm { font-weight: 600; font-size: 14.5px; overflow-wrap: anywhere; }
+.cam-items .sub { display: flex; align-items: center; gap: 5px; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+.cam-items .sub .i { width: 13px; height: 13px; }
+.cam-items .sub.in { color: var(--mint); }
+.cam-items .go { color: var(--muted); }
+.cam-items .empty { display: block; padding: 18px 14px; color: var(--muted); font-size: 14px; }
+.live-note { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
 
 /* ------------------------------------------------------------ reduced motion: every animation becomes a quick fade */
 @media (prefers-reduced-motion: reduce) {
@@ -575,6 +653,11 @@ main { padding-bottom: 128px; }
   </main>
 </div>
 
+<!-- ============================================================ live camera view -->
+<div class="live-view" id="live" role="dialog" aria-modal="true" aria-labelledby="liveTitle" hidden>
+  <div class="live-inner" id="liveInner"></div>
+</div>
+
 <!-- ============================================================ found view -->
 <div class="found" id="found" role="dialog" aria-modal="true" aria-labelledby="foundTitle" hidden>
   <div class="found-inner" id="foundInner"></div>
@@ -610,11 +693,14 @@ main { padding-bottom: 128px; }
 <script>
 /* ======================================================================
    Config. Every backend call goes through API_BASE.
-   ?api=http://192.168.1.20:8000 overrides it; ?demo=1 forces the built-in
-   sample data; ?demo=empty shows the empty state.
+   Opened as a file it talks to http://localhost:8000; served by multicam.py
+   (http://<computer>:8000/) it talks to the server it came from, which is what
+   makes it work on a phone. ?api=http://192.168.1.20:8000 overrides both;
+   ?demo=1 forces the built-in sample data; ?demo=empty shows the empty state.
    No keys live here: the Gemini key stays in .env on the server.
    ====================================================================== */
-const API_BASE = new URLSearchParams(location.search).get("api") || "http://localhost:8000";
+const API_BASE = new URLSearchParams(location.search).get("api")
+  || (/^https?:$/.test(location.protocol) ? location.origin : "http://localhost:8000");
 
 (() => {
 "use strict";
@@ -687,6 +773,9 @@ const ICON = {
   sparkle: '<path d="M12 3.5c.7 5 1.9 6.6 7.5 7.5-5.6.9-6.8 2.5-7.5 7.5-.7-5-1.9-6.6-7.5-7.5 5.6-.9 6.8-2.5 7.5-7.5z" fill="currentColor" stroke="none"/>',
   dots: '<circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/>',
   moon: '<path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/>',
+  expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  shrink: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+  chevron: '<path d="M9 5l7 7-7 7"/>',
   // categories
   keys: '<circle cx="8" cy="8" r="4.5"/><circle cx="8" cy="8" r="1.4"/><path d="M11.2 11.2l8.3 8.3M16 16l2.2-2.2M18.4 18.4l1.8-1.8"/>',
   wallet: '<path d="M17 6.5V5a1.5 1.5 0 0 0-1.9-1.4L5 6.5"/><rect x="3.5" y="6.5" width="17" height="13" rx="2.5"/><path d="M20.5 11h-4a2 2 0 0 0 0 4h4"/>',
@@ -893,7 +982,7 @@ const snapURL = (it) => state.mode === "demo" ? sceneSVG(it.camera) : `${API_BAS
 const state = {
   power: false, mode: "connecting", everLive: false, lastLiveAt: null,
   items: null, cameras: [], events: [],
-  query: "", chat: [], chatOpen: false, foundId: null, busy: false,
+  query: "", chat: [], chatOpen: false, foundId: null, liveCam: null, busy: false,
 };
 
 const el = {
@@ -904,8 +993,13 @@ const el = {
   offBtn: $("#offBtn"), statusChip: $("#statusChip"), demoChip: $("#demoChip"), eyebrow: $("#eyebrow"),
   q: $("#q"), filterNote: $("#filterNote"), banner: $("#banner"),
   cams: $("#cams"), camCount: $("#camCount"), items: $("#items"), itemCount: $("#itemCount"), feed: $("#feed"),
-  found: $("#found"), foundInner: $("#foundInner"),
+  found: $("#found"), foundInner: $("#foundInner"), live: $("#live"), liveInner: $("#liveInner"),
 };
+/* The main app is out of reach while a full-screen view is open; the live view is too while Found sits on top of it. */
+function syncInert() {
+  el.app.inert = !state.power || state.foundId != null || state.liveCam != null;
+  el.live.inert = state.foundId != null;
+}
 el.agent.innerHTML = mascotSVG();
 for (const id of ["logoMascot", "chatMascot", "askMascot"]) $("#" + id).innerHTML = mascotSVG();
 
@@ -981,9 +1075,10 @@ const wordCount = (s) => s.split(/\s+/).filter(Boolean).length;
 const joinNames = (names) => names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
 function answerFor(it) {
-  const c = typeof it.confidence === "number" ? it.confidence : 0;
+  const known = typeof it.confidence === "number";   // no number -> say nothing about sureness rather than invent one
+  const c = known ? it.confidence : 0;
   const pct = Math.round(c * 100);
-  const unsure = !!it.guess || c < 0.7;
+  const unsure = !!it.guess || (known && c < 0.7);
   const [them, theyre] = pron(it);
   const cam = camOf(it);
   let sure = c >= 0.85 ? "very sure" : c >= 0.7 ? "fairly sure" : c >= 0.5 ? "not totally sure" : "not sure";
@@ -992,7 +1087,7 @@ function answerFor(it) {
   // No furniture sentence yet: lead with the camera line instead of a made-up place.
   const s1 = !it.sentence ? "" : unsure ? hedge(it.sentence) : it.sentence;
   const seen = it.in_view ? `I can see ${them} on the ${cam} camera right now` : `I spotted ${them} on the ${cam} camera ${agoLong(it.last_time)}`;
-  let s2 = `${seen}, and I'm ${sure} (${pct}%).`;
+  let s2 = known ? `${seen}, and I'm ${sure} (${pct}%).` : `${seen}.`;
   const place = cat(it).places[0]?.[1];
   let s3 = "";
   const flag = it.flag ? String(it.flag).replace(/^possibly\s+/i, "").replace(/\.$/, "") : "";
@@ -1000,7 +1095,7 @@ function answerFor(it) {
   else if (flag) s3 = `${cap(them === "them" ? "they" : "it")} might be ${flag}, so check there too.`;
   else if (unsure && place) s3 = `If ${theyre} not there, try ${place}.`;
   let reply = [s1, s2, s3].filter(Boolean).join(" ");
-  if (wordCount(reply) > 45) { s2 = `${cam} camera, ${agoLong(it.last_time)}, ${pct}% sure.`; reply = [s1, s2, s3].filter(Boolean).join(" "); }
+  if (wordCount(reply) > 45) { s2 = known ? `${cam} camera, ${agoLong(it.last_time)}, ${pct}% sure.` : `${cam} camera, ${agoLong(it.last_time)}.`; reply = [s1, s2, s3].filter(Boolean).join(" "); }
   return { reply, item_id: it.id, state: "found" };
 }
 
@@ -1198,7 +1293,7 @@ function stopPolling() { pollGen++; clearTimeout(pollTimer); }
 
 /* ------------------------------------------------------------ rendering */
 function render() {
-  renderHeader(); renderBanner(); renderCams(); renderItems(); renderFeed(); updateFound();
+  renderHeader(); renderBanner(); renderCams(); renderItems(); renderFeed(); updateFound(); updateLive();
 }
 function liveCams() { return state.cameras.filter((c) => c.live && state.mode !== "offline"); }
 function renderHeader() {
@@ -1239,20 +1334,24 @@ function renderCams() {
   const live = liveCams().length;
   el.camCount.textContent = cams.length ? `${live}/${cams.length} live` : "";
   if (!cams.length) {
+    el.cams.dataset.html = "";
     el.cams.innerHTML = `<li class="cam down"><div class="cam-name">${icon("cameraOff", "sm")}No cameras</div><div class="cam-foot"><span class="down-lbl">Add a phone in cameras.json</span></div></li>`;
     return;
   }
   const counts = {};
   for (const it of state.items || []) counts[it.camera] = (counts[it.camera] || 0) + 1;
-  el.cams.innerHTML = cams.map((c) => {
+  const html = cams.map((c) => {
     const up = c.live && state.mode !== "offline";
     const n = counts[c.id] || 0;
-    return `<li class="cam ${up ? "" : "down"}">
-      <div class="cam-name">${icon(up ? "camera" : "cameraOff", "sm")}${esc(c.name || c.id)}</div>
-      <div class="cam-foot">${up ? `<span class="live"><span class="dot" aria-hidden="true"></span>Live</span>` : `<span class="down-lbl">${icon("cloudOff")}${state.mode === "offline" ? "No signal" : "Offline"}</span>`}
-      <span class="cam-count">${n} item${n === 1 ? "" : "s"}</span></div></li>`;
+    const status = up ? "Live" : state.mode === "offline" ? "No signal" : "Offline";
+    return `<li><button type="button" class="cam ${up ? "" : "down"}" data-cam="${esc(c.id)}" aria-label="Watch the ${esc(c.name || c.id)} camera. ${status}, ${n} item${n === 1 ? "" : "s"}">
+      <div class="cam-name">${icon(up ? "camera" : "cameraOff", "sm")}${esc(c.name || c.id)}<span class="watch" aria-hidden="true">Watch${icon("chevron")}</span></div>
+      <div class="cam-foot">${up ? `<span class="live"><span class="dot" aria-hidden="true"></span>Live</span>` : `<span class="down-lbl">${icon("cloudOff")}${status}</span>`}
+      <span class="cam-count">${n} item${n === 1 ? "" : "s"}</span></div></button></li>`;
   }).join("");
+  if (el.cams.dataset.html !== html) { el.cams.innerHTML = html; el.cams.dataset.html = html; }   // keep focus between polls
 }
+el.cams.addEventListener("click", (e) => { const b = e.target.closest("[data-cam]"); if (b) openLive(b.dataset.cam); });
 
 const cards = new Map();
 function matches(it, q) {
@@ -1371,7 +1470,7 @@ function evtTime(e) {
 function renderFeed() {
   const evs = state.events || [];
   if (!evs.length) {
-    el.feed.innerHTML = `<li><span class="empty">No sightings yet. They show up here as the cameras spot things.</span></li>`;
+    el.feed.innerHTML = `<li style="display:block"><span class="empty">No sightings yet. They show up here as the cameras spot things.</span></li>`;
     return;
   }
   const byName = new Map((state.items || []).map((it) => [nameOf(it).toLowerCase(), it.category]));
@@ -1393,7 +1492,7 @@ function openFound(it, { focus = true } = {}) {
   buildFound(it);
   el.found.hidden = false;
   el.found.scrollTop = 0;
-  el.app.inert = true;
+  syncInert();
   if (!already) {
     el.found.animate(reduced() ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "none" }],
       { duration: reduced() ? 150 : 260, easing: "cubic-bezier(.2,.8,.2,1)" });
@@ -1404,13 +1503,15 @@ function closeFound(returnFocus = true) {
   if (state.foundId == null) return;
   state.foundId = null;
   el.found.hidden = true;
-  el.app.inert = !state.power;
+  syncInert();
   if (returnFocus && foundOpener && document.contains(foundOpener) && !foundOpener.closest("[inert]")) foundOpener.focus();
   foundOpener = null;
 }
 function buildFound(it) {
   const c = cat(it);
-  const sure = !it.guess && (it.confidence ?? 0) >= 0.7;
+  // No confidence from the tracker yet: "Found it" only when a camera can see it right now.
+  const unknown = it.confidence == null && !it.guess;
+  const found = unknown ? it.in_view : !it.guess && it.confidence >= 0.7;
   const fw = it.frame_w || 0, fh = it.frame_h || 0;
   const flag = it.flag ? cap(String(it.flag)) : "";
   const cam = state.cameras.find((k) => k.id === it.camera);
@@ -1418,7 +1519,7 @@ function buildFound(it) {
   el.foundInner.innerHTML = `
     <div class="found-bar">
       <button type="button" class="back-btn">${icon("back")}Back to items</button>
-      <span class="found-label ${sure ? "" : "maybe"}">${icon(sure ? "sparkle" : "search")}${sure ? "Found it" : "Best guess"}</span>
+      <span class="found-label ${found ? "" : "maybe"}">${icon(found ? "sparkle" : unknown ? "pin" : "search")}${found ? "Found it" : unknown ? "Last seen" : "Best guess"}</span>
     </div>
     <div class="found-grid">
       <div>
@@ -1440,7 +1541,8 @@ function buildFound(it) {
           <div><dt>Zone</dt><dd>${esc(it.zone || "Not mapped")}</dd></div>
           <div><dt>Seen</dt><dd data-f="seen" class="${it.in_view ? "view-in" : ""}">${esc(it.in_view ? "In view now" : agoShort(it.last_time))}</dd></div>
         </dl>
-        <div class="found-conf">${it.confidence == null ? "" : confPill(it.confidence)}<span class="note">${esc(it.guess ? "The camera only got a weak look at it." : "How sure Trace is about the spot.")}</span></div>
+        ${it.confidence == null ? "" : `<div class="found-conf">${confPill(it.confidence)}<span class="note">${esc(it.guess ? "The camera only got a weak look at it." : "How sure Trace is about the spot.")}</span></div>`}
+        ${cam ? `<div class="found-actions"><button type="button" class="btn-find" data-watch>${icon("camera")}<span>Watch ${esc(cam.name || cam.id)} live</span></button></div>` : ""}
         <section class="next" aria-labelledby="nextHead">
           <h3 id="nextHead">Not there? Try next</h3>
           <ol>${c.places.map(([label], i) => `<li><span class="n">0${i + 1}</span>${icon("pin")}<span>${esc(label)}</span></li>`).join("")}</ol>
@@ -1448,6 +1550,11 @@ function buildFound(it) {
       </div>
     </div>`;
   $(".back-btn", el.foundInner).addEventListener("click", () => closeFound());
+  $("[data-watch]", el.foundInner)?.addEventListener("click", () => {
+    const camId = String(it.camera);
+    closeFound(state.liveCam === camId);
+    if (state.liveCam !== camId) openLive(camId);
+  });
 
   const shot = $("#shot", el.foundInner), img = $("img", shot), st = $(".shot-state", shot);
   const drawBox = (w, h) => {
@@ -1455,7 +1562,7 @@ function buildFound(it) {
     const [x1, y1, x2, y2] = it.box.map(Number);
     const L = Math.max(0, x1 / w), T = Math.max(0, y1 / h), R = Math.min(1, x2 / w), B = Math.min(1, y2 / h);
     const b = document.createElement("div");
-    b.className = "box" + (T < 0.14 ? " top-edge" : "");
+    b.className = "box" + (T < 0.14 ? " top-edge" : "") + ((L + R) / 2 > 0.5 ? " right-half" : "");
     b.style.cssText = `left:${L * 100}%;top:${T * 100}%;width:${(R - L) * 100}%;height:${(B - T) * 100}%`;
     b.innerHTML = `<span class="box-tag">${esc(nameOf(it))}</span>`;
     shot.append(b);
@@ -1480,6 +1587,251 @@ function updateFound() {
   const clk = $('[data-f="clock"]', el.foundInner);
   if (clk) setText(clk, clockTime(it.last_time));
 }
+
+/* ------------------------------------------------------------ live camera view
+   The picture is the raw camera stream (MJPEG from /api/live/<id>.mjpg); the boxes are
+   drawn here from /api/items, in Trace's colours: solid = in view now, dashed = last seen here. */
+const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+let liveOpener = null, liveRetry = 0, liveClock = 0, liveWasUp = null, livePlaying = false;
+const camById = (id) => state.cameras.find((c) => String(c.id) === String(id));
+const camUp = (c) => !!c && !!c.live && state.mode !== "offline";
+const camName = (id) => { const c = camById(id); return c ? (c.name || c.id) : id; };
+const itemsOn = (id) => sortItems((state.items || []).filter((it) => String(it.camera) === String(id) && it.box));
+function camDims(id) {
+  const c = camById(id);
+  if (c && c.frame_w && c.frame_h) return [c.frame_w, c.frame_h];
+  const it = itemsOn(id).find((i) => i.frame_w && i.frame_h);
+  if (it) return [it.frame_w, it.frame_h];
+  const img = $(".screen img", el.live);
+  if (img && livePlaying && img.naturalWidth > 1) return [img.naturalWidth, img.naturalHeight];
+  return null;
+}
+
+function openLive(camId) {
+  if (!state.power || camId == null) return;
+  const first = state.liveCam == null;
+  if (first) liveOpener = document.activeElement;
+  else stopStream();
+  state.liveCam = String(camId);
+  liveWasUp = null;
+  buildLive();
+  el.live.hidden = false;
+  syncInert();
+  if (first) {
+    el.live.scrollTop = 0;
+    el.live.animate(reduced() ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "none" }],
+      { duration: reduced() ? 150 : 260, easing: "cubic-bezier(.2,.8,.2,1)" });
+  }
+  $(first ? ".back-btn" : `.cam-tabs [data-cam="${CSS.escape(state.liveCam)}"]`, el.live)?.focus({ preventScroll: true });
+  clearInterval(liveClock);
+  liveClock = setInterval(tickLiveClock, 1000);
+  tickLiveClock();
+  const n = itemsOn(camId).length, c = camById(camId);
+  if (camUp(c) || state.mode === "demo") {
+    say(`Here's the ${camName(camId)} camera.${n ? ` I've marked ${n === 1 ? "the one thing" : `the ${n} things`} I remember there.` : ""}`, { log: false });
+  } else {
+    say(`I can't see through the ${camName(camId)} camera right now. I'll keep trying.`, { log: false });
+  }
+}
+function closeLive(returnFocus = true) {
+  if (state.liveCam == null) return;
+  stopStream();
+  clearInterval(liveClock);
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  state.liveCam = null;
+  el.live.hidden = true;
+  el.liveInner.innerHTML = "";
+  syncInert();
+  if (returnFocus && liveOpener && document.contains(liveOpener) && !liveOpener.closest("[inert]")) liveOpener.focus();
+  else if (returnFocus) $(`.cams [data-cam]`)?.focus();
+  liveOpener = null;
+}
+
+function buildLive() {
+  const id = state.liveCam, name = camName(id);
+  const d = camDims(id);
+  el.liveInner.innerHTML = `
+    <div class="live-bar">
+      <button type="button" class="back-btn">${icon("back")}<span>Back</span></button>
+      <h2 id="liveTitle">${esc(name)}</h2>
+      <span class="live-pill" data-f="pill"></span>
+    </div>
+    <div class="cam-tabs" role="group" aria-label="Switch camera">${state.cameras.map((k) =>
+      `<button type="button" data-cam="${esc(k.id)}" aria-pressed="${String(k.id) === id}">${icon(camUp(k) ? "camera" : "cameraOff")}${esc(k.name || k.id)}</button>`).join("")}</div>
+    <div class="live-grid">
+      <div>
+        <div class="screen-wrap">
+          <div class="screen" style="--ar:${d ? (d[0] / d[1]).toFixed(4) : "1.7778"}">
+            <img alt="Live view from the ${esc(name)} camera" hidden>
+            <div class="shot-state" data-f="state"></div>
+            <div data-f="boxes"></div>
+            <span class="shot-tag tl" data-f="tag"></span>
+            <span class="shot-tag tr" data-f="clock"></span>
+            <button type="button" class="screen-btn" data-f="fs" aria-label="Full screen">${icon("expand")}</button>
+          </div>
+        </div>
+        <div class="legend" aria-hidden="true"><span><i class="sw"></i>In view now</span><span><i class="sw out"></i>Last seen here</span></div>
+        <p class="live-note" data-f="note"></p>
+      </div>
+      <section aria-labelledby="onCamHead">
+        <div class="sec-head" style="margin-top:0"><h2 id="onCamHead">On this camera</h2><span class="count" data-f="count"></span><span class="rule"></span></div>
+        <ul class="cam-items" data-f="list"></ul>
+      </section>
+    </div>`;
+  const q = (f) => $(`[data-f="${f}"]`, el.liveInner);
+  $(".back-btn", el.liveInner).addEventListener("click", () => closeLive());
+  $(".cam-tabs", el.liveInner).addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cam]");
+    if (b && b.dataset.cam !== state.liveCam) { stopStream(); openLive(b.dataset.cam); }
+  });
+  const openItem = (e) => { const b = e.target.closest("[data-id]"); const it = b && findItem(b.dataset.id); if (it) openFound(it); };
+  q("boxes").addEventListener("click", openItem);
+  q("list").addEventListener("click", openItem);
+  const fs = q("fs"), wrap = $(".screen-wrap", el.liveInner);
+  if (!document.fullscreenEnabled) fs.hidden = true;
+  fs.addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else wrap.requestFullscreen?.().catch(() => {});
+  });
+  const img = $(".screen img", el.liveInner);
+  img.addEventListener("load", () => {
+    if (img.dataset.kind === "blank") return;
+    livePlaying = true;
+    img.hidden = false;
+    setLiveState(null);
+    const dd = camDims(state.liveCam);
+    if (dd) $(".screen", el.liveInner).style.setProperty("--ar", (dd[0] / dd[1]).toFixed(4));
+    updateLive(true);
+  });
+  img.addEventListener("error", () => {
+    if (img.dataset.kind === "blank") return;
+    livePlaying = false;
+    img.hidden = true;
+    setLiveState("down");
+    clearTimeout(liveRetry);
+    liveRetry = setTimeout(startStream, 5000);   // keep trying quietly
+  });
+  updateLive(true);
+  startStream();
+}
+
+function setLiveState(s) {
+  const st = $('[data-f="state"]', el.liveInner);
+  if (!st) return;
+  st.hidden = !s;
+  if (s === "loading") st.innerHTML = `<span class="spinner" aria-hidden="true"></span>Connecting to ${esc(camName(state.liveCam))}…`;
+  if (s === "down") st.innerHTML = state.mode === "offline"
+    ? `${icon("cloudOff")}<span>Can't reach the cameras right now.<br>Trace will keep trying.</span>`
+    : `${icon("cameraOff")}<span>No signal from ${esc(camName(state.liveCam))}.<br>Trace will keep trying.</span>`;
+}
+function startStream() {
+  clearTimeout(liveRetry);
+  const id = state.liveCam, img = $(".screen img", el.liveInner);
+  if (id == null || !img) return;
+  livePlaying = false;
+  const c = camById(id);
+  if (state.mode === "demo") {
+    if (!(c && c.live)) { setLiveState("down"); img.hidden = true; return; }
+    img.dataset.kind = "demo";
+    img.src = sceneSVG(id);
+    return;
+  }
+  if (!camUp(c) || document.hidden) { stopStream(); if (!document.hidden) setLiveState("down"); return; }
+  setLiveState("loading");
+  img.dataset.kind = "live";
+  img.src = `${API_BASE}/api/live/${encodeURIComponent(id)}.mjpg?t=${Date.now()}`;
+}
+function stopStream() {
+  clearTimeout(liveRetry);
+  livePlaying = false;
+  const img = $(".screen img", el.liveInner);
+  if (!img) return;
+  img.dataset.kind = "blank";   // swapping the source closes the MJPEG connection
+  img.src = BLANK;
+  img.hidden = true;
+}
+function tickLiveClock() {
+  const clk = $('[data-f="clock"]', el.liveInner);
+  if (!clk) return;
+  const show = livePlaying && state.mode === "live";
+  clk.hidden = !show;
+  if (show) setText(clk, new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+}
+
+function updateLive(force = false) {
+  const id = state.liveCam;
+  if (id == null || !el.liveInner.firstElementChild) return;
+  const q = (f) => $(`[data-f="${f}"]`, el.liveInner);
+  const c = camById(id), up = state.mode === "demo" ? !!(c && c.live) : camUp(c);
+
+  // header pill: words + shape, never colour alone
+  const pill = q("pill");
+  const kind = state.mode === "demo" && up ? "demo" : up ? "up" : "down";
+  if (pill.dataset.k !== kind) {
+    pill.dataset.k = kind;
+    pill.className = `live-pill ${kind === "up" ? "" : kind}`;
+    pill.innerHTML = kind === "up" ? `<span class="dot" aria-hidden="true"></span>Live` : kind === "demo" ? "Demo" : `${icon("cloudOff")}${state.mode === "offline" ? "No signal" : "Offline"}`;
+  }
+  const tag = q("tag");
+  const tagHTML = state.mode === "demo" ? "Demo snapshot" : `${icon("camera")}${esc(camName(id))}`;
+  if (tag.dataset.h !== tagHTML) { tag.dataset.h = tagHTML; tag.innerHTML = tagHTML; }
+  setText(q("note"), state.mode === "demo" ? "Demo mode shows a drawing of the room. Run multicam.py to see the real cameras." : "");
+  q("note").hidden = state.mode !== "demo";
+
+  for (const b of el.liveInner.querySelectorAll(".cam-tabs [data-cam]")) {
+    const k = camById(b.dataset.cam), u = state.mode === "demo" ? !!(k && k.live) : camUp(k);
+    if (b.dataset.u !== String(u)) { b.dataset.u = String(u); b.innerHTML = `${icon(u ? "camera" : "cameraOff")}${esc(camName(b.dataset.cam))}`; }
+  }
+
+  // stream follows the camera coming and going
+  if (liveWasUp !== null && up !== liveWasUp) { if (up) startStream(); else { stopStream(); setLiveState("down"); } }
+  liveWasUp = up;
+
+  // boxes over the picture
+  const items = itemsOn(id);
+  const dims = camDims(id);
+  const showBoxes = state.mode === "demo" ? up : livePlaying;
+  const boxSig = showBoxes ? items.map((it) => [it.id, it.box.join(), it.in_view, it.in_view ? "" : agoShort(it.last_time), nameOf(it)].join("|")).join(";") + (dims || "") : "";
+  const boxes = q("boxes");
+  if (force || boxes.dataset.sig !== boxSig) {
+    boxes.dataset.sig = boxSig;
+    boxes.innerHTML = !showBoxes ? "" : items.map((it) => {
+      const [w, h] = it.frame_w && it.frame_h ? [it.frame_w, it.frame_h] : (dims || [0, 0]);
+      if (!w || !h) return "";
+      const [x1, y1, x2, y2] = it.box.map(Number);
+      const L = Math.max(0, x1 / w), T = Math.max(0, y1 / h), R = Math.min(1, x2 / w), B = Math.min(1, y2 / h);
+      const status = it.in_view ? "in view now" : `last seen ${agoShort(it.last_time)}`;
+      return `<button type="button" class="lbox ${it.in_view ? "in" : "out"}${T < 0.12 ? " top-edge" : ""}${(L + R) / 2 > 0.5 ? " right-half" : ""}" data-id="${esc(it.id)}"
+        style="left:${L * 100}%;top:${T * 100}%;width:${(R - L) * 100}%;height:${(B - T) * 100}%"
+        aria-label="${esc(nameOf(it))}, ${esc(status)}. Show details"><span class="ltag">${esc(nameOf(it))}${it.in_view ? "" : ` · ${esc(agoShort(it.last_time))}`}</span></button>`;
+    }).join("");
+  }
+
+  // the list beside it
+  setText(q("count"), String(items.length));
+  const listSig = items.map((it) => [it.id, it.in_view, agoShort(it.last_time), it.zone, nameOf(it)].join("|")).join(";");
+  const list = q("list");
+  if (force || list.dataset.sig !== listSig) {
+    list.dataset.sig = listSig;
+    list.innerHTML = items.length ? items.map((it) => `<li><button type="button" data-id="${esc(it.id)}">
+        <span class="ico">${icon(it.category)}</span>
+        <span><span class="nm">${esc(nameOf(it))}</span>
+          <span class="sub ${it.in_view ? "in" : ""}">${icon(it.in_view ? "eye" : "eyeOff")}${it.in_view ? "In view now" : `Seen ${esc(agoShort(it.last_time))}`}${it.zone ? ` · ${esc(it.zone)}` : ""}</span></span>
+        <span class="go">${icon("chevron")}</span></button></li>`).join("")
+      : `<li><span class="empty">Nothing remembered on this camera yet.</span></li>`;
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (state.liveCam == null || state.mode === "demo") return;
+  if (document.hidden) stopStream(); else startStream();   // don't stream video to a hidden tab
+});
+document.addEventListener("fullscreenchange", () => {
+  const fs = $('[data-f="fs"]', el.liveInner);
+  if (!fs) return;
+  const on = !!document.fullscreenElement;
+  fs.innerHTML = icon(on ? "shrink" : "expand");
+  fs.setAttribute("aria-label", on ? "Exit full screen" : "Full screen");
+});
 
 /* ------------------------------------------------------------ power on / off */
 async function iris(open) {
@@ -1558,7 +1910,7 @@ async function wake() {
   el.boot.inert = true;
   el.boot.setAttribute("aria-hidden", "true");
   const a = await iris(true);
-  el.app.inert = false;
+  syncInert();
   a.cancel();
   el.app.style.opacity = "";
 
@@ -1581,11 +1933,12 @@ async function turnOff() {
   stopPolling();
   await closeChat(false);
   closeFound(false);
+  closeLive(false);
   hideBubble();
   setAgent("idle");
   el.agent.tabIndex = -1;
   state.power = false;
-  el.app.inert = true;
+  syncInert();
   await moveAgent("boot");
   const a = await iris(false);
   document.body.classList.remove("on");
@@ -1622,6 +1975,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (state.chatOpen) { e.preventDefault(); closeChat(); }
   else if (state.foundId != null) { e.preventDefault(); closeFound(); }
+  else if (state.liveCam != null && !document.fullscreenElement) { e.preventDefault(); closeLive(); }
 });
 const reposition = () => { if (!powering) placeAgent(agentAt); };
 window.addEventListener("resize", reposition);
