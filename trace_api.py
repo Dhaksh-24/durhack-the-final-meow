@@ -5,6 +5,7 @@ it can hand out the live frames the tracker already holds. Standard library
 plus OpenCV only; no keys, and nothing leaves your network.
 
   GET /                          trace.html
+  GET /model                     same as /sim: the model page (3D room, probabilities)
   GET /api/cameras               [{"id", "name", "live", "frame_w", "frame_h"}]
   GET /api/items                 remembered items, refreshed by multicam about twice a second
   GET /api/events?limit=20       latest sightings from events.jsonl, newest first
@@ -238,7 +239,7 @@ class TraceAPI:
                 try:
                     if p in ("/", "/trace.html"):
                         return self._file(ROOT / "trace.html", "text/html; charset=utf-8")
-                    if p in ("/sim", "/sim/", "/trace-sim/", "/trace-sim/index.html"):
+                    if p in ("/sim", "/sim/", "/model", "/model/", "/trace-sim/", "/trace-sim/index.html"):
                         return self._file(ROOT / "trace-sim" / "index.html", "text/html; charset=utf-8")
                     if p == "/trace-sim/sample-events.jsonl":
                         return self._file(ROOT / "trace-sim" / "sample-events.jsonl", "application/x-ndjson")
