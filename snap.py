@@ -93,8 +93,8 @@ def main():
         cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
         saved += 1
         print(f"saved {path} ({frame.shape[1]}x{frame.shape[0]})")
-    print(f"\n{saved} photo(s) in {out}/. Next: open trace-sim/index.html -> "
-          "'Map a real room from camera photos' -> 'Add phone photos'.")
+    print(f"\n{saved} photo(s) in {out}/. Next: `py map_room.py` (Gemini maps the room and "
+          "the zones), or by hand in trace-sim/index.html.")
     return 0 if saved else 1
 
 

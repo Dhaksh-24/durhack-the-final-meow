@@ -322,7 +322,9 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
     <section class="card">
       <details>
         <summary>Load a different room</summary>
-        <p class="lead">Paste the zone map from the mapping stream and the 3D room is rebuilt from it. Coordinates are in metres and optional; zones without them are laid out automatically. The furniture type (sofa, bed, chair, counter, shelf, hook, desk or table) is worked out from the name if you leave "type" out, and item habits follow the type.</p>
+        <p class="lead"><b>Quickest:</b> run <code>py snap.py</code> then <code>py map_room.py</code> next to <code>multicam.py</code>. Gemini maps the room from the phones' photos into <code>room.json</code> (and the matching zones for the tracker); open it here.</p>
+        <div class="controls"><label class="btn primary" for="roomFile" style="display:inline-block">Open room.json</label><input type="file" id="roomFile" accept=".json,application/json" hidden></div>
+        <p class="lead">Or paste a zone map and the 3D room is rebuilt from it. Coordinates are in metres and optional; zones without them are laid out automatically. The furniture type (sofa, bed, chair, counter, shelf, hook, desk or table) is worked out from the name if you leave "type" out, and item habits follow the type.</p>
         <textarea id="mapText" spellcheck="false"></textarea>
         <div class="controls"><button class="btn primary" id="loadMap" type="button">Load room</button><button class="btn" id="bedroomMap" type="button">Try a bedroom</button><button class="btn" id="defaultMap" type="button">Back to the demo flat</button></div>
         <div class="err" id="mapErr"></div>
@@ -431,7 +433,8 @@ function setupMap(m) {
     id: String(z.id), name: String(z.name || z.id), camera: !!z.camera,
     cover: isFinite(z.cover) ? Math.max(0, Math.min(0.95, +z.cover)) : 0.3,
     check: isFinite(z.check) && +z.check > 0 ? +z.check : 10,
-    x: +z.x, y: +z.y, w: +z.w, h: +z.h, type: furnType(z)
+    x: +z.x, y: +z.y, w: +z.w, h: +z.h, type: furnType(z),
+    landmark: z.landmark ? String(z.landmark) : undefined   // "by the door", for spoken guidance
   }));
   layoutMissing(zones, W, H);
   MAP = { name: m.name || "Room", width: W, height: H, zones };
@@ -1237,7 +1240,7 @@ function showEval(res) {
 
 // ---------- room loading ----------
 function mapToText() {
-  return JSON.stringify({ name: MAP.name, width: MAP.width, height: MAP.height, zones: MAP.zones.map((z) => ({ id: z.id, name: z.name, type: z.type, camera: z.camera, cover: z.cover, check: z.check, x: +z.x.toFixed(2), y: +z.y.toFixed(2), w: +z.w.toFixed(2), h: +z.h.toFixed(2) })) }, null, 2);
+  return JSON.stringify({ name: MAP.name, width: MAP.width, height: MAP.height, zones: MAP.zones.map((z) => ({ id: z.id, name: z.name, type: z.type, camera: z.camera, cover: z.cover, check: z.check, x: +z.x.toFixed(2), y: +z.y.toFixed(2), w: +z.w.toFixed(2), h: +z.h.toFixed(2), landmark: z.landmark })) }, null, 2);
 }
 function loadMap(obj) {
   if (!obj || !Array.isArray(obj.zones) || !obj.zones.length) throw new Error("Needs a \"zones\" list with at least one zone.");
@@ -2219,6 +2222,12 @@ $("#nDays").addEventListener("click", (e) => { const bt = e.target.closest("butt
 $("#runEval").onclick = runEval;
 $("#loadMap").onclick = () => { $("#mapErr").textContent = ""; try { loadMap(JSON.parse($("#mapText").value)); } catch (err) { $("#mapErr").textContent = err.message; } };
 $("#defaultMap").onclick = () => { $("#mapErr").textContent = ""; loadMap(JSON.parse(JSON.stringify(DEFAULT_MAP))); };
+$("#roomFile").onchange = async (e) => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) return;
+  $("#mapErr").textContent = "";
+  try { loadMap(JSON.parse(await f.text())); } catch (err) { $("#mapErr").textContent = f.name + ": " + err.message; }
+};
 $("#copyBundle").onclick = async () => {
   try { await navigator.clipboard.writeText($("#bundle").textContent); $("#copyNote").textContent = "Copied."; }
   catch (e) { $("#copyNote").textContent = "Couldn't copy here. Select the text and copy it instead."; }

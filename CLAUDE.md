@@ -15,9 +15,19 @@ Worlds"; quant judges who value complexity, intelligence and elegance).
 ## Team streams
 - **Cameras / mapping** (branch `adelver`): `multicam.py` reads several phone streams
   (DroidCam / IP Webcam), detects items with YOLO-World via `detect.py`, keeps identity across
-  cameras with CLIP fingerprints, logs to `events.jsonl`. Saves a baseline photo per camera to
-  `baseline/` at start-up and loads `baseline/calibration.json` to put sightings on the floor
-  in metres. Benchmarking work on prompts and thresholds per object is on `main`.
+  cameras with CLIP fingerprints. `trace_events.py` turns its per-frame sightings into
+  `events.jsonl` (SPEC 3.2) and adds `floor` metres from `baseline/calibration.json`.
+  `snap.py` saves a baseline photo per camera to `baseline/`. Tests: `py test_trace_events.py`.
+  Benchmarking work on prompts and thresholds per object is on `main` (`bench.py`, `pull_lvis.py`).
+- **Detection:** `detect.Detector` = YOLO-World at a loose threshold proposes boxes (≤ 40% of
+  the frame, top 8), then a CLIP ViT-B/32 classifier over {keys, glasses, other}
+  (`verifier.json`, built by `train_verifier.py` from LVIS + Wikimedia Commons + YOLO's own
+  false alarms, blended with zero-shot) keeps a box (wallets count as look-alikes) only if "other" loses and the class clears
+  a precision-tuned threshold. Returned conf = the classifier's probability. Own photos in
+  `data/own/<class>/` and `py train_verifier.py --redo=embed` tune it to the demo items.
+- **Room mapping:** `py map_room.py` sends the `baseline/` photos to Gemini once and writes
+  `room.json` (zone map with landmarks, for the page: "Open room.json") and `zones.json`
+  (multicam's per-camera zone boxes, same names). Code validates every value.
 - **Model / LLM** (branch `trace-model`): `trace-sim/index.html`, a single self-contained page.
 - **Maths**: calibrate detector confidence into evidence strength; stress-test the results.
 
@@ -37,8 +47,9 @@ the script does `module.exports = CORE`, so you can `vm.runInNewContext` it and 
 - **Evaluation:** Monte Carlo over simulated days vs "last seen, then habits" baseline,
   plus a calibration table. Last run (10% false alarms): first-check success 52% vs 20%, 2.4 vs 4.7 checks.
 - **3D view:** low-poly room built from the zone map (furniture type inferred from the name).
-- **Mapping from photos:** click a reference rectangle on the floor (homography), then the
-  front edge of each piece of furniture; outputs the zone map and per-camera image→floor matrices.
+- **Mapping:** open `room.json` from `map_room.py` (Gemini); or draw the room from above;
+  or (advanced) click a reference rectangle on the floor in each photo (homography) for
+  per-camera image→floor matrices. Zones may carry a `landmark` sentence for guidance.
 - **Live metrics** and "where should the next phone go?" (Monte Carlo per blind spot).
 
 ## Contracts (keep both sides to these)
@@ -71,8 +82,10 @@ Event (one JSON object per line):
    step) with a confidence; the filter multiplies `z-visible` by `D_vis·L + 1 − D_vis` with
    `L = g(c) / (f·h(c))`. `g`, `h` are placeholder Betas: swap in the maths calibration with
    `setCalibration({g, h, sampleTrue, sampleFalse})`. Tests: `node trace-sim/test-core.js`.
-2. `multicam.py` events: emit appeared / moved / disappeared / person_here with zone name and
-   confidence (today it only logs "out of sight", zone null). Zone names must match the map.
+2. ~~`multicam.py` events~~ done (`trace_events.py`): appeared (2 of 3 frames) / disappeared
+   (4 missed) / moved (within 60 s, with `from`) per item per zone, person_here / person_left
+   from MOG2 motion in a zone, zone id = `slug(name)`, detector confidence, `floor`. Zones drawn
+   in multicam must be named as in the page's map. Not yet: `something_changed` (needs task 5).
 3. Connect real events to the page: ~~replay an `events.jsonl`~~ done ("Replay a recorded
    events.jsonl" in the Events card; `replayFromEvents` in the core; try
    `trace-sim/sample-events.jsonl`). Next: live via a small local bridge (the hosted page

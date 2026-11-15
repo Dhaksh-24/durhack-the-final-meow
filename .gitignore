@@ -14,8 +14,6 @@ venv/
 # datasets and training output -- large, re-downloadable
 data/
 runs/
-.venv-roboflow/
-test_out/
 
 # multicam.py runtime output -- regenerated every run
 memory/
@@ -23,3 +21,5 @@ events.jsonl
 cameras.json
 zones.json
 baseline/
+room.json
+zones.json.bak
