@@ -801,6 +801,10 @@ const params = new URLSearchParams(location.search);
 const FORCE_DEMO = params.has("demo");
 const DEMO_EMPTY = params.get("demo") === "empty";
 const POLL_MS = 2000;
+/* How Trace words its guidance (guide.py, SPEC 5): ?mode=blind or ?mode=dementia, remembered per browser. */
+const GUIDE_MODES = ["default", "blind", "dementia"];
+if (GUIDE_MODES.includes(params.get("mode"))) { try { localStorage.setItem("trace.mode", params.get("mode")); } catch { /* private mode */ } }
+const guideMode = () => { let m = null; try { m = localStorage.getItem("trace.mode"); } catch { /* private mode */ } return GUIDE_MODES.includes(m) ? m : "default"; };
 const reduceMQ = matchMedia("(prefers-reduced-motion: reduce)");
 const reduced = () => reduceMQ.matches;
 const narrowMQ = matchMedia("(max-width: 1279px)");   // below this the chat would cover the Found view, so it steps aside
@@ -1248,9 +1252,12 @@ async function fetchSpeech(text) {
 function streamPlay(text) {
   return new Promise((resolve) => {
     const a = new Audio(`${API_BASE}/api/speech?${new URLSearchParams({ text, voice: voice.gender })}`);
-    let settled = false;
-    const done = (ok) => { if (settled) return; settled = true; voice.stop = null; resolve(ok); };
+    let settled = false, stall = 0;
+    const done = (ok) => { if (settled) return; settled = true; clearTimeout(stall); voice.stop = null; resolve(ok); };
     voice.stop = () => { a.pause(); a.removeAttribute("src"); a.load(); done(true); };   // also closes the stream
+    // the online voice never started (network hung): give up after 4 s so the browser voice speaks
+    // and the conversation doesn't stall waiting for audio that won't come
+    stall = setTimeout(() => { if (!settled && a.currentTime === 0) { a.pause(); a.removeAttribute("src"); a.load(); done(false); } }, 4000);
     a.onended = () => done(true);
     a.onerror = () => done(a.currentTime > 0.5);   // dropped part-way: don't say it all again
     a.play().catch(() => done(false));
@@ -1496,9 +1503,9 @@ function intent(message) {
   const t = normText(message);
   if (convo.offer && YES.test(t)) { const o = convo.offer; convo.offer = null; return o.yes(); }
   if (convo.offer && NO.test(t)) { convo.offer = null; return { reply: "Okay." }; }
-  if (/^ (thats all|thats it|that is all|thank you|thanks|no thanks|nothing|nothing else|bye|goodbye|im done|all done|all good|never mind|nevermind|stop|cancel|no thats it|im good) /.test(t))
+  if (/^ (thats all|thats it|that is all|thank you|thanks|no thanks|nothing else|bye|goodbye|im done|all done|all good|never mind|nevermind|stop|cancel|no thats it|im good) /.test(t))
     return { reply: "Okay. I'm here if you need me.", end: true };
-  if (/ (help|what can you do|what can i (say|ask)|commands) /.test(t))
+  if (/ (help|what can you do|what can i (say|ask)|commands) /.test(t) && !/ help me (remember|think|find) /.test(t))
     return { reply: "You can ask where something is, say open the hall camera, what can you see, or what do you remember. Say that's all when you're done." };
 
   // voice
@@ -1762,7 +1769,8 @@ async function ask(message, { voice: byVoice = false } = {}) {
   let res = null;
   if (state.mode === "live") {
     try {
-      const r = await api("/api/ask", { method: "POST", body: { message, history, system: TRACE_RULES }, timeout: 15000 });
+      // the server answers within ~6 s even when the LLM is slow (guide.BUDGET); 12 s is the hard stop
+      const r = await api("/api/ask", { method: "POST", body: { message, history, mode: guideMode(), system: TRACE_RULES }, timeout: 12000 });
       if (r && typeof r.reply === "string" && r.reply.trim()) res = r;
     } catch { /* fall back below */ }
   }
@@ -1790,7 +1798,8 @@ async function ask(message, { voice: byVoice = false } = {}) {
   } else {
     setAgent("idle");
   }
-  await reply(res.reply, { itemId: it ? it.id : null, offer });
+  // mid-search ("check your pockets first"), no "Anything else?": Trace just listens for "not there"
+  await reply(res.reply, { itemId: it ? it.id : null, offer, prompt: res.state !== "searching" });
 }
 
 /* ------------------------------------------------------------ data refresh + polling */
