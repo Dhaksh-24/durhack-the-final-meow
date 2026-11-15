@@ -3,7 +3,7 @@
     python live_scene.py --jsonl --no-window | python events_adapter.py
     python events_adapter.py --demo            # a fake ~45 s session, no camera needed
     python events_adapter.py --demo --fast     # the same, instantly
-    python events_adapter.py --zones zones_map.json --out events.jsonl
+    python events_adapter.py --zones zones_map.json --out trace-events.jsonl
 
 Input: one JSON object per line on stdin, as live_scene.py --jsonl writes them
 (see the top of scene.py):
@@ -13,7 +13,8 @@ Input: one JSON object per line on stdin, as live_scene.py --jsonl writes them
 Every line from one frame shares the same "time"; a frame where nothing was seen
 prints nothing, so silence also counts as missed frames (see SILENCE below).
 
-Output: SPEC 3.2 events, appended to events.jsonl and printed to stdout:
+Output: SPEC 3.2 events, appended to trace-events.jsonl (as multicam writes it and
+bridge.py serves it) and printed to stdout:
     {"time": "14:05:10", "t": 1794696414.7, "item": "keys-1", "category": "keys",
      "zone": "table-1", "event": "appeared", "confidence": 0.82, "camera": "lounge"}
 
@@ -23,8 +24,9 @@ Rules (SPEC 3.2):
   moved        appeared in another zone within 60 s of disappearing (or seen in
                2 of the last 3 frames in a different zone while still present)
 Boxes bigger than 15% of the frame are dropped (a detector "seeing keys" in half
-the picture is a false alarm). With several boxes of one item in a frame, the
-most confident one counts.
+the picture is a false alarm). With several boxes of one item in a frame, one in
+the zone it's already in counts (a box elsewhere is likely a false alarm), else
+the most confident one.
 
 Zone ids: the slug of the furniture anchor id (table_1 -> table-1), or whatever
 --zones maps it to: a JSON object {"table_1": "desk", "sofa_1": "sofa"}. The room
@@ -135,15 +137,25 @@ class Adapter:
                 continue
             conf = d.get("det_conf", d.get("confidence"))
             conf = float(conf) if conf is not None else None
-            if cat not in best or (conf or 0) > (best[cat][1] or 0):
-                best[cat] = (self.zone_of(d), conf)
+            z = self.zone_of(d)
+            zs = best.setdefault(cat, {})
+            if z not in zs or (conf or 0) > (zs[z] or 0):
+                zs[z] = conf
         info = self.cams.setdefault(cam, {"t": None, "wall": None, "gaps": collections.deque(maxlen=20), "silent": 0})
         if info["t"] is not None and t > info["t"]:
             info["gaps"].append(t - info["t"])
         info["t"], info["wall"], info["silent"] = t, time.time(), 0
         cats = set(best) | {c for (k, c) in self.tracks if k == cam}
         for cat in cats:
-            self.step(cam, cat, best.get(cat), t)
+            zs, tr = best.get(cat), self.tracks.get((cam, cat))
+            if not zs:
+                seen = None
+            elif tr is not None and tr.present and tr.zone in zs:
+                seen = (tr.zone, zs[tr.zone])    # still seen where it is: a box elsewhere is likely a false alarm
+            else:
+                z = max(zs, key=lambda k: zs[k] or 0)
+                seen = (z, zs[z])
+            self.step(cam, cat, seen, t)
 
     def gap(self, cam):
         g = sorted(self.cams[cam]["gaps"])
@@ -174,9 +186,11 @@ class Adapter:
             if seen is not None and seen[0] == tr.zone:
                 tr.missing = 0
                 return
-            # seen somewhere else in 2 of the last 3 frames: it moved without vanishing
+            # seen somewhere else in 2 of the last 3 frames, and not in its zone in the last 2: it moved
+            # without vanishing (a false box in every other frame doesn't make it flip back and forth)
+            recent = list(tr.hist)[-2:]
             for z, n in votes.items():
-                if z != tr.zone and n >= SEEN_OF[0]:
+                if z != tr.zone and n >= SEEN_OF[0] and not any(s is not None and s[0] == tr.zone for s in recent):
                     tr.zone, tr.missing = z, 0
                     self.item_event("moved", cat, z, t, conf_in(z), cam)
                     return
@@ -303,7 +317,7 @@ def run_demo(ad, fast, seed=None):
 
 def main():
     ap = argparse.ArgumentParser(description="Raw detections (JSON lines on stdin) -> SPEC 3.2 events")
-    ap.add_argument("--out", default="events.jsonl", help="file to append events to (default events.jsonl)")
+    ap.add_argument("--out", default="trace-events.jsonl", help="file to append events to (default trace-events.jsonl, as multicam and bridge.py use)")
     ap.add_argument("--zones", help='JSON file mapping anchor ids to zone ids, e.g. {"table_1": "desk"}')
     ap.add_argument("--camera", default="camera-1", help="camera id for lines that have none")
     ap.add_argument("--demo", action="store_true", help="fake a short session instead of reading stdin")

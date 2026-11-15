@@ -415,6 +415,7 @@ const COVER_IN_PLACE = 0.08; // ...or covered where it lies (cushion, coat, box 
 const LEAK = 0.0005;        // small mixing back to the prior each step (model humility)
 const LEAVE_P = 0.03;       // person leaves the room when they finish in a zone
 const MAX_CHECKS = 25;
+const MISSED_PERSON = 0.05; // real events only: chance per zone that someone is there but the people detector missed them
 
 // ---------- false alarms and detector confidence (SPEC 4.3) ----------
 // FALSE_RATE: chance per watched zone, per item, per tick that the detector reports the item
@@ -653,20 +654,29 @@ function predictStep(b, it, obs) {
   } else {
     if (obs.prev === "outside") { const m = nb[O] * it.returnWith; nb[O] -= m; nb[P] += m; }
   }
-  if (obs.person != null && obs.person !== "outside" && ZI[obs.person] != null) {   // null: in the room, zone unknown
-    const i = ZI[obs.person], z = MAP.zones[i];
-    const pv = nb[2 * i] * it.pick, pc = nb[2 * i + 1] * it.pick;
-    const d = nb[P] * dropEff(it, z), c = coverP(it, z);
-    nb[2 * i] -= pv; nb[2 * i + 1] -= pc;
-    const u = nb[2 * i + 1] * UNCOVER, cv = nb[2 * i] * COVER_IN_PLACE * coverP(it, z);
-    nb[2 * i + 1] += cv - u; nb[2 * i] += u - cv;
-    nb[P] -= d; nb[2 * i] += d * (1 - c); nb[2 * i + 1] += d * c;
-    nb[P] += pv + pc;
+  if (obs.person != null && obs.person !== "outside" && ZI[obs.person] != null) atZone(nb, Float64Array.from(nb), it, ZI[obs.person], 1);
+  else if (obs.person == null) {   // in the room, zone unknown (the simulator never says this; real streams do)
+    // No person events at all (people detection off): at each zone with chance 1/(Z+1), or between zones.
+    // Otherwise "not at any zone", unless the people detector missed them: MISSED_PERSON per zone. Without
+    // this, keys that vanish from a watched zone while the detector missed the person could only be
+    // explained as a false alarm, and the belief would fall back to the habits.
+    const src = Float64Array.from(nb), w = obs.personAnywhere ? 1 / (Z + 1) : MISSED_PERSON;
+    for (let i = 0; i < Z; i++) atZone(nb, src, it, i, w);
   }
   const pr = PRIORS[it.id];
   let tot = 0; for (let k = 0; k < NS; k++) tot += nb[k];
   for (let k = 0; k < NS; k++) nb[k] = nb[k] * (1 - LEAK) + LEAK * pr[k] * tot;
   return nb;
+}
+// What a person at zone i does to an item in one tick (pick up, cover in place, uncover, put down),
+// computed from src and added to nb with weight w (w = 1: the person is surely there).
+function atZone(nb, src, it, i, w) {
+  const z = MAP.zones[i], P = 2 * Z, c = coverP(it, z);
+  const pv = src[2 * i] * it.pick, pc = src[2 * i + 1] * it.pick, d = src[P] * dropEff(it, z);
+  const u = (src[2 * i + 1] - pc) * UNCOVER, cv = (src[2 * i] - pv) * COVER_IN_PLACE * c;
+  nb[2 * i] += w * (-pv + u - cv + d * (1 - c));
+  nb[2 * i + 1] += w * (-pc + cv - u + d * c);
+  nb[P] += w * (pv + pc - d);
 }
 // 2. Update on what each phone did and didn't see: multiplies each state by its likelihood.
 function updateStep(nb, it, obs) {
@@ -747,56 +757,87 @@ function itemIdOf(e) {
   const c = e.category != null ? String(e.category).toLowerCase() : String(e.item || "").toLowerCase().replace(/[-_ ]?\d+$/, "");
   return ITEMS.some((it) => it.id === c) ? c : null;
 }
-function secondsOf(e) {
-  if (isFinite(e.t)) return +e.t;
+// A real number from JSON, or null (isFinite(null) and isFinite("") are true, so they'd read as 0).
+function num(x) { return (typeof x === "number" || (typeof x === "string" && x.trim() !== "")) && isFinite(+x) ? +x : null; }
+function timeOfDay(e) {
   const m = /^(\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?$/.exec(String(e.time || "").trim());
   return m ? +m[1] * 3600 + +m[2] * 60 + (+m[3] || 0) : null;
 }
+function secondsOf(e) { let t = num(e.t); if (t != null && t > 1e11) t /= 1000; return t != null ? t : timeOfDay(e); }   // t in ms by mistake
 function clockSecondsOf(e) {   // local seconds since midnight, for the page's clock
   const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(e.time || "").trim());
   if (m) return +m[1] * 3600 + +m[2] * 60 + (+m[3] || 0);
-  return isFinite(e.t) ? Math.floor(+e.t) % 86400 : null;
+  const t = num(e.t); return t != null ? Math.floor(t) % 86400 : null;
 }
+const MAX_GAP_S = 3600;
 function parseEvents(text) {
   const evs = [], problems = [];
   String(text).split(/\r?\n/).forEach((line, n) => {
     if (!line.trim()) return;
     let e; try { e = JSON.parse(line); } catch (err) { problems.push("line " + (n + 1) + ": not JSON"); return; }
+    if (!e || typeof e !== "object") { problems.push("line " + (n + 1) + ": not an event"); return; }
     const s = secondsOf(e);
     if (s == null) { problems.push("line " + (n + 1) + ": no t or time"); return; }
-    evs.push({ e, s, n });
+    evs.push({ e, s, n, unix: num(e.t) != null });
   });
+  // Lines with only a clock "time" among lines with unix "t" would sort ~50 years early: put them on
+  // the unix scale using the offset seen on lines that carry both.
+  if (evs.some((x) => x.unix) && evs.some((x) => !x.unix)) {
+    const offs = evs.filter((x) => x.unix && timeOfDay(x.e) != null).map((x) => x.s - timeOfDay(x.e)).sort((a, b) => a - b);
+    if (offs.length) { const off = offs[offs.length >> 1]; evs.forEach((x) => { if (!x.unix) x.s += off; }); }
+    else { problems.push("some lines have only a clock time and others only unix t: clock-only lines ignored"); evs.splice(0, evs.length, ...evs.filter((x) => x.unix)); }
+  }
   evs.sort((a, b) => a.s - b.s || a.n - b.n);   // stable: same time keeps file order
+  // A pause of more than MAX_GAP_S (recording stopped, a bad clock) counts as MAX_GAP_S: by then the
+  // belief has long settled, and it keeps a bad timestamp from adding days of empty ticks.
+  let shift = 0, long = 0;
+  for (let k = 1; k < evs.length; k++) {
+    const gap = evs[k].s - shift - evs[k - 1].s;
+    if (gap > MAX_GAP_S) { shift += gap - MAX_GAP_S; long++; }
+    evs[k].s -= shift;
+  }
+  if (long) problems.push(long + (long === 1 ? " pause" : " pauses") + " longer than an hour shortened to an hour");
   return { evs, problems };
 }
 // What the phones are reporting right now, built up one event at a time (shared by replay and live).
 function eventState() {
-  const st = { seen: {}, person: null, unknownZones: new Set(), unknownItems: new Set() };
-  for (const it of ITEMS) st.seen[it.id] = null;   // {zone, conf} while a phone can see it
+  const st = { seen: {}, person: null, sawPerson: false, unknownZones: new Set(), unknownItems: new Set() };
+  // per item: what each (detected instance, camera) is reporting right now, {key: {zone, conf}}. Keyed so a
+  // false "keys-2" elsewhere, or a second camera on the same zone losing sight, doesn't erase a real sighting.
+  for (const it of ITEMS) st.seen[it.id] = {};
   return st;
 }
 function applyEvent(st, e) {
   const z = e.zone == null ? null : String(e.zone);
   const zoneOk = z == null || z === "person" || ZI[z] != null;
   if (!zoneOk) st.unknownZones.add(z);
-  if (e.event === "person_here") { if (z && ZI[z] != null) st.person = z; return; }
+  if (e.event === "person_here" || e.event === "person_left") st.sawPerson = true;
+  if (e.event === "person_here") { if (z && ZI[z] != null) st.person = z; else if (z !== "person") st.person = null; return; }   // a zone not on the map: somewhere else in the room
   if (e.event === "person_left") { if (z == null || z === "room" || z === "outside") st.person = "outside"; else if (st.person === z) st.person = null; return; }
   if (e.event === "something_changed") return;
   const id = itemIdOf(e);
   if (!id) { if (e.item != null) st.unknownItems.add(String(e.item)); return; }
-  const conf = isFinite(e.confidence) ? Math.max(0, Math.min(1, +e.confidence)) : 0.8;
-  if (e.event === "appeared" || e.event === "moved") { if (z != null && zoneOk) st.seen[id] = { zone: z, conf }; }
-  else if (e.event === "disappeared") { if (!st.seen[id] || z == null || st.seen[id].zone === z) st.seen[id] = null; }
+  const c0 = num(e.confidence), conf = c0 != null ? Math.max(0, Math.min(1, c0)) : 0.8;
+  const inst = String(e.item != null ? e.item : id), cam = e.camera == null ? null : String(e.camera), seen = st.seen[id];
+  if (e.event === "appeared" || e.event === "moved") { if (z != null && zoneOk) seen[inst + "|" + (cam || "")] = { inst, cam, zone: z, conf }; }
+  else if (e.event === "disappeared") {
+    for (const k of Object.keys(seen)) { const x = seen[k]; if (x.inst === inst && (cam == null || x.cam == null || x.cam === cam) && (z == null || x.zone === z)) delete seen[k]; }
+  }
 }
 function obsFrom(st, prev, events) {   // one tick's observation, in the shape stepWorld returns
   const det = {}, conf = {}, sightings = {};
   for (const it of ITEMS) {
-    const s = st.seen[it.id];
-    sightings[it.id] = s ? [{ zone: s.zone, conf: s.conf }] : [];
-    det[it.id] = s && s.zone !== "person" ? s.zone : null;
-    conf[it.id] = s ? s.conf : null;
+    const by = {};
+    for (const x of Object.values(st.seen[it.id])) by[x.zone] = Math.max(by[x.zone] || 0, x.conf);
+    const list = Object.keys(by).map((zone) => ({ zone, conf: by[zone] })).sort((a, c) => c.conf - a.conf);
+    sightings[it.id] = list;
+    const top = list.find((x) => x.zone !== "person");
+    det[it.id] = top ? top.zone : null;
+    conf[it.id] = top ? top.conf : list.length ? list[0].conf : null;
   }
-  return { prev: prev == null ? st.person : prev, person: st.person, det, conf, sightings, events };
+  // No person event yet (people detection off, or not seen yet): where they are is unknown, so the
+  // model lets them be at any zone (predictStep). Once person events arrive, null means "not at a zone".
+  return { prev: prev == null ? st.person : prev, person: st.person, personAnywhere: !st.sawPerson && st.person == null, det, conf, sightings, events };
 }
 function eventProblems(st) {
   const out = [];
@@ -836,6 +877,7 @@ function liveFeed() {
       for (const { e, s } of list) {
         if (group.length && s - gT > 0.25) flush();
         if (!group.length) {
+          if (lastT != null && s - lastT > MAX_GAP_S) lastT = s - MAX_GAP_S;   // a long pause or a bad clock: at most an hour of idle ticks
           if (lastT != null) while (s - lastT >= TICK_S) { lastT += TICK_S; ticks.push(obsFrom(st, st.person, [])); }
           prev = st.person; gT = s;
         }
@@ -846,6 +888,7 @@ function liveFeed() {
     },
     idle(now) {   // now: unix seconds; only meaningful when events carry "t"
       const ticks = [];
+      if (lastT != null && lastT > 1e8 && now - lastT > MAX_GAP_S) lastT = now - MAX_GAP_S;
       if (lastT != null && lastT > 1e8) while (now - lastT >= TICK_S) { lastT += TICK_S; ticks.push(obsFrom(st, st.person, [])); }
       return ticks;
     }
