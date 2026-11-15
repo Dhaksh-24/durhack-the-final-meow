@@ -100,6 +100,13 @@ LINES = [
     "Found it.",
     "I can't see them yet. Try moving the camera slowly around the room.",
     "I can't see it yet. Try moving the camera slowly around the room.",
+    # trace.html's conversation: the follow-up questions and short replies, so they're instant
+    "Anything else?",
+    "What else can I do?",
+    "Anything else I can find?",
+    "Okay.",
+    "Okay. I'm here if you need me.",
+    "I'm here if you need me.",              # the page speaks long lines sentence by sentence
 ]
 
 # Kokoro splits on this, then we put PAUSE seconds between the pieces.
@@ -312,6 +319,11 @@ def _prerendered(text, voice):
         return None
     path = os.path.join(AUDIO_DIR, _voice_dir(voice), slug(text) + ".wav")
     return path if os.path.exists(path) else None
+
+
+def audio(text, gender=None):
+    """Like synth(), but uses a pre-rendered file when there is one for this exact line."""
+    return _audio_for(text.strip(), _resolve(gender))
 
 
 def _audio_for(text, voice):

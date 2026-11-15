@@ -154,7 +154,7 @@ class TraceAPI:
                 # only the two named voices (tts.VOICES) can be asked for from the page
                 gender = body.get("voice") if body.get("voice") in ("female", "male") else None
                 try:
-                    audio = tts.synth(text, gender)
+                    audio = tts.audio(text, gender)    # pre-rendered lines come straight from disk
                 except Exception as exc:       # model not downloaded, no espeak, ...
                     print("tts: could not say %r: %s: %s" % (text, type(exc).__name__, exc))
                     return self._json({"error": "voice failed"}, 503)

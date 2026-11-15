@@ -1152,7 +1152,7 @@ function showBubble(text) {
 function say(text, { itemId = null, log = true } = {}) {
   if (log) addMsg("trace", text, itemId);
   if (!state.chatOpen) showBubble(text);
-  speakOut(text);
+  return speakOut(text);
 }
 
 /* ------------------------------------------------------------ Trace's voice (out loud)
@@ -1213,25 +1213,42 @@ function browserSay(text) {
     speechSynthesis.speak(u);
   });
 }
+/* One sentence of Kokoro audio from the server, or null (then the browser voice takes over). */
+async function fetchSpeech(text) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(API_BASE + "/api/speech", {
+      method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice: voice.gender }),
+    });
+    if (r.ok) return await r.blob();
+    if (r.status === 503 || r.status === 404 || r.status === 501) voice.server = false;   // no Kokoro: browser from now on
+  } catch { /* network: fall back */ } finally { clearTimeout(t); }
+  return null;
+}
+const sentences = (text) => (text.match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
+/* Speak a line. Long answers go sentence by sentence: the first one plays while the next is
+   being made, so Trace starts talking sooner. Resolves when Trace has finished (or was cut off). */
 async function speakOut(text) {
   if (!voice.on || !state.power || !text) return;
   stopSpeaking();
   const g = voice.gen;
   voice.last = text;
   setSpeaking(true);
-  let ok = false;
+  const parts = sentences(text);
+  let i = 0;
   if (state.mode === "live" && voice.server) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 20000);
-    try {
-      const r = await fetch(API_BASE + "/api/speech", {
-        method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice: voice.gender }),
-      });
-      if (r.ok && g === voice.gen) ok = await playBlob(await r.blob());
-      else if (r.status === 503 || r.status === 404 || r.status === 501) voice.server = false;   // no Kokoro: use the browser from now on
-    } catch { /* network: fall back below */ } finally { clearTimeout(t); }
+    let next = fetchSpeech(parts[0]);
+    for (; i < parts.length; i++) {
+      const blob = await next;
+      if (g !== voice.gen) return;
+      if (!blob) break;
+      if (i + 1 < parts.length) next = fetchSpeech(parts[i + 1]);
+      if (!(await playBlob(blob))) break;            // e.g. autoplay blocked: browser voice says the rest
+      if (g !== voice.gen) return;
+    }
   }
-  if (!ok && g === voice.gen) await browserSay(text);
+  if (i < parts.length && g === voice.gen) await browserSay(parts.slice(i).join(" "));
   if (g === voice.gen) setSpeaking(false);
 }
 function renderVoiceBtn() {
@@ -1257,13 +1274,19 @@ function toggleVoicePanel(open) {
   b.setAttribute("aria-expanded", String(open));
   if (open) { renderVoiceBtn(); $("#genderSeg [aria-checked=true]").focus(); }
 }
-function setGender(g) {
+function setGender(g, { silent = false } = {}) {
   if (g === voice.gender) return;
   voice.gender = g;
   store.set("trace.gender", g);
   renderVoiceBtn();
   stopSpeaking();
-  if (voice.on) speakOut(`Hi, I'm Trace. This is my ${g} voice.`);
+  if (voice.on && !silent) speakOut(`Hi, I'm Trace. This is my ${g} voice.`);
+}
+function setVoiceOn(on) {
+  voice.on = on;
+  store.set("trace.voice", on ? "on" : "off");
+  renderVoiceBtn();
+  if (!on) stopSpeaking();
 }
 
 /* ------------------------------------------------------------ "Hey Trace" (listening)
@@ -1282,20 +1305,22 @@ let audioCtx = null;
 function chime(kind) {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    const notes = kind === "wake" ? [660, 990] : kind === "heard" ? [880] : [520, 390];
+    // wake: rising pair. ready (listening for a follow-up): one soft note. heard: one note. off: falling pair.
+    const notes = kind === "wake" ? [660, 990] : kind === "ready" ? [740] : kind === "heard" ? [880] : [520, 390];
+    const level = kind === "ready" ? 0.06 : 0.12;
     notes.forEach((f, i) => {
       const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
       const t0 = audioCtx.currentTime + i * 0.11;
       o.type = "sine"; o.frequency.value = f;
       gn.gain.setValueAtTime(0, t0);
-      gn.gain.linearRampToValueAtTime(0.12, t0 + 0.015);
+      gn.gain.linearRampToValueAtTime(level, t0 + 0.015);
       gn.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
       o.connect(gn).connect(audioCtx.destination);
       o.start(t0); o.stop(t0 + 0.24);
     });
   } catch { /* no Web Audio: the spoken and on-screen cues still work */ }
 }
-function setAwake(on) {
+function setAwake(on, ms = 8000) {
   clearTimeout(ear.awakeTimer);
   ear.awake = on;
   el.agent.dataset.ear = on ? "awake" : "";
@@ -1303,7 +1328,8 @@ function setAwake(on) {
   if (on) {
     el.chatState.dataset.state = "listening";
     el.chatState.innerHTML = `${icon("mic")}<span>Listening…</span>`;
-    ear.awakeTimer = setTimeout(() => { setAwake(false); chime("off"); earNote("Trace stopped listening."); }, 8000);
+    // nothing said in time: the conversation is over, back to waiting for "Hey Trace"
+    ear.awakeTimer = setTimeout(() => { endConvo(); chime("off"); earNote("Trace stopped listening."); }, ms);
   } else {
     renderChatState(el.agent.dataset.state || "idle");
   }
@@ -1339,35 +1365,159 @@ function stopEar() {
   if (ear.rec) { try { ear.rec.abort(); } catch { /* ignore */ } }
   ear.rec = null; ear.running = false;
 }
+const FILLER = /^(um+|uh+|er+|hmm+|so|okay|ok)[.!?]*$/i;
 function heard(raw) {
-  const text = raw.trim();
+  let text = raw.trim();
   if (!text) return;
+  const m = text.match(WAKE);
   if (ear.awake || ear.once) {
+    if (m) text = m[1].trim();             // "Hey Trace, ..." mid-conversation is fine too
+    if (!text || FILLER.test(text)) { setAwake(true); return; }
     ear.once = false;
     setAwake(false);
     chime("heard");
+    convo.active = true;
     command(text);
     return;
   }
-  const m = text.match(WAKE);
   if (!m) return;                         // not for Trace: ignore, say nothing
+  convo.active = true;                    // any "Hey Trace" starts a conversation
   const rest = m[1].trim();
-  if (rest.split(/\s+/).filter(Boolean).length >= 2) { chime("heard"); command(rest); return; }
+  if (rest && !FILLER.test(rest)) { chime("heard"); command(rest); return; }
   chime("wake");
   earNote("Trace is listening.");
   setAwake(true);
 }
-/* Things you can say besides questions: stop, repeat, show a camera, go back. */
+/* Spoken-only extras; everything else goes through ask() like typed messages. */
 function command(text) {
   const t = normText(text);
-  if (/^ (stop|quiet|be quiet|shush|cancel|never mind|nevermind|thats all|thank you|thanks) /.test(t)) { stopSpeaking(); return; }
-  if (/ (repeat|say (that|it) again|what did you say|pardon) /.test(t)) { if (voice.last) speakOut(voice.last); return; }
-  if (/^ (go back|back|close( it| this)?|done) $/.test(t)) {
-    if (state.chatOpen) closeChat(); else if (state.foundId != null) closeFound(); else if (state.liveCam != null) closeLive();
+  if (/ (repeat|say (that|it) again|what did you say|pardon|come again) /.test(t)) {
+    if (voice.last) speakOut(voice.last).then(() => { if (convo.active) listenForMore(); });
+    else listenForMore();
     return;
   }
-  if (/ (stop|turn off|quiet) listening /.test(t)) { toggleEar(false); return; }
-  ask(text);
+  if (/ (stop|turn off|quiet) listening /.test(t)) { endConvo(); toggleEar(false); return; }
+  ask(text, { voice: true });
+}
+
+/* ------------------------------------------------------------ conversation
+   Once you've said "Hey Trace", Trace answers, asks a short follow-up and keeps listening
+   for a few seconds: no wake word needed for the next thing. Offers ("Want to see the Hall
+   camera live?") can be answered with yes or no. Silence or "that's all" ends it. */
+const convo = { active: false, offer: null, lastItem: null, turn: 0, n: 0 };
+const PROMPTS = ["Anything else?", "What else can I do?", "Anything else I can find?"];
+const FOLLOW_UP_MS = 7000;
+function listenForMore() {
+  if (!state.power || !convo.active) return;
+  if (!canListen()) { convo.active = false; return; }
+  if (!ear.want) ear.once = true;          // a chat that started on the mic button keeps going too
+  setAwake(true, FOLLOW_UP_MS);
+  chime("ready");
+  earNote("Trace is listening.");
+  startEar();
+}
+function endConvo() {
+  convo.active = false;
+  convo.offer = null;
+  clearTimeout(ear.awakeTimer);
+  if (ear.awake) setAwake(false);
+  if (!ear.want) { ear.once = false; stopEar(); renderEarBtn(); }
+}
+/* Trace answers: chat + bubble + voice. In a voice conversation it then asks for more and listens. */
+async function reply(text, { itemId = null, offer = null, prompt = true, end = false, after = null } = {}) {
+  convo.offer = offer;
+  if (itemId != null) convo.lastItem = itemId;
+  const follow = offer?.question || (convo.active && prompt && !end ? PROMPTS[convo.n++ % PROMPTS.length] : "");
+  const full = follow ? `${text} ${follow}` : text;
+  addMsg("trace", full, itemId);
+  if (!state.chatOpen) showBubble(full);
+  const turn = ++convo.turn;
+  await speakOut(text);
+  if (follow && turn === convo.turn) await speakOut(follow);   // its own short clip: pre-rendered, so instant
+  if (turn !== convo.turn) return;                              // something newer took over
+  voice.last = full;
+  if (end) { endConvo(); after?.(); return; }
+  after?.();
+  if (convo.active) listenForMore();       // typed chats keep the offer too: type "yes"
+}
+
+/* Actions Trace understands besides "where is ...". Returns null when it's a question for the finder. */
+const YES = /^ (yes|yeah|yep|yup|sure|please|ok|okay|go on|go ahead|do it|show me|alright|sounds good|why not)\b/;
+const NO = /^ (no|nope|nah|not now|dont|no thanks)\b/;
+function intent(message) {
+  const t = normText(message);
+  if (convo.offer && YES.test(t)) { const o = convo.offer; convo.offer = null; return o.yes(); }
+  if (convo.offer && NO.test(t)) { convo.offer = null; return { reply: "Okay." }; }
+  if (/^ (thats all|thats it|that is all|thank you|thanks|no thanks|nothing|nothing else|bye|goodbye|im done|all done|all good|never mind|nevermind|stop|cancel|no thats it|im good) /.test(t))
+    return { reply: "Okay. I'm here if you need me.", end: true };
+  if (/ (help|what can you do|what can i (say|ask)|commands) /.test(t))
+    return { reply: "You can ask where something is, say open the hall camera, what can you see, or what do you remember. Say that's all when you're done." };
+
+  // voice
+  const g = / voice / .test(t) ? (/ (female|woman|girl|lady|womans) /.test(t) ? "female" : / (male|man|boy|guy|mans) /.test(t) ? "male" : null) : null;
+  if (g) return g === voice.gender ? { reply: `I'm already using my ${g} voice.` }
+    : { run: () => setGender(g, { silent: true }), reply: `Okay. This is my ${g} voice.` };
+  if (/ (mute|be quiet|stop talking|voice off|turn off (your |the )?voice|dont talk|no voice) /.test(t))
+    return { run: () => setVoiceOn(false), reply: "Okay, I'll stay quiet and answer on screen." };
+  if (/ (unmute|voice on|talk to me|speak (again|up|out loud)|turn on (your |the )?voice|talk again) /.test(t))
+    return { run: () => setVoiceOn(true), reply: "Okay, I'll talk again." };
+
+  // going back / closing
+  if (/^ (go back|back|close( it| this| that| the camera| the view| the picture)?|exit|done|go home|home) $/.test(t)) {
+    const closed = closeTop();
+    return { reply: closed ? "Okay." : "There's nothing open." };
+  }
+  if (/ (go to sleep|turn (yourself )?off|shut down|power off|switch off|good night|goodnight) /.test(t) && !/ (voice|listening) /.test(t))
+    return {
+      reply: "Do you want me to go to sleep? You'll need to press Wake Trace to wake me again.", prompt: false,
+      offer: { yes: () => ({ reply: "Okay. Goodnight.", end: true, after: () => turnOff() }) },
+    };
+
+  // cameras
+  if (/ (next|other|another|different) (camera|cam|one) /.test(t) && state.cameras.length) {
+    const list = state.cameras, cur = list.findIndex((c) => String(c.id) === state.liveCam);
+    const next = list[(cur + 1) % list.length];
+    return { run: () => showCamera(next.id), reply: liveLine(next.id) };
+  }
+  const cam = cameraIntent(message);
+  if (cam) return { run: () => showCamera(cam.id), reply: liveLine(cam.id) };
+  if (/ (what (can|do) you see|whats (in view|on (this|the) camera|there)|what is (in view|there)|anything in view|whats in front) /.test(t))
+    return { reply: seeLine() };
+  if (/ (what do you remember|what are you (tracking|watching|keeping)|list (everything|items|things|it all)|what have you got|everything you know|what things) /.test(t))
+    return { reply: listLine() };
+  const last = convo.lastItem != null ? findItem(convo.lastItem) : null;
+  if (last && /^ (show me|show it|show them|let me see|where exactly|show me (it|them|where))( on (the )?camera)? $/.test(t))
+    return { run: () => { closeLive(false); openFound(last, { focus: false }); }, reply: `Here's where I last saw ${nameOf(last)}.`, itemId: last.id };
+  return null;
+}
+function closeTop() {
+  if (state.foundId != null) { closeFound(); return true; }
+  if (state.liveCam != null) { closeLive(); return true; }
+  if (state.chatOpen) { closeChat(); return true; }
+  return false;
+}
+function showCamera(id) {
+  if (state.foundId != null) closeFound(false);
+  if (narrowMQ.matches && state.chatOpen) closeChat(false);
+  openLive(id, { announce: false });
+}
+function seeLine() {
+  const id = state.liveCam;
+  const items = (state.items || []).filter((i) => id == null || String(i.camera) === id);
+  const inView = items.filter((i) => i.in_view).map(nameOf);
+  const more = (n) => (n > 0 ? ` and ${n} more` : "");
+  if (!inView.length) {
+    if (id != null && items.length) return `I can't see anything I know on the ${camName(id)} camera right now. ${items.length === 1 ? "One thing was" : `${items.length} things were`} last seen there.`;
+    return id != null ? `I can't see anything I know on the ${camName(id)} camera right now.` : "I can't see anything I know right now.";
+  }
+  const where = id != null ? `On the ${camName(id)} camera` : "Right now";
+  return `${where} I can see ${joinNames(inView.slice(0, 4))}${more(inView.length - 4)}.`;
+}
+function listLine() {
+  const items = state.items || [];
+  if (!items.length) return "I'm not keeping track of anything yet. Put something in view of a camera and I'll remember it.";
+  const names = sortItems(items).map(nameOf);
+  return `I'm keeping track of ${items.length} thing${items.length === 1 ? "" : "s"}: ${names.length > 5 ? `${names.slice(0, 5).join(", ")} and ${names.length - 5} more` : joinNames(names)}.`;
 }
 function toggleEar(on) {
   if (!canListen()) {
@@ -1537,29 +1687,22 @@ async function closeChat(returnFocus = true) {
   if (returnFocus && hadFocus) el.agent.focus();
 }
 
-async function ask(message) {
+async function ask(message, { voice: byVoice = false } = {}) {
   message = message.trim();
   if (!message || state.busy || !state.power) return;
-  const vt = normText(message);
-  const g = / voice / .test(vt) ? (/ (female|woman|girl|lady|womans) /.test(vt) ? "female" : / (male|man|boy|guy|mans) /.test(vt) ? "male" : null) : null;
-  if (g) {                                 // "use the male voice", "switch to a female voice"
-    addMsg("user", message);
-    if (g === voice.gender) say(`I'm already using my ${g} voice.`);
-    else { setGender(g); addMsg("trace", `Hi, I'm Trace. This is my ${g} voice.`); if (!state.chatOpen) showBubble(`Hi, I'm Trace. This is my ${g} voice.`); }
-    return;
-  }
-  const cam = cameraIntent(message);
-  if (cam) {                              // "show me the hall camera" -> live view
-    addMsg("user", message);
-    if (narrowMQ.matches && state.chatOpen) closeChat(false);
-    if (state.foundId != null) closeFound(false);
-    openLive(cam.id, { log: true });
-    return;
-  }
-  state.busy = true;
-  el.sendBtn.disabled = true;
+  if (!byVoice) convo.active = false;      // typing takes over from a spoken conversation
   const history = state.chat.slice(-10).map((m) => ({ role: m.who === "user" ? "user" : "assistant", content: m.text }));
   addMsg("user", message);
+
+  const act = intent(message);             // open a camera, go back, change voice, yes/no ...
+  if (act) {
+    act.run?.();
+    await reply(act.reply, act);
+    return;
+  }
+
+  state.busy = true;
+  el.sendBtn.disabled = true;
   setAgent("searching");
   const typing = document.createElement("div");
   typing.className = "msg trace typing";
@@ -1576,7 +1719,7 @@ async function ask(message) {
     } catch { /* fall back below */ }
   }
   if (!res) res = localAnswer(message);
-  const left = 900 - (performance.now() - started);
+  const left = (byVoice ? 250 : 900) - (performance.now() - started);   // spoken: answer as soon as we can
   if (left > 0) await wait(left);
   typing.remove();
   state.busy = false;
@@ -1584,17 +1727,22 @@ async function ask(message) {
   if (!state.power) return;
 
   const it = res.item_id != null ? findItem(res.item_id) : null;
-  addMsg("trace", res.reply, it ? it.id : null);
-  speakOut(res.reply);
+  let offer = null;
   if (res.state === "found" && it) {
     setAgent("found");
     if (narrowMQ.matches && state.chatOpen) await closeChat(false);
-    if (!state.chatOpen) showBubble(res.reply);
-    openFound(it, { focus: !state.chatOpen });
+    openFound(it, { focus: !state.chatOpen && !byVoice });
+    const cam = camById(it.camera);
+    if (cam && camUp(cam) && state.liveCam !== String(cam.id)) {   // next step, as a yes/no question
+      offer = {
+        question: `Want to see the ${camName(cam.id)} camera live?`,
+        yes: () => ({ run: () => showCamera(cam.id), reply: liveLine(cam.id) }),
+      };
+    }
   } else {
     setAgent("idle");
-    if (!state.chatOpen) showBubble(res.reply);
   }
+  await reply(res.reply, { itemId: it ? it.id : null, offer });
 }
 
 /* ------------------------------------------------------------ data refresh + polling */
@@ -1973,13 +2121,24 @@ function camDims(id) {
 /* "show me the hall camera", "open the kitchen cam", "show the cameras" -> that camera */
 function cameraIntent(message) {
   const t = normText(message);
-  if (!/ (camera|cameras|cam|feed|live) /.test(t) || !/ (show|open|watch|see|view|look|switch|go) /.test(t)) return null;
   const named = [...state.cameras].sort((a, b) => String(b.name || b.id).length - String(a.name || a.id).length)
     .find((c) => t.includes(normText(c.name || c.id)) || t.includes(normText(String(c.id).replace(/[-_]/g, " "))));
-  return named || state.cameras.find((c) => c.live) || state.cameras[0] || null;
+  const camWord = / (camera|cameras|cam|feed|live view) /.test(t);
+  // "open the living room" counts too, but only as a command (verb first), so
+  // "where did you see my keys in the hall" stays a question
+  if (named && (camWord ? / (show|open|watch|see|view|look|switch|go) /.test(t) : /^ (open|show( me)?|watch|switch to|go to|view|look at) /.test(t))) return named;
+  if (!camWord || !/ (show|open|watch|see|view|look|switch|go) /.test(t)) return null;
+  const last = convo.lastItem != null ? findItem(convo.lastItem) : null;   // "show me that camera"
+  return (last && camById(last.camera)) || state.cameras.find((c) => c.live) || state.cameras[0] || null;
+}
+function liveLine(camId) {
+  const c = camById(camId), n = itemsOn(camId).length;
+  if (camUp(c) || (state.mode === "demo" && c && c.live))
+    return `Here's the ${camName(camId)} camera.${n ? ` I've marked ${n === 1 ? "the one thing" : `the ${n} things`} I remember there.` : ""}`;
+  return `I can't see through the ${camName(camId)} camera right now. I'll keep trying.`;
 }
 
-function openLive(camId, { log = false } = {}) {
+function openLive(camId, { log = false, announce = true } = {}) {
   if (!state.power || camId == null) return;
   const first = state.liveCam == null;
   if (first) liveOpener = document.activeElement;
@@ -1998,12 +2157,7 @@ function openLive(camId, { log = false } = {}) {
   clearInterval(liveClock);
   liveClock = setInterval(tickLiveClock, 1000);
   tickLiveClock();
-  const n = itemsOn(camId).length, c = camById(camId);
-  if (camUp(c) || state.mode === "demo") {
-    say(`Here's the ${camName(camId)} camera.${n ? ` I've marked ${n === 1 ? "the one thing" : `the ${n} things`} I remember there.` : ""}`, { log });
-  } else {
-    say(`I can't see through the ${camName(camId)} camera right now. I'll keep trying.`, { log });
-  }
+  if (announce) say(liveLine(camId), { log });   // a voice command speaks its own reply instead
 }
 function closeLive(returnFocus = true) {
   if (state.liveCam == null) return;
@@ -2305,6 +2459,8 @@ async function turnOff() {
   powering = true;
   el.offBtn.classList.add("off");
   stopPolling();
+  convo.turn++;                            // drop any reply still waiting to ask a follow-up
+  endConvo();
   stopSpeaking();
   setAwake(false);
   ear.once = false;

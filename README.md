@@ -17,9 +17,15 @@ the page (`trace.html`) through `trace_api.py`, with:
   read aloud on/off and **Female / Male** (remembered per browser). You can also say
   or type "use the male voice".
 - **"Hey Trace":** turn on **Hey Trace** in the header. Then say "Hey Trace" (chime)
-  and your question, or "Hey Trace, where are my keys?" in one breath. You can also say
-  "say that again", "stop", "go back", or "show me the hall camera". The mic button in
-  the chat listens once without the wake word.
+  and your question, or "Hey Trace, where are my keys?" in one breath. After that it's a
+  conversation: Trace answers, asks "Anything else?" and listens for about 7 seconds (soft
+  chime), so you don't repeat "Hey Trace". Silence or "that's all" ends it. Things to say:
+  - "where are my keys?" (Trace may offer "Want to see the Hall camera live?": say yes or no)
+  - "open the living room camera", "switch to the hall camera", "next camera", "go back"
+  - "what can you see?", "what do you remember?", "show me", "say that again"
+  - "use the male voice", "mute" / "talk to me", "go to sleep" (asks first), "help"
+
+  The mic button in the chat starts the same conversation without the wake word.
   - Listening uses the browser's speech recognition (Chrome, Edge or Safari). In
     Chrome the audio goes to Google to be turned into text; the camera video doesn't.
   - Browsers only allow the microphone on a secure page, so voice commands work at
