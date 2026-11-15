@@ -22,7 +22,7 @@ Event format the model reads (one JSON object per line, full contract in `SPEC.m
 
     {"time": "14:05:10", "t": 1794696414.7, "item": "keys-1", "category": "keys", "zone": "sofa", "event": "appeared", "confidence": 0.82, "camera": "phone-1"}
 
-**Replay a recording:** in the Events card, "Replay a recorded events.jsonl" plays a session
+**Real events:** switch the room from "Simulation" to "Real events", then "Load recorded events" plays a session
 from the cameras through the same model and 3D room, in time order, at the chosen speed
 (`sample-events.jsonl` is a scripted example for the demo room). There's no ground truth in a
 recording, so "show where things really are" is off and you answer "Not there" / "Found it"

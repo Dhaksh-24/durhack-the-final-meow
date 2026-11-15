@@ -152,6 +152,11 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
         <div id="view3d"><canvas id="room3d" aria-label="3D view of the simulated room"></canvas><div id="labels" aria-hidden="true"></div></div>
         <canvas id="room" aria-label="Top-down view of the simulated room" hidden></canvas>
         <div class="controls">
+          <div class="seg" role="group" aria-label="What drives the room" id="modeSeg">
+            <button type="button" data-m="sim" aria-pressed="true">Simulation</button>
+            <button type="button" data-m="real" aria-pressed="false">Real events</button>
+          </div>
+          <label class="btn" for="replayFile" id="loadRec" hidden>Load recorded events</label>
           <button class="btn primary" id="play" type="button">Pause</button>
           <div class="seg" role="group" aria-label="Speed" id="speed">
             <button type="button" data-s="0" aria-pressed="false">1×</button>
@@ -191,9 +196,8 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
         <h2>Events</h2>
         <p class="lead">What the phones report, in the format agreed with the mapping stream. Trace only ever sees these, never the true positions.</p>
         <div class="controls">
-          <label class="btn" for="replayFile">Replay a recorded events.jsonl</label>
+          <label class="btn" for="replayFile">Load recorded events</label>
           <input type="file" id="replayFile" accept=".jsonl,.json,.txt,application/json" hidden>
-          <button class="btn" id="stopReplay" type="button" hidden>Stop replay</button>
           <span class="note" id="replayNote"></span>
         </div>
         <pre id="events"></pre>
@@ -765,7 +769,9 @@ const OUT = 2.4, PAD = 0.25;
 
 let world, beliefs, lastSeen, visHist, events, running = true, speed = 1, selected = "keys", showTruth = true;
 let session = null, panelDirty = true, personPos = null, lastPersonZone = null;
-let replay = null, clock0 = 8 * 3600;   // replay: {ticks, i, name, problems} while playing back a recorded events.jsonl
+// Real events mode: replay = {ticks, i, name, file, done, problems}. Its ticks come from a loaded
+// events.jsonl (file: true) or are appended live; null means the simulator drives the room.
+let replay = null, clock0 = 8 * 3600;
 
 function clockAt(tick) {
   const s = clock0 + tick * TICK_S, h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60, sec = s % 60;
@@ -816,23 +822,37 @@ function liveTick() {
 // Recorded events: one tick of the recording drives the same model and views as the simulator.
 // There is no ground truth, so the true-position markers and "top guess right" are off.
 function replayTick() {
-  if (replay.i >= replay.ticks.length) { running = false; $("#replayNote").textContent = "Replay finished: " + replay.name + "."; panelDirty = true; return; }
+  if (replay.i >= replay.ticks.length) {
+    if (replay.file && !replay.done) { replay.done = true; running = false; $("#replayNote").textContent = "Replay finished: " + replay.name + "."; panelDirty = true; }
+    return;   // otherwise: waiting for events
+  }
   const obs = replay.ticks[replay.i++];
   world.tick++;
   if (obs.person === "outside") world.person.outside = true;
   else if (obs.person != null) { world.person.outside = false; world.person.zone = obs.person; }
   applyObs(obs);
 }
-function startReplay(name, text) {
-  const r = replayFromEvents(text);
-  if (!r.ticks.length) { $("#replayNote").textContent = "Couldn't replay " + name + ": " + r.problems.join("; ") + "."; return; }
+// Switch to real events: no simulated person or items, no ground truth, beliefs start from the priors.
+function beginReal() {
   resetDay();
-  replay = { ticks: r.ticks, i: 0, name, problems: r.problems };
-  clock0 = r.clock0; events = [];
+  replay = { ticks: [], i: 0, name: "", file: false, done: false, problems: [] };
+  const d = new Date(); clock0 = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); events = [];
   world.items = {}; for (const it of ITEMS) world.items[it.id] = { loc: "unknown", covered: false, pocket: false };
   world.person = { zone: MAP.zones[DOOR].id, outside: false, dwell: 0, outsideFor: 0 };
   lastPersonZone = null; session = null; running = true; personPos = null;
   setReplayUI();
+}
+function setMode(m) {
+  if (m === "real") { beginReal(); $("#replayNote").textContent = "Real events: load a recorded events.jsonl to replay it."; }
+  else resetDay();
+  renderAll();
+}
+function startReplay(name, text) {
+  const r = replayFromEvents(text);
+  if (!r.ticks.length) { $("#replayNote").textContent = "Couldn't replay " + name + ": " + r.problems.join("; ") + "."; return; }
+  beginReal();
+  Object.assign(replay, { ticks: r.ticks, name, file: true, problems: r.problems });
+  clock0 = r.clock0;
   $("#replayNote").textContent = "Replaying " + name + ": " + r.count + " events over " + durText(r.ticks.length) + "." + (r.problems.length ? " Note: " + r.problems.join("; ") + "." : "");
   renderAll();
 }
@@ -840,7 +860,8 @@ function setReplayUI() {
   const on = !!replay;
   if (on !== $("#truth").disabled) { $("#truth").checked = !on; showTruth = !on; }   // no ground truth in a recording
   $("#truth").disabled = on;
-  $("#stopReplay").hidden = !on;
+  $("#reset").hidden = on; $("#loadRec").hidden = !on;
+  document.querySelectorAll("#modeSeg button").forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.m === "real") === on)));
   if (!on) $("#replayNote").textContent = "";
 }
 function applyObs(obs) {
@@ -2238,7 +2259,7 @@ $("#play").onclick = () => { running = !running; renderAll(); };
 $("#speed").addEventListener("click", (e) => { const bt = e.target.closest("button[data-s]"); if (!bt) return; speed = +bt.dataset.s; document.querySelectorAll("#speed button").forEach((x) => x.setAttribute("aria-pressed", String(x === bt))); });
 $("#skip").onclick = () => { if (session) return; for (let k = 0; k < 360; k++) liveTick(); renderAll(); };
 $("#reset").onclick = () => { resetDay(); renderAll(); };
-$("#stopReplay").onclick = () => { resetDay(); renderAll(); };
+$("#modeSeg").addEventListener("click", (e) => { const bt = e.target.closest("button[data-m]"); if (bt && (bt.dataset.m === "real") !== !!replay) setMode(bt.dataset.m); });
 $("#replayFile").addEventListener("change", (e) => {
   const f = e.target.files && e.target.files[0]; if (!f) return;
   const rd = new FileReader();
