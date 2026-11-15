@@ -84,5 +84,24 @@ check(JSON.stringify(S.trail) === JSON.stringify(A.trail), "events are replayed 
 const bad = C.replayFromEvents('not json\n{"time":"10:00:00","event":"appeared","item":"keys-1","zone":"garage","confidence":0.9}\n');
 check(bad.ticks.length === 1 && bad.problems.length === 2, "bad lines and unknown zones are reported: " + bad.problems.join("; "));
 
+// Task 3b: live events arrive one at a time; each burst becomes a tick at once.
+console.log("\nlive feed (the same recording, one event at a time)");
+const evs = text.trim().split("\n").map((l) => JSON.parse(l));
+const runLive = (batches) => {
+  const f = C.liveFeed(), B = {};
+  for (const it of C.ITEMS) B[it.id] = Float64Array.from(C.PRIORS[it.id]);
+  let n = 0;
+  for (const batch of batches) for (const o of f.push(batch)) { n++; for (const it of C.ITEMS) B[it.id] = C.filterStep(B[it.id], it, o); }
+  return { f, B, n };
+};
+const L1 = runLive(evs.map((e) => [e])), L2 = runLive([evs]);
+console.log(`  ${L1.f.count} events → ${L1.n} ticks; keys: ${C.rank(L1.B.keys).slice(0, 3).map((x) => x.pl.id + " " + pct(x.p)).join(", ")}`);
+check(L1.n === L2.n && JSON.stringify(C.rank(L1.B.keys).map((x) => x.pl.id)) === JSON.stringify(C.rank(L2.B.keys).map((x) => x.pl.id)),
+  "one event at a time gives the same result as the whole batch");
+check(C.rank(L1.B.keys)[0].pl.id === "hook", "live ends on the same top guess as the replay (coat hook)");
+const f3 = C.liveFeed(); f3.push([evs[1]]);
+check(f3.idle(evs[1].t + 35).length === 3, "35 s of silence adds 3 idle ticks");
+check(f3.push([{ t: evs[1].t + 36, event: "person_here", zone: "desk" }]).length === 1, "a new event is applied at once, not at the next 10 s step");
+
 console.log(ok ? "\nall checks passed" : "\nSOME CHECKS FAILED");
 process.exit(ok ? 0 : 1);

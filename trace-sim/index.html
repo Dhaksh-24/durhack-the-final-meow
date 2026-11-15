@@ -157,6 +157,7 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
             <button type="button" data-m="real" aria-pressed="false">Real events</button>
           </div>
           <label class="btn" for="replayFile" id="loadRec" hidden>Load recorded events</label>
+          <button class="btn" id="liveBtn" type="button">Connect live</button>
           <button class="btn primary" id="play" type="button">Pause</button>
           <div class="seg" role="group" aria-label="Speed" id="speed">
             <button type="button" data-s="0" aria-pressed="false">1×</button>
@@ -632,44 +633,87 @@ function parseEvents(text) {
   evs.sort((a, b) => a.s - b.s || a.n - b.n);   // stable: same time keeps file order
   return { evs, problems };
 }
+// What the phones are reporting right now, built up one event at a time (shared by replay and live).
+function eventState() {
+  const st = { seen: {}, person: null, unknownZones: new Set(), unknownItems: new Set() };
+  for (const it of ITEMS) st.seen[it.id] = null;   // {zone, conf} while a phone can see it
+  return st;
+}
+function applyEvent(st, e) {
+  const z = e.zone == null ? null : String(e.zone);
+  const zoneOk = z == null || z === "person" || ZI[z] != null;
+  if (!zoneOk) st.unknownZones.add(z);
+  if (e.event === "person_here") { if (z && ZI[z] != null) st.person = z; return; }
+  if (e.event === "person_left") { if (z == null || z === "room" || z === "outside") st.person = "outside"; else if (st.person === z) st.person = null; return; }
+  if (e.event === "something_changed") return;
+  const id = itemIdOf(e);
+  if (!id) { if (e.item != null) st.unknownItems.add(String(e.item)); return; }
+  const conf = isFinite(e.confidence) ? Math.max(0, Math.min(1, +e.confidence)) : 0.8;
+  if (e.event === "appeared" || e.event === "moved") { if (z != null && zoneOk) st.seen[id] = { zone: z, conf }; }
+  else if (e.event === "disappeared") { if (!st.seen[id] || z == null || st.seen[id].zone === z) st.seen[id] = null; }
+}
+function obsFrom(st, prev, events) {   // one tick's observation, in the shape stepWorld returns
+  const det = {}, conf = {}, sightings = {};
+  for (const it of ITEMS) {
+    const s = st.seen[it.id];
+    sightings[it.id] = s ? [{ zone: s.zone, conf: s.conf }] : [];
+    det[it.id] = s && s.zone !== "person" ? s.zone : null;
+    conf[it.id] = s ? s.conf : null;
+  }
+  return { prev: prev == null ? st.person : prev, person: st.person, det, conf, sightings, events };
+}
+function eventProblems(st) {
+  const out = [];
+  if (st.unknownZones.size) out.push("zones not in the room map (ignored): " + [...st.unknownZones].join(", "));
+  if (st.unknownItems.size) out.push("items Trace doesn't track (ignored): " + [...st.unknownItems].join(", "));
+  return out;
+}
 function replayFromEvents(text) {
   const { evs, problems } = parseEvents(text);
   if (!evs.length) return { ticks: [], problems: problems.concat(["no events"]), clock0: 0 };
   const t0 = evs[0].s, MAXT = 8640 * 2;   // two days of ticks at most
-  const unknownZones = new Set(), unknownItems = new Set();
-  const seen = {}; for (const it of ITEMS) seen[it.id] = null;   // {zone, conf} while a phone can see it
-  let person = null, k = 0;
+  const st = eventState();
+  let k = 0;
   const ticks = [];
   const nTicks = Math.min(MAXT, Math.floor((evs[evs.length - 1].s - t0) / TICK_S) + 1);
   if (nTicks === MAXT) problems.push("recording longer than two days: cut at two days");
   for (let tick = 0; tick < nTicks; tick++) {
-    const prev = person, these = [];
-    while (k < evs.length && Math.floor((evs[k].s - t0) / TICK_S) <= tick) {
-      const { e } = evs[k++]; these.push(e);
-      const z = e.zone == null ? null : String(e.zone);
-      const zoneOk = z == null || z === "person" || ZI[z] != null;
-      if (!zoneOk) unknownZones.add(z);
-      if (e.event === "person_here") { if (z && ZI[z] != null) person = z; continue; }
-      if (e.event === "person_left") { if (z == null || z === "room" || z === "outside") person = "outside"; else if (person === z) person = null; continue; }
-      if (e.event === "something_changed") continue;
-      const id = itemIdOf(e);
-      if (!id) { if (e.item != null) unknownItems.add(String(e.item)); continue; }
-      const conf = isFinite(e.confidence) ? Math.max(0, Math.min(1, +e.confidence)) : 0.8;
-      if (e.event === "appeared" || e.event === "moved") { if (z != null && zoneOk) seen[id] = { zone: z, conf }; }
-      else if (e.event === "disappeared") { if (!seen[id] || z == null || seen[id].zone === z) seen[id] = null; }
-    }
-    const det = {}, conf = {}, sightings = {};
-    for (const it of ITEMS) {
-      const s = seen[it.id];
-      sightings[it.id] = s ? [{ zone: s.zone, conf: s.conf }] : [];
-      det[it.id] = s && s.zone !== "person" ? s.zone : null;
-      conf[it.id] = s ? s.conf : null;
-    }
-    ticks.push({ prev: prev == null ? person : prev, person, det, conf, sightings, events: these });
+    const prev = st.person, these = [];
+    while (k < evs.length && Math.floor((evs[k].s - t0) / TICK_S) <= tick) { const { e } = evs[k++]; these.push(e); applyEvent(st, e); }
+    ticks.push(obsFrom(st, prev, these));
   }
-  if (unknownZones.size) problems.push("zones not in the room map (ignored): " + [...unknownZones].join(", "));
-  if (unknownItems.size) problems.push("items Trace doesn't track (ignored): " + [...unknownItems].join(", "));
-  return { ticks, problems, clock0: clockSecondsOf(evs[0].e) || 0, count: evs.length };
+  return { ticks, problems: problems.concat(eventProblems(st)), clock0: clockSecondsOf(evs[0].e) || 0, count: evs.length };
+}
+// Live events: each burst of events (within 0.25 s) becomes one tick straight away, so the room reacts
+// at once; quiet stretches still produce one tick every TICK_S so "no sighting" keeps counting.
+function liveFeed() {
+  const st = eventState();
+  let lastT = null, count = 0;
+  return {
+    st,
+    get count() { return count; },
+    problems() { return eventProblems(st); },
+    push(evs) {
+      const ticks = [], list = evs.map((e) => ({ e, s: secondsOf(e) })).filter((x) => x.s != null).sort((a, b) => a.s - b.s);
+      let group = [], prev = null, gT = null;
+      const flush = () => { if (group.length) { ticks.push(obsFrom(st, prev, group)); lastT = gT; group = []; } };
+      for (const { e, s } of list) {
+        if (group.length && s - gT > 0.25) flush();
+        if (!group.length) {
+          if (lastT != null) while (s - lastT >= TICK_S) { lastT += TICK_S; ticks.push(obsFrom(st, st.person, [])); }
+          prev = st.person; gT = s;
+        }
+        applyEvent(st, e); group.push(e); count++;
+      }
+      flush();
+      return ticks;
+    },
+    idle(now) {   // now: unix seconds; only meaningful when events carry "t"
+      const ticks = [];
+      if (lastT != null && lastT > 1e8) while (now - lastT >= TICK_S) { lastT += TICK_S; ticks.push(obsFrom(st, st.person, [])); }
+      return ticks;
+    }
+  };
 }
 // Sightings by zone: {zoneId: confidence}. Accepts the simulator's list, or just det/conf
 // (a replayed event); a sighting with no confidence counts as 0.8.
@@ -757,7 +801,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, setFalseRate, setCalibration, replayFromEvents, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -772,6 +816,8 @@ let session = null, panelDirty = true, personPos = null, lastPersonZone = null;
 // Real events mode: replay = {ticks, i, name, file, done, problems}. Its ticks come from a loaded
 // events.jsonl (file: true) or are appended live; null means the simulator drives the room.
 let replay = null, clock0 = 8 * 3600;
+// Live: {ws, url, feed, buf, timer} while connected to bridge.py (ws://localhost:8765, or ?ws=... in the URL).
+let live = null;
 
 function clockAt(tick) {
   const s = clock0 + tick * TICK_S, h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60, sec = s % 60;
@@ -796,6 +842,7 @@ function topPlace(b) { let best = PLACES[0], bp = -1; for (const pl of PLACES) {
 function entropyBits(b) { let h = 0; for (const pl of PLACES) { const p = placeP(b, pl); if (p > 1e-12) h -= p * Math.log2(p); } return h; }
 
 function resetDay() {
+  if (live) closeLive();
   replay = null; clock0 = 8 * 3600; setReplayUI();
   resetStats();
   world = newWorld(); beliefs = {}; lastSeen = {}; visHist = {}; events = [];
@@ -842,6 +889,43 @@ function beginReal() {
   lastPersonZone = null; session = null; running = true; personPos = null;
   setReplayUI();
 }
+function liveNote(msg) { $("#replayNote").textContent = msg; }
+function connectLive() {
+  const url = new URLSearchParams(location.search).get("ws") || "ws://localhost:8765";
+  beginReal(); replay.name = "live";
+  let ws;
+  try { ws = new WebSocket(url); } catch (err) { liveNote("Live: couldn't open " + url + ": " + err.message); return; }
+  live = { ws, url, feed: liveFeed(), buf: [], timer: null };
+  liveNote("Live: connecting to " + url + "…"); setReplayUI(); renderAll();
+  ws.onopen = () => { if (live && live.ws === ws) liveNote("Live: connected to " + url + ". Waiting for events."); };
+  ws.onmessage = (m) => {
+    if (!live || live.ws !== ws) return;
+    let e; try { e = JSON.parse(m.data); } catch (err) { return; }
+    live.buf.push(e);
+    if (!live.timer) { live.timer = true; Promise.resolve().then(flushLive); }   // apply now; messages already queued join this batch
+  };
+  ws.onclose = () => {
+    if (!live || live.ws !== ws) return;
+    live = null; setReplayUI();
+    liveNote("Live: disconnected from " + url + ". Is bridge.py running? Press Connect live to try again.");
+  };
+}
+function closeLive() { const l = live; live = null; try { l.ws.close(); } catch (err) { /* already closed */ } }
+function flushLive() {
+  if (!live) return;
+  live.timer = null;
+  feedLive(live.feed.push(live.buf.splice(0)));
+}
+function feedLive(ticks) {
+  if (!live || !replay || !ticks.length) return;
+  for (const t of ticks) replay.ticks.push(t);
+  while (replay.i < replay.ticks.length) replayTick();
+  const d = new Date(); clock0 = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds() - world.tick * TICK_S;   // keep the clock on real time
+  const pr = live.feed.problems();
+  liveNote("Live: connected to " + live.url + " · " + live.feed.count + " events" + (pr.length ? " · " + pr.join("; ") : ""));
+  renderAll();   // panels at once; the 3D room follows on its next frame
+}
+setInterval(() => { if (live) feedLive(live.feed.idle(Date.now() / 1000)); }, 1000);
 function setMode(m) {
   if (m === "real") { beginReal(); $("#replayNote").textContent = "Real events: load a recorded events.jsonl to replay it."; }
   else resetDay();
@@ -861,6 +945,7 @@ function setReplayUI() {
   if (on !== $("#truth").disabled) { $("#truth").checked = !on; showTruth = !on; }   // no ground truth in a recording
   $("#truth").disabled = on;
   $("#reset").hidden = on; $("#loadRec").hidden = !on;
+  $("#liveBtn").textContent = live ? "Disconnect" : "Connect live";
   document.querySelectorAll("#modeSeg button").forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.m === "real") === on)));
   if (!on) $("#replayNote").textContent = "";
 }
@@ -2259,6 +2344,7 @@ $("#play").onclick = () => { running = !running; renderAll(); };
 $("#speed").addEventListener("click", (e) => { const bt = e.target.closest("button[data-s]"); if (!bt) return; speed = +bt.dataset.s; document.querySelectorAll("#speed button").forEach((x) => x.setAttribute("aria-pressed", String(x === bt))); });
 $("#skip").onclick = () => { if (session) return; for (let k = 0; k < 360; k++) liveTick(); renderAll(); };
 $("#reset").onclick = () => { resetDay(); renderAll(); };
+$("#liveBtn").onclick = () => { if (live) { closeLive(); setReplayUI(); liveNote("Live: disconnected."); } else connectLive(); };
 $("#modeSeg").addEventListener("click", (e) => { const bt = e.target.closest("button[data-m]"); if (bt && (bt.dataset.m === "real") !== !!replay) setMode(bt.dataset.m); });
 $("#replayFile").addEventListener("change", (e) => {
   const f = e.target.files && e.target.files[0]; if (!f) return;

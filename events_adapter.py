@@ -258,14 +258,21 @@ def run_demo(ad, fast, seed=None):
                 "box": [x, 400, x + 60, 440], "det_conf": round(min(0.99, max(0.05, conf + rnd.gauss(0, 0.05))), 3),
                 "support": {"rel": "on", "anchor": anchor}}
 
-    def frame(i, dets):
-        t = t0 + i / fps
+    def wait(t):
         if not fast:
             time.sleep(max(0.0, t - time.time()))
+
+    def frame(i, dets):
+        t = t0 + i / fps
+        wait(t)
         ad.frame(cam, t, dets)
         return t
 
-    ad.person_event("person_here", "desk", t0, cam)
+    def person(event, zone, t):
+        wait(t)
+        ad.person_event(event, zone, t, cam)
+
+    person("person_here", "desk", t0)
     i = 0
     for _ in range(30):                       # 15 s: keys and wallet on the desk, keys blink out now and then
         dets = [det("wallet", "desk", 0.7)]
@@ -279,8 +286,8 @@ def run_demo(ad, fast, seed=None):
     for _ in range(8):                        # 4 s: keys picked up, only the wallet is seen
         frame(i, [det("wallet", "desk", 0.7)]); i += 1
     t = t0 + i / fps
-    ad.person_event("person_left", "desk", t, cam)
-    ad.person_event("person_here", "sofa", t + 0.5, cam)
+    person("person_left", "desk", t)
+    person("person_here", "sofa", t + 0.5)
     for _ in range(10):                       # 5 s: walking, nothing new
         frame(i, [det("wallet", "desk", 0.7)]); i += 1
     for _ in range(20):                       # 10 s: keys put down on the sofa
@@ -289,7 +296,7 @@ def run_demo(ad, fast, seed=None):
             dets.append(det("keys", "sofa", 0.65))
         frame(i, dets); i += 1
     t = t0 + i / fps
-    ad.person_event("person_left", "sofa", t, cam)
+    person("person_left", "sofa", t)
     for _ in range(8):                        # the wallet is still there; the keys stay on the sofa
         frame(i, [det("wallet", "desk", 0.7), det("keys", "sofa", 0.6)]); i += 1
 
