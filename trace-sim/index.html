@@ -128,6 +128,11 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
 .pill { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
 .pill.off { background: var(--line); color: var(--muted); }
 .seedBadge { position: absolute; left: 10px; bottom: 10px; background: rgba(216,67,47,.9); color: #fff; font-size: 12px; padding: 3px 9px; border-radius: 999px; pointer-events: none; }
+ul.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+ul.feed li { padding: 6px 8px; border-radius: 8px; background: var(--bg); line-height: 1.35; }
+ul.feed li:first-child { background: var(--accent-soft); animation: feedin .5s ease-out; }
+ul.feed li b { font-family: var(--mono); font-weight: 600; margin-right: 6px; color: var(--muted); }
+@keyframes feedin { from { opacity: 0; transform: translateY(-6px); } }
 .camgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
 .camtile { position: relative; border-radius: 9px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
 .camtile img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -241,17 +246,27 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
     </div>
 
     <div class="col">
+      <section class="card keep" id="feedCard">
+        <h2>What just changed</h2>
+        <p class="lead" style="margin-bottom:6px">Every camera event, and how it moved the model's probabilities.</p>
+        <ul class="feed" id="feedList"><li class="note">Waiting for camera events (Real events → Connect live).</li></ul>
+      </section>
+
       <section class="card keep">
         <h2>Where Trace thinks it is</h2>
         <div class="tabs" id="itemTabs" role="group" aria-label="Item"></div>
         <div class="lastseen" id="lastSeen"></div>
         <div class="trail" id="trailLine"></div>
+        <div class="trail" id="storyLine"></div>
+        <div class="trail" id="questionLine"></div>
         <div class="bars" id="bars"></div>
       </section>
 
       <section class="card keep" id="askCard">
         <h2>Ask Trace</h2>
         <p class="lead">Pauses the room and plans a search: the best chance of finding it per second of effort.</p>
+        <div class="controls" style="margin-top:0"><label class="check"><input type="checkbox" id="sonarChk"> Sonar and spoken guidance: beeps faster as the person gets closer, and says when they've arrived</label></div>
+        <p class="note" id="sonarNote" style="margin-top:4px"></p>
         <div class="controls askbar" style="margin-top:0">
           <input type="text" id="askText" placeholder="Ask, or say what you checked: &quot;not under the sofa&quot;" aria-label="Ask Trace">
           <button class="btn primary" id="askSend" type="button">Ask</button>
@@ -627,8 +642,12 @@ function stepWorld(w) {
 // ---------- Trace's model: a Bayesian filter over hidden locations ----------
 // States: for each zone, "here and visible" and "here but covered"; plus "with the person" and "outside".
 function filterStep(b, it, obs) {
+  return normalize(updateStep(predictStep(b, it, obs), it, obs)) || Float64Array.from(PRIORS[it.id]);
+}
+// 1. Predict (a linear map of b, so the story below can use it as a transition matrix).
+function predictStep(b, it, obs) {
   const nb = Float64Array.from(b), P = 2 * Z, O = 2 * Z + 1;
-  // 1. Predict: things only move when the person moves them.
+  // Predict: things only move when the person moves them.
   if (obs.person === "outside") {
     if (obs.prev !== "outside") { nb[O] += nb[P]; nb[P] = 0; }
   } else {
@@ -645,8 +664,13 @@ function filterStep(b, it, obs) {
     nb[P] += pv + pc;
   }
   const pr = PRIORS[it.id];
-  for (let k = 0; k < NS; k++) nb[k] = nb[k] * (1 - LEAK) + LEAK * pr[k];
-  // 2. Update on what each phone did and didn't see.
+  let tot = 0; for (let k = 0; k < NS; k++) tot += nb[k];
+  for (let k = 0; k < NS; k++) nb[k] = nb[k] * (1 - LEAK) + LEAK * pr[k] * tot;
+  return nb;
+}
+// 2. Update on what each phone did and didn't see: multiplies each state by its likelihood.
+function updateStep(nb, it, obs) {
+  const P = 2 * Z;
   const sight = sightingsOf(obs, it.id);
   MAP.zones.forEach((z, i) => {
     const r = sight[z.id];
@@ -671,7 +695,46 @@ function filterStep(b, it, obs) {
     if (fh > 0) nb[P] *= D_VIS * CALIB.g(sight.person) / fh + 1 - D_VIS;
     else { const v = nb[P]; for (let k = 0; k < NS; k++) nb[k] = 0; nb[P] = v || 1; }
   }
-  return normalize(nb) || Float64Array.from(pr);
+  return nb;
+}
+
+// ---------- the most likely story (Viterbi over the same HMM) ----------
+// steps: [{obs, s}] one per tick, b0: the belief before the first step. Returns the single most
+// likely sequence of hidden states, merged into segments: [{state, from, to, person}].
+function stateLabel(k) {
+  if (k === 2 * Z) return { kind: "person", text: "with you" };
+  if (k === 2 * Z + 1) return { kind: "outside", text: "outside the room" };
+  const z = MAP.zones[k >> 1];
+  return { kind: "zone", zone: z.id, covered: (k & 1) === 1, text: ((k & 1) ? "covered on the " : "on the ") + z.name.toLowerCase() };
+}
+function viterbiStory(it, steps, b0) {
+  if (!steps.length) return [];
+  let delta = Float64Array.from(b0);
+  const back = [];
+  for (const st of steps) {
+    const T = []; for (let i = 0; i < NS; i++) { const e = new Float64Array(NS); e[i] = 1; T.push(predictStep(e, it, st.obs)); }
+    const L = updateStep(new Float64Array(NS).fill(1), it, st.obs);
+    const nd = new Float64Array(NS), arg = new Int16Array(NS);
+    for (let j = 0; j < NS; j++) {
+      let best = -1, bi = 0;
+      for (let i = 0; i < NS; i++) { const v = delta[i] * T[i][j]; if (v > best) { best = v; bi = i; } }
+      nd[j] = best * L[j]; arg[j] = bi;
+    }
+    let m = 0; for (let j = 0; j < NS; j++) m = Math.max(m, nd[j]);
+    if (!(m > 0)) { for (let j = 0; j < NS; j++) nd[j] = b0[j]; m = 1; }
+    for (let j = 0; j < NS; j++) nd[j] /= m;
+    back.push(arg); delta = nd;
+  }
+  let k = 0; for (let j = 1; j < NS; j++) if (delta[j] > delta[k]) k = j;
+  const path = new Array(steps.length);
+  for (let t = steps.length - 1; t >= 0; t--) { path[t] = k; k = back[t][k]; }
+  const segs = [];
+  path.forEach((st, t) => {
+    const last = segs[segs.length - 1], s0 = steps[t].s, person = steps[t].obs.person;
+    if (last && last.state === st) { last.to = s0; return; }
+    segs.push(Object.assign({ state: st, from: s0, to: s0, person: person == null ? null : person }, stateLabel(st)));
+  });
+  return segs;
 }
 
 // ---------- replaying recorded events (SPEC 3.2) ----------
@@ -905,6 +968,46 @@ function rankAfter(b, lastTried, seenAt) {
   if (lastTried && r.length > 1 && r[0].pl.name === lastTried && r[0].pl.id !== seenAt) { const x = r[0]; r[0] = r[1]; r[1] = x; }
   return r;
 }
+// ---------- the one best question (expected value of information) ----------
+// Expected seconds to find it by searching in plan order from belief b (each failed check updates b).
+const T_ASK = 4;   // seconds a question costs
+function expSearchTime(b0) {
+  let b = Float64Array.from(b0), cost = 0, alive = 1, last = null;
+  for (let k = 0; k < 12 && alive > 1e-3; k++) {
+    const r = rankAfter(b, last)[0]; if (!r) break;
+    cost += alive * r.t; alive *= 1 - findP(b, r.pl);
+    b = failUpdate(b, r.pl); last = r.pl.name;
+  }
+  return cost + alive * 120;
+}
+// Candidate yes/no questions: G = the hidden states a "yes" points to, a = P(yes | in G), c = P(yes | not).
+function questionsFor(it, b, ctx) {
+  const them = it.plural ? "them" : "it", qs = [];
+  qs.push({ id: "pocket", text: "Did you put anything in your pocket or bag since you last had " + them + "?", G: [2 * Z], a: 0.8, c: 0.2 });
+  let zi = -1, best = 0; MAP.zones.forEach((z, i) => { if (b[2 * i + 1] > best) { best = b[2 * i + 1]; zi = i; } });
+  if (zi >= 0 && best > 0.05) qs.push({ id: "cover-" + MAP.zones[zi].id, text: "Did you put anything down on top of things on the " + MAP.zones[zi].name.toLowerCase() + "?", G: [2 * zi + 1], a: 0.75, c: 0.15 });
+  if (ctx && ctx.leftRoom) qs.push({ id: "left", text: "Did you take " + them + " out of the room with you?", G: [2 * Z + 1], a: 0.8, c: 0.1 });
+  return qs;
+}
+// Ask only if a question beats searching straight away by more than 3 s on average:
+// gain = E[time | search now] − (T_ASK + Σ_answer P(answer) · E[time | answer]).
+function bestQuestion(it, b, ctx) {
+  const base = expSearchTime(b); let best = null;
+  for (const q of questionsFor(it, b, ctx)) {
+    const inG = new Set(q.G), yes = new Float64Array(NS), no = new Float64Array(NS); let py = 0;
+    for (let k = 0; k < NS; k++) { const ly = inG.has(k) ? q.a : q.c; yes[k] = b[k] * ly; no[k] = b[k] * (1 - ly); py += yes[k]; }
+    if (py <= 0.02 || py >= 0.98) continue;
+    const e = T_ASK + py * expSearchTime(normalize(yes)) + (1 - py) * expSearchTime(normalize(no));
+    if (!best || base - e > best.gain) best = Object.assign({}, q, { gain: base - e, base, py });
+  }
+  if (best) best.worth = best.gain > 3;   // ask unprompted only when it beats looking by over 3 s
+  return best;
+}
+function factorsFor(q, yes) {   // the answer as per-place multipliers, for the server's search state
+  const inG = new Set(q.G), f = (k) => (inG.has(k) ? q.a : q.c), g = (k) => (yes ? f(k) : 1 - f(k));
+  return PLACES.map((pl) => pl.kind === "zone" ? { zone: pl.id, fv: g(2 * pl.i), fc: g(2 * pl.i + 1) }
+    : { zone: pl.id, fv: g(pl.kind === "person" ? 2 * Z : 2 * Z + 1), fc: 1 });
+}
 function truePlace(s) { return s.loc; }
 function trueFound(w, it, pl) {
   const s = w.items[it.id];
@@ -961,7 +1064,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { rankAfter, learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { bestQuestion, expSearchTime, factorsFor, viterbiStory, predictStep, updateStep, rankAfter, learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -980,6 +1083,8 @@ let replay = null, clock0 = 8 * 3600;
 let live = null;
 // Where the person was, one entry per step: [{s: seconds on the page's clock, zone}]
 let personLog = [], trailCache = null;
+// Every step's observation, for the most likely story (viterbiStory). Reset with personLog.
+let storySteps = [], storyCache = {};
 function nowSecs() { return clock0 + world.tick * TICK_S; }
 
 function clockAt(tick) {
@@ -1010,7 +1115,7 @@ function resetDay() {
   resetStats();
   world = newWorld(); beliefs = {}; lastSeen = {}; visHist = {}; events = [];
   for (const it of ITEMS) { beliefs[it.id] = Float64Array.from(PRIORS[it.id]); lastSeen[it.id] = null; visHist[it.id] = [null, null, null]; }
-  session = null; personPos = null; lastPersonZone = world.person.zone; personLog = [];
+  session = null; personPos = null; lastPersonZone = world.person.zone; personLog = []; storySteps = []; storyCache = {}; feed = []; feedDirty = true;
   logEvent({ time: clockAt(0), event: "person_here", zone: world.person.zone });
   panelDirty = true;
 }
@@ -1049,7 +1154,7 @@ function beginReal() {
   const d = new Date(); clock0 = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); events = [];
   world.items = {}; for (const it of ITEMS) world.items[it.id] = { loc: "unknown", covered: false, pocket: false };
   world.person = { zone: MAP.zones[DOOR].id, outside: false, dwell: 0, outsideFor: 0 };
-  lastPersonZone = null; session = null; running = true; personPos = null; personLog = [];
+  lastPersonZone = null; session = null; running = true; personPos = null; personLog = []; storySteps = []; storyCache = {}; feed = []; feedDirty = true;
   setReplayUI();
 }
 function liveNote(msg) { $("#replayNote").textContent = msg; }
@@ -1124,8 +1229,10 @@ function learnFrom(e) {
   if (e.event !== "appeared" && e.event !== "moved") return;
   const id = itemIdOf(e), z = e.zone == null ? null : String(e.zone);
   if (!id || z == null || ZI[z] == null) return;
+  const it = itemById(id), was = habitShares(it, false)[z];
   ((HAB[id] = HAB[id] || {})[z] = (HAB[id][z] || 0) + 1);
   learnHabits(HAB);
+  feedPush("learned: " + it.name.toLowerCase() + " get put on the " + MAP.zones[ZI[z]].name.toLowerCase() + " (habit " + pct(was) + " → " + pct(habitShares(it, false)[z]) + ")");
   try { localStorage.setItem(habKey(), JSON.stringify(HAB)); } catch (err) { /* not remembered */ }
 }
 // Where people spent time this session, minutes per zone (simulation and real events alike).
@@ -1150,7 +1257,109 @@ function roomHeat() {
   heatCache = { at: key, min, max: Math.max(0, ...Object.values(min)) };
   return heatCache;
 }
+let curPersonZone = null;
+// ---------- sonar: a parking-sensor beep that guides someone who can't see the screen ----------
+// Follows where the guide (trace.html → /api/ask) is sending the person (GET /api/target), or this
+// page's own Ask session. Faster as the person's zone gets closer to the target; quick and high
+// when they're at it. Person position is zone-level, from the camera's person events.
+let sonar = { on: false, ctx: null, timer: null, target: null };
+function sonarTarget() {
+  if (session && !session.result) { const r = planOf(session.b)[0]; if (r) return { zone: r.pl.id, name: r.pl.name, kind: r.pl.kind }; }
+  const t = sonar.target;
+  if (t && t.zone && t.state !== "found" && Date.now() / 1000 - t.t < 300) return { zone: t.zone, name: t.name, kind: ZI[t.zone] != null ? "zone" : t.zone };
+  return null;
+}
+function beep(freq, ms) {
+  const c = sonar.ctx; if (!c) return;
+  const o = c.createOscillator(), g = c.createGain();
+  o.frequency.value = freq; o.type = "sine";
+  g.gain.setValueAtTime(0.0001, c.currentTime); g.gain.exponentialRampToValueAtTime(0.25, c.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + ms / 1000);
+  o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + ms / 1000 + 0.02);
+}
+// Spoken turn prompts while guiding: when the target changes, and on arrival. The camera knows the
+// person's zone, not which way they face, so it never says "turn left": the beeps steer.
+function say(text) {
+  try { const u = new SpeechSynthesisUtterance(text); u.rate = 1.0; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { /* no voice */ }
+}
+function sonarSpeak(t) {
+  const key = t ? t.zone : null;
+  if (key !== sonar.spokeFor) {
+    sonar.spokeFor = key; sonar.arrived = false;
+    if (t && t.kind === "zone") say("Head for the " + MAP.zones[ZI[t.zone]].name.toLowerCase() + ". Follow the beeping: faster means closer.");
+    else if (t && t.kind === "person") say("Check your pockets and hands.");
+    return;
+  }
+  if (t && t.kind === "zone" && curPersonZone === t.zone && !sonar.arrived) {
+    sonar.arrived = true;
+    const item = (sonar.target && sonar.target.item) || (session && session.item) || selected, b = beliefs[item], i = ZI[t.zone];
+    const under = b && b[2 * i + 1] > b[2 * i];
+    say("You're at the " + MAP.zones[ZI[t.zone]].name.toLowerCase() + ". " + (under ? "Feel under things there." : "Feel along the top of it."));
+  }
+}
+function sonarTick() {
+  if (!sonar.on) return;
+  const t = sonarTarget(); let wait = 1000, note = "Sonar on: waiting for a search.";
+  sonarSpeak(t);
+  if (t && t.kind === "zone") {
+    const tz = MAP.zones[ZI[t.zone]], pz = curPersonZone && ZI[curPersonZone] != null ? MAP.zones[ZI[curPersonZone]] : null;
+    if (!pz) { wait = 1200; beep(440, 70); note = "Guiding to the " + tz.name.toLowerCase() + " · person not seen yet"; }
+    else if (pz.id === tz.id) { wait = 160; beep(1320, 50); note = "At the " + tz.name.toLowerCase() + ": search here"; }
+    else {
+      const d = Math.hypot(pz.x + pz.w / 2 - tz.x - tz.w / 2, pz.y + pz.h / 2 - tz.y - tz.h / 2);
+      wait = Math.max(250, Math.min(1200, 250 + d * 180)); beep(660, 60);
+      note = "Guiding to the " + tz.name.toLowerCase() + " · " + d.toFixed(1) + " m away";
+    }
+  } else if (t) note = t.kind === "person" ? "Check your pockets and hands (no walking needed)" : "Outside the room: no sonar";
+  $("#sonarNote").textContent = note;
+  sonar.timer = setTimeout(sonarTick, wait);
+}
+async function sonarPoll() {
+  if (!sonar.on) return;
+  if (/^https?:$/.test(location.protocol)) {
+    try { const r = await fetch(API + "/api/target", { cache: "no-store" }); if (r.ok) sonar.target = await r.json(); } catch (e) { /* no server */ }
+  }
+  setTimeout(sonarPoll, 1000);
+}
+// ---------- "what just changed": the model's weights moving, in words ----------
+let feed = [];
+function placeLabelOf(pl, b) {
+  if (pl.kind === "person") return "with you";
+  if (pl.kind === "outside") return "outside";
+  return (b[2 * pl.i + 1] > b[2 * pl.i] ? "under things on the " : "on the ") + pl.name.toLowerCase();
+}
+function feedPush(line) {
+  feed.unshift({ t: clockAt(world.tick).slice(0, 5), line });
+  if (feed.length > 8) feed.length = 8;
+  feedDirty = true;
+}
+let feedDirty = false;
+function describeEvent(e) {
+  const id = itemIdOf(e), z = e.zone != null && ZI[e.zone] != null ? MAP.zones[ZI[e.zone]].name.toLowerCase() : e.zone;
+  if (e.event === "person_here") return "you're at the " + z;
+  if (e.event === "person_left") return e.zone ? "you left the " + z : "you left the room";
+  if (!id) return null;
+  const nm = itemById(id).name.toLowerCase();
+  if (e.event === "appeared") return nm + " seen on the " + z + (e.confidence != null ? " (" + Math.round(e.confidence * 100) + "% sure)" : "");
+  if (e.event === "moved") return nm + " now on the " + z;
+  if (e.event === "disappeared") return nm + " gone from view on the " + z + (curPersonZone === e.zone ? " while you were there" : "");
+  return null;
+}
+function feedChanges(prev, events) {
+  const said = events.map(describeEvent).filter(Boolean);
+  const moves = [], named = new Set(events.map(itemIdOf).filter(Boolean));
+  for (const it of ITEMS) {
+    if (!named.has(it.id) && it.id !== selected) continue;   // only the item the event is about, or the one on screen
+    const a = prev[it.id], b = beliefs[it.id];
+    const rows = PLACES.map((pl) => ({ pl, was: placeP(a, pl), now: placeP(b, pl) }))
+      .filter((r) => Math.abs(r.now - r.was) >= (named.has(it.id) ? 0.05 : 0.1)).sort((x, y) => Math.abs(y.now - y.was) - Math.abs(x.now - x.was)).slice(0, 2);
+    if (rows.length) moves.push(it.name.toLowerCase() + ": " + rows.map((r) => placeLabelOf(r.pl, b) + " " + pct(r.was) + " → " + pct(r.now)).join(", "));
+  }
+  if (said.length || moves.length) feedPush((said.length ? said.join("; ") : "time passes") + (moves.length ? " ⇒ " + moves.join(" · ") : ""));
+}
 function applyObs(obs) {
+  curPersonZone = obs.person == null || obs.person === "outside" ? null : obs.person;
+  const prevB = {}; for (const it of ITEMS) prevB[it.id] = beliefs[it.id];
   const before = {}; for (const it of ITEMS) before[it.id] = visibleAt(it.id);
   const time = clockAt(world.tick);
   if (replay) for (const e of obs.events) { logEvent(e); learnFrom(e); }
@@ -1160,6 +1369,8 @@ function applyObs(obs) {
   }
   ST.ticks++;
   personLog.push({ s: nowSecs(), zone: obs.person == null ? null : obs.person });
+  storySteps.push({ obs, s: nowSecs() });
+  if (storySteps.length > 1440) storySteps.splice(0, 360);   // keep about 4 hours
   if (personLog.length > 20000) personLog.splice(0, 5000);
   for (const it of ITEMS) {
     beliefs[it.id] = filterStep(beliefs[it.id], it, obs);
@@ -1178,6 +1389,7 @@ function applyObs(obs) {
     else if (!now && was) logEvent({ time, item: it.id + "-1", zone: was, event: "disappeared" });
     else if (now && was && now !== was) logEvent({ time, item: it.id + "-1", zone: now, event: "moved", confidence });
   }
+  if (replay && obs.events && obs.events.length) feedChanges(prevB, obs.events);
   panelDirty = true;
 }
 
@@ -1305,10 +1517,49 @@ function trailFor(id) {
 }
 function placeName(zone) { return zone === "outside" ? "outside the room" : zone === "person" ? "with you" : MAP.zones[ZI[zone]] ? MAP.zones[ZI[zone]].name.toLowerCase() : zone; }
 function hhmm(secs) { const d = Math.floor(((secs % 86400) + 86400) % 86400); return String(Math.floor(d / 3600)).padStart(2, "0") + ":" + String(Math.floor(d / 60) % 60).padStart(2, "0"); }
+// What most likely happened to an item: the Viterbi path since a little before it was last seen,
+// told with the person's places while it was with them, and the honest alternatives right now.
+function storyFor(it) {
+  const key = it.id + ":" + storySteps.length;
+  if (storyCache.key === key) return storyCache.v;
+  const ls = lastSeen[it.id], since = ls && ls.s != null ? ls.s - 60 : -Infinity;
+  let k0 = storySteps.findIndex((st) => st.s >= since); if (k0 < 0) k0 = 0;
+  let segs = [];
+  try { segs = viterbiStory(it, storySteps.slice(k0), PRIORS[it.id]); } catch (e) { segs = []; }
+  segs = segs.filter((g) => g.to - g.from >= TICK_S || g === segs[segs.length - 1]).slice(-4);
+  for (const g of segs) if (g.kind === "person") {   // where they went while carrying it
+    const v = trailVisits(personLog, g.from, g.to + TICK_S).map((x) => placeName(x.zone)).filter((x, i, a) => a.indexOf(x) === i);
+    g.via = v;
+  }
+  const b = beliefs[it.id], alts = PLACES.map((pl) => ({ pl, p: placeP(b, pl) })).sort((a, c) => c.p - a.p).slice(0, 2);
+  const them = it.plural ? "them" : "it", they = it.plural ? "they" : "it", was = it.plural ? "were" : "was";
+  const zn = (g) => MAP.zones[ZI[g.zone]].name.toLowerCase();
+  const parts = segs.map((g, k) => {
+    const t = hhmm(g.from), prev = segs[k - 1];
+    if (k === 0) return "Your " + it.name.toLowerCase() + " " + was + " " + (g.kind === "zone" ? (g.covered ? "covered on the " : "on the ") + zn(g) : g.text) + " at " + t;
+    if (g.kind === "person") return "most likely you picked " + them + " up at " + t + (g.via && g.via.length > 1 ? " and carried " + them + " to the " + g.via[g.via.length - 1] : "");
+    if (g.kind === "outside") return "most likely " + they + " left the room with you at " + t;
+    if (g.covered) return "most likely " + they + (prev && prev.zone === g.zone ? " got covered there" : " ended up covered on the " + zn(g)) + " at " + t;
+    return "most likely you put " + them + " down on the " + zn(g) + " at " + t;
+  });
+  let text = parts.length ? parts.join(", then ") + "." : "";
+  if (text && alts[1] && alts[1].p >= 0.15) {
+    const pl = alts[1].pl, cov = pl.kind === "zone" && b[2 * pl.i + 1] > b[2 * pl.i];
+    const where = pl.kind === "person" ? "with you" : pl.kind === "outside" ? "outside the room" : (cov ? "under things on the " : "on the ") + pl.name.toLowerCase();
+    text += " " + (they[0].toUpperCase() + they.slice(1)) + " " + (alts[1].p >= 0.4 ? "might also be " : "could also be ") + where + ".";
+  }
+  const v = { segments: segs.map((g) => ({ where: g.text, from: hhmm(g.from), via: g.via || [] })), text };
+  storyCache = { key, v };
+  return v;
+}
 function renderTrail(it) {
   const tr = trailCache && trailCache.id === it.id ? trailCache : (trailCache = Object.assign({ id: it.id }, trailFor(it.id)));
   const parts = tr.visits.slice(-5).map((v) => "<b>" + esc(placeName(v.zone)) + "</b> " + Math.max(1, Math.round((v.to - v.from) / 60)) + " min");
   $("#trailLine").innerHTML = parts.length ? (lastSeen[it.id] ? "Since then you were: " : "Today you were: ") + parts.join(" → ") : "";
+  const st = storyFor(it);
+  $("#storyLine").textContent = st.text;
+  const q = bestQuestion(it, beliefs[it.id], { leftRoom: trailFor(it.id).visits.some((v) => v.zone === "outside") });
+  $("#questionLine").textContent = q ? "Best question: “" + q.text + "” " + (q.gain >= 0 ? "saves about " + q.gain.toFixed(1) + " s on average" : "costs about " + (-q.gain).toFixed(1) + " s more than looking") + (q.worth ? ", so Trace asks it." : ", so Trace just looks (it asks above 3 s, or if you say “help me remember”).") : "";
 }
 function renderBars() {
   const it = itemById(selected), b = beliefs[selected];
@@ -1594,6 +1845,9 @@ function bundleFor(it, ownSession = true) {
     visible_now: visibleAt(it.id), item_plural: !!it.plural,
     search_plan: rank(b).slice(0, 4).map((x) => ({ place: x.pl.name, zone: x.pl.id, probability: +x.p.toFixed(3), word: probWord(x.p), seconds: x.t })),
     // where the person went since it was last seen (SPEC 5.3 memory prompts); times from code
+    story: storyFor(it).segments, story_text: storyFor(it).text,
+    best_question: (() => { const q = bestQuestion(it, b, { leftRoom: trailFor(it.id).visits.some((v) => v.zone === "outside") });
+      return q ? { id: q.id, text: q.text, gain_s: +q.gain.toFixed(1), worth_asking: q.worth, yes: factorsFor(q, true), no: factorsFor(q, false) } : null; })(),
     trail_since_last_seen: trailFor(it.id).visits.slice(-8).map((v) => ({ place: placeName(v.zone), from: hhmm(v.from), minutes: Math.max(1, Math.round((v.to - v.from) / 60)) })),
     // for the guide server's plan update (SPEC 4.4): what Trace believes, per place
     item_name: it.name.toLowerCase(),
@@ -1712,10 +1966,15 @@ function postModel() {
 }
 setInterval(postModel, 1500);   // the last change gets out even if nothing redraws afterwards
 function planOf(b) {   // the plan for the person searching now: their last failed check isn't first again
-  const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \(.*\)$/, "") : null;
+  const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \((quick look|not sure)\)$/, "") : null;
   return rankAfter(b, t, session && session.item ? visibleAt(session.item) : null);
 }
+function renderFeed() {
+  if (!feedDirty) return; feedDirty = false;
+  $("#feedList").innerHTML = feed.map((f) => "<li><b>" + esc(f.t) + "</b>" + esc(f.line) + "</li>").join("");
+}
 function renderAll() {
+  renderFeed();
   postModel();
   $("#clock").textContent = MAP.name + " · " + clockAt(world.tick);
   $("#play").textContent = session ? "Paused while searching" : running ? "Pause" : "Play";
@@ -2890,6 +3149,13 @@ if (QS.get("room") === "demo") loadMap(JSON.parse(JSON.stringify(DEFAULT_MAP)), 
 else try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved), false); } catch (e) { /* none saved, or unreadable */ }
 dFromMap();
 loadHab();
+$("#sonarChk").onchange = (e) => {
+  sonar.on = e.target.checked; clearTimeout(sonar.timer);
+  if (sonar.on) {
+    try { sonar.ctx = sonar.ctx || new (window.AudioContext || window.webkitAudioContext)(); sonar.ctx.resume(); } catch (err) { /* no audio */ }
+    sonarPoll(); sonarTick();
+  } else $("#sonarNote").textContent = "";
+};
 $("#seedBtn").onclick = () => { seedHeat(120); renderHeat(); };
 $("#seedClear").onclick = () => { clearSeed(); renderHeat(); };
 if (QS.get("seed") === "morning") setTimeout(() => { seedHeat(120); renderHeat(); }, 500);

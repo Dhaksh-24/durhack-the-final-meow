@@ -62,6 +62,10 @@ def apply_evidence(places, evidence, S):
         p = by_id.get(ev["zone"])
         if not p:
             continue
+        if "fv" in ev:   # an answer to Trace's question: Bayes factors for this place
+            p["pv"] *= float(ev["fv"])
+            p["pc"] *= float(ev.get("fc", 1.0))
+            continue
         w = SURE_W.get(ev.get("sure"), 1.0)
         kind = p.get("kind", "zone")
         if kind == "zone":
@@ -210,7 +214,9 @@ Rules (they are checked by code; break one and your answer is thrown away):
 - chirp: the first place's zone if it has "phone": true and it's very likely or probably there, else null.
 MODE default: one or two short sentences.
 MODE blind: name where it is relative to big furniture and the person, step by step, no colours, never "over there".
-MODE dementia: one calm step only, short words, you may add one memory prompt from TRAIL ("you were at the desk around two")."""
+MODE dementia: one calm step only, short words, you may add one memory prompt from TRAIL ("you were at the desk around two").
+STORY is the model's most likely account of what happened to the item (times from it are fine). If the
+person asks what happened, retell it in one or two sentences, saying "most likely"; never present it as certain."""
 
 
 def _sanitize_evidence(raw, places):
@@ -259,6 +265,7 @@ def ask(bundle, utterance, mode="default", llm=None):
                  "ALREADY_CHECKED": bundle.get("already_checked") or [],
                  "LAST_SEEN": bundle.get("last_seen"),
                  "TRAIL": bundle.get("trail_since_last_seen") or [],
+                 "STORY": bundle.get("story") or [],
                  "PLAN": [{k: r[k] for k in ("zone", "name", "word", "seconds", "covered", "phone")} for r in plan[:4]]}
         out = llm_out = use_llm(WORD_SYSTEM, json.dumps(facts))
         say = str(llm_out.get("say") or "").strip()
@@ -280,6 +287,9 @@ def ask(bundle, utterance, mode="default", llm=None):
 SESSION_IDLE = 15 * 60       # forget a search after this long without a word about it
 ITEM_ALIASES = {"keys": r"\b(keys?|keyring)\b", "wallet": r"\b(wallet|purse|cards?)\b",
                 "glasses": r"\b(glasses|specs|spectacles)\b"}
+YES = re.compile(r"^(yes|yeah|yep|yup|i did|i think so|maybe yes|probably)\b")
+NO = re.compile(r"^(no|nope|nah|i didn.?t|don.?t think so|not that i know)\b")
+WHAT_HAPPENED = re.compile(r"\b(what happened|how did i lose|where did i (put|leave)|what did i do with)\b")
 AGAIN = re.compile(r"^(again|repeat|repeat that|say (that|it) again|what|pardon|sorry what)$")
 NOT_THERE = re.compile(r"^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$")
 FOUND_IT = re.compile(r"^(yes |yay |great )?(i )?(found|got|have) (it|them)( now)?$|^found$")
@@ -401,6 +411,10 @@ def validate_say(say, places_said, plan, all_places, tried, facts):
     return True, ""
 
 
+# Where Trace is sending the person right now, for the sonar on /sim: {item, zone, name, state, t}.
+TARGET = {}
+
+
 def chat(message, history, model, sessions, mode="default", llm=None, now=None):
     """One turn of trace.html's conversation. model: {"items": {id: bundle}} posted by the analytics
     page. sessions: a dict the server keeps between turns. Returns
@@ -434,7 +448,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
     def plan_now():   # as rank(), but the place they just checked isn't suggested again straight away,
         # unless a phone sees the item there now: then again_text() asks for a careful second look
         p = rank(apply_evidence(base, ses["evidence"], S), S)
-        last = re.sub(r" \(.*\)$", "", ses["tried"][-1]) if ses["tried"] else None
+        last = re.sub(r" \((quick look|not sure)\)$", "", ses["tried"][-1]) if ses["tried"] else None
         if last and len(p) > 1 and p[0]["name"] == last and p[0]["zone"] != bundle.get("visible_now"):
             p[0], p[1] = p[1], p[0]
         return p
@@ -442,6 +456,10 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
 
     def turn(reply, state="searching", evidence=(), source="page", why="", chirp=None):
         ses["last"] = reply
+        top = plan[0] if plan and state != "found" else None
+        TARGET.clear()
+        TARGET.update({"item": want, "zone": top["zone"] if top else None, "name": top["name"] if top else None,
+                       "state": state, "t": time.time()})
         if state == "found":
             ses["found"] = True
         return {"reply": reply, "item": want, "state": state, "chirp": chirp,
@@ -451,6 +469,23 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         return turn("Found %s: %s." % ("them" if bundle.get("item_plural") else "it", name.lower()), "found",
                     [{"zone": zone, "part": "all", "found": True, "sure": "high"}])
 
+    # Trace's one best question (the page's model picks it by expected value of information)
+    bq = bundle.get("best_question")
+    if ses.get("q") and (YES.match(n) or NO.match(n)):
+        q, yes = ses.pop("q"), bool(YES.match(n))
+        ses["evidence"].extend(q["yes"] if yes else q["no"])
+        plan = plan_now()
+        return turn("Thanks. " + template(bundle, plan, 0))
+    ses.pop("q", None)
+    asked_for = re.search(r"\b(help me remember|ask me|any questions?|question)\b", n)
+    if bq and asked_for:
+        ses["asked"] = True
+        ses["q"] = bq
+        return turn(bq["text"], why="best question: about %s s saved on average" % bq.get("gain_s"))
+    if bq and bq.get("worth_asking") and not ses.get("asked") and not ses["tried"] and re.search(r"\bwhere\b", n) and not bundle.get("visible_now"):
+        ses["asked"] = True
+        ses["q"] = bq
+        return turn("Before you look: " + bq["text"], why="best question, saves about %s s on average" % bq.get("gain_s"))
     # the three simple commands never need the LLM
     if AGAIN.match(n) and ses["last"]:
         return turn(ses["last"])
@@ -460,6 +495,8 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         ses["tried"].append(plan[0]["name"])
         plan = plan_now()
         return turn(template(bundle, plan, len(ses["tried"]), ses["tried"]), evidence=[ev])
+    if WHAT_HAPPENED.search(n) and bundle.get("story_text"):
+        return turn(bundle["story_text"])
     if FOUND_IT.match(n) and plan and ses["last"]:
         return found_at(plan[0]["zone"], plan[0]["name"])
 
