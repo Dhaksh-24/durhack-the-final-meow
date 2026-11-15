@@ -22,3 +22,4 @@ memory/
 events.jsonl
 cameras.json
 zones.json
+baseline/

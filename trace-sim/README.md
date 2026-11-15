@@ -9,6 +9,13 @@ Open `index.html` in a browser (needs internet once, for three.js).
 - **Live metrics:** room size and area, what's in it, the phone network (sightings per phone), how often the model's top guess is right, its uncertainty in bits, and a test of where the next phone would help most.
 - **Map a real room from camera photos:** click a sheet of known size on the floor in each phone's photo, then the front edge of each piece of furniture; the 3D room is rebuilt in metres. Also outputs each phone's pixel-to-floor matrix for the tracker.
 
+**Cameras to 3D room (demo set-up):**
+1. Phones on their stands, streaming (IP Webcam or DroidCam), cameras listed in `cameras.json` as for `multicam.py`.
+2. `python snap.py` saves one photo per camera to `baseline/` (git-ignored; it only needs OpenCV).
+3. Open the page, "Map a real room from camera photos": enter the room's width and depth, "Add phone photos" → the files in `baseline/`.
+4. In each photo click the four corners of the sheet on the floor, then the two ends of each piece of furniture's front edge; name it.
+5. "Build the room". The browser remembers the room on reload. "Copy the zone map" gives the zone ids `multicam.py` should use, and "Camera calibration for the tracker" gives `baseline/calibration.json`.
+
 Event format the model reads (one JSON object per line, full contract in `SPEC.md` 3.2):
 
     {"time": "14:05:10", "t": 1794696414.7, "item": "keys-1", "category": "keys", "zone": "sofa", "event": "appeared", "confidence": 0.82, "camera": "phone-1"}

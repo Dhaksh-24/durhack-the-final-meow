@@ -232,9 +232,9 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
       <ol class="steps">
         <li>Measure the room: its width along the back wall and its depth.</li>
         <li>Lay a rectangle of known size flat on the floor where a phone can see it, long side parallel to the back wall: a flip-chart sheet or a 1 m square of tape works best, A4 at a pinch. Measure its back-left corner from the left wall and the back wall.</li>
-        <li>Add a photo from each phone, taken from where it will stand. Best: the baseline photos <code>multicam.py</code> saves in its <code>baseline</code> folder at start-up, one per camera, named after the camera.</li>
+        <li>Add a photo from each phone, taken from where it will stand. Easiest: run <code>python snap.py</code> next to <code>multicam.py</code> (same cameras) and add the files it saves in <code>baseline/</code>, one per camera, named after the camera.</li>
         <li>Click the sheet's four corners. The room's grid appears; press <b>Turn the sheet</b> until it lines up with the walls.</li>
-        <li>For each piece of furniture, click the two ends of its front edge where it meets the floor, name it, then build the room.</li>
+        <li>For each piece of furniture, click the two ends of its front edge where it meets the floor, name it, then build the room. This browser remembers the room (not the photos) until you load another.</li>
       </ol>
       <div class="controls">
         <label class="check">Room name <input type="text" id="rmName" value="Mapped room" style="width:150px"></label>
@@ -1219,6 +1219,7 @@ function loadMap(obj) {
   }
   if (!obj.zones.some((z) => z.camera)) throw new Error("At least one zone needs \"camera\": true, or Trace can never see anything.");
   setupMap(obj); resetDay(); build3D(); $("#mapTitle").textContent = MAP.name; $("#mapText").value = mapToText(); renderAll();
+  try { localStorage.setItem("trace.map", mapToText()); } catch (e) { /* private window: not remembered */ }
 }
 
 // ---------- 3D low-poly room, built from the zone map ----------
@@ -2020,6 +2021,8 @@ resetDay(); renderLegend(); renderScenarios(); renderAssumptions(); renderAll();
 if (HAS3D) { try { build3D(); } catch (err) { console.warn(err); } }
 if (!R3) { $("#viewSeg").hidden = true; }
 setView(R3 ? "3d" : "2d");
+// Reopen the last room loaded or mapped in this browser (the zone map only, never photos).
+try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved)); } catch (e) { /* none saved, or unreadable */ }
 
 let lastT = performance.now(), acc = 0, lastPanel = 0;
 function frame(now) {
