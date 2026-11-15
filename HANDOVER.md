@@ -6,6 +6,36 @@ left. Detail lives in `SPEC.md` (design) and `RUN_LIVE.md` (the live chain, piec
 **Trace in one line:** phones watch a room; a probability model works out where your keys,
 wallet and glasses probably are; Trace talks you to them, and shows it all on a 3D model of the room.
 
+
+---
+
+## demo-final: the demo, in one command
+
+Branch **`demo-final`** (demo14 + the camera fallback in Ask Trace). On Windows, Smart App Control
+blocks `pip.exe`, so use `python -m pip`:
+
+```powershell
+git fetch origin
+git checkout demo-final
+python -m pip install -r requirements.txt
+python run_trace.py --present --min-prob keys=0.65
+```
+
+(`cameras.json` lists the phones; see section 2. No cameras? `python run_trace.py --demo`.)
+
+**Tuning the keys threshold.** `--min-prob keys=0.65` lowers the CLIP check for keys from
+verifier.json's strict 0.86. To pick the number from real frames, put the keys where the demo
+will have them and run `python run_trace.py --verifier-debug`. Each candidate box prints a line:
+
+    verifier: yolo keys 0.123 | keys=0.70 glasses=0.10 other=0.20 | reject
+
+Read the `keys=` value on the real keys, and on things that aren't keys (cloth, box edges), then
+choose `--min-prob keys=P` between the two: below the real keys, above the false alarms.
+
+**If the walking directions misbehave** ("turn left" when it shouldn't), add `--no-nav`:
+`python run_trace.py --present --min-prob keys=0.65 --no-nav`. Trace stops giving directions;
+people are still detected, so picked-up vs covered still works.
+
 ---
 
 ## 1. Set up once (5 min)

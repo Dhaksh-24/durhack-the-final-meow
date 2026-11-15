@@ -30,6 +30,7 @@ ARRIVE_M = 0.45        # this close to the target = "stop, reach down"
 MOVE_M = 0.25          # movement needed before we trust a heading
 HEADING_KEEP_S = 30.0  # how long a heading is trusted after you stop moving
 STALE_S = 3.0          # a view older than this = the camera stopped
+ENABLED = True         # multicam.py --no-nav: compute() always says no_target, so trace.html stays quiet
 
 _lock = threading.Lock()
 _view = {}             # the latest analysed frame
@@ -71,7 +72,7 @@ def _steps(d):
 
 
 def compute(target):
-    r = _compute(target)
+    r = _compute(target) if ENABLED else {"available": True, "state": "no_target", "say": ""}
     with _lock:
         _last.clear()
         _last.update(r, at=time.time())

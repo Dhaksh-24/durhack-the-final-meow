@@ -380,6 +380,39 @@ def again_text(bundle, r0, tried, names):
     return s + "Check %s again%s: %s there, about %s seconds." % (where_text(r0), careful, r0["word"], r0["seconds"])
 
 
+def ago_words(secs):
+    """Seconds -> the page's agoText wording ("just now", "5 minutes ago", "2 h 10 min ago")."""
+    s = max(0, int(secs))
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        m = s // 60
+        return "%d minute%s ago" % (m, "" if m == 1 else "s")
+    return "%d h %d min ago" % (s // 3600, (s % 3600) // 60)
+
+
+def camera_reply(bundle, cam, now):
+    """The model hasn't heard of the item (no zone event reached it: the item is outside every zone
+    box drawn in the camera window, or the zone names don't match the room), but the camera
+    tracker has it. cam: the newest /api/items entry of that kind. Returns what to say, or None
+    when the model already knows (it then answers as usual)."""
+    if not cam or not cam.get("last_time"):
+        return None
+    b = bundle or {}
+    if b.get("visible_now") or (b.get("last_seen") and not cam.get("in_view")):
+        return None
+    noun = b.get("item_name") or cam.get("category") or "item"
+    plural = bool(b.get("item_plural")) or noun.endswith("s")
+    them = "them" if plural else "it"
+    where = (cam.get("camera_name") or cam.get("camera") or "").strip()
+    on = " on the %s camera" % where if where else ""
+    near = ", near the %s" % str(cam["zone"]).lower() if cam.get("zone") else ""
+    if cam.get("in_view"):
+        return "I can see your %s%s right now%s." % (noun, on, near)
+    return "I last spotted your %s%s %s%s. That's the latest a camera saw %s." % (
+        noun, on, ago_words(now - cam["last_time"]), near, them)
+
+
 def template(bundle, plan, tries, tried=()):
     """The page's own sentence (trace-sim sentence()), in Python: what Trace says without the LLM.
     tries: how many checks so far; tried: their place names (to spot a place suggested again)."""

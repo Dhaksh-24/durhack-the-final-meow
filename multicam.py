@@ -864,6 +864,11 @@ def main():
     ap.add_argument("--min-prob", action="append", default=[], metavar="ITEM=P",
                     help="override verifier.json's threshold for one item, e.g. --min-prob keys=0.7 "
                          "(keys default 0.86 is strict: lower it if the real keys never get a box)")
+    ap.add_argument("--verifier-debug", action="store_true",
+                    help="print one line per candidate box per frame: YOLO category and score, the CLIP "
+                         "probabilities and pass/reject (to choose --min-prob from real numbers)")
+    ap.add_argument("--no-nav", action="store_true",
+                    help="turn off the live walking directions (nav.py); people are still detected")
     ap.add_argument("--person-conf", type=float, default=PERSON_CONF,
                     help=f"YOLO-World 'person' boxes below this are ignored (default {PERSON_CONF}; "
                          "a phone looking straight down sees heads and arms, so try 0.15 if "
@@ -895,6 +900,15 @@ def main():
     detector = detect.Detector(prompts=prompts, conf=args.conf, imgsz=args.imgsz)
     PERSON_CONF = args.person_conf
     nav.VIEW_WIDTH_M, nav.MIRROR = args.view_width_m, args.nav_mirror
+    if args.no_nav:
+        nav.ENABLED = False
+        print("  walking directions off (--no-nav)")
+    if args.verifier_debug:
+        if detector.verifier is None:
+            print("  --verifier-debug ignored: no verifier.json")
+        else:
+            detector.debug = True
+            print("  verifier debug on: one line per candidate box")
     for spec in args.min_prob:
         item, _, p = spec.partition("=")
         if detector.verifier is None:

@@ -201,7 +201,7 @@ def _x_overlap_frac(a, b):
 
 def _plural(name):
     """Crude but good enough for demo sentences: keys/glasses are, phone is."""
-    return name.endswith("s") and not name.endswith("ss")
+    return name.endswith("glasses") or (name.endswith("s") and not name.endswith("ss"))
 
 
 # ---------------------------------------------------------------- the mapper

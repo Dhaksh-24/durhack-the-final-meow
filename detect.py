@@ -206,6 +206,7 @@ class Detector:
         conf: YOLO-World threshold; defaults to PROPOSE_CONF with the check, CONF without."""
         prompts = prompts or PROMPTS
         self.verifier = None
+        self.debug = False   # multicam.py --verifier-debug: print every verified candidate box
         if verify and os.path.exists(VERIFIER_FILE):
             self.verifier = ClipVerifier()
             print("verifier on: %s (classes %s)" % (os.path.basename(VERIFIER_FILE),
@@ -268,6 +269,10 @@ class Detector:
             for cat, box, score in p:
                 # a category the verifier wasn't trained on passes through unchecked
                 j = self.verifier.judge(probs[k]) if cat in self.verifier.classes else (cat, score)
+                if self.debug and cat in self.verifier.classes:
+                    print("verifier: yolo %s %.3f | %s | %s" % (
+                        cat, score, " ".join("%s=%.2f" % (c, probs[k][i]) for i, c in enumerate(self.verifier.classes)),
+                        "PASS %s %.2f" % j if j is not None else "reject"), flush=True)
                 if j is not None:
                     kept.append((j[0], box, j[1], embs[k]))
                 k += 1
