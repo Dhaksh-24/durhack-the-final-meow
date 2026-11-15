@@ -1477,15 +1477,17 @@ function listenOnce() {
 function renderEvents() {
   $("#events").textContent = events.slice(-14).reverse().map((e) => JSON.stringify(e)).join("\n");
 }
-function bundleFor(it) {
-  const b = session && session.item === it.id ? session.b : beliefs[it.id];
+function bundleFor(it, ownSession = true) {
+  const mine = ownSession && session && session.item === it.id;
+  const b = mine ? session.b : beliefs[it.id];
   return {
     task: "Tell the user where to look, in one or two short sentences. Use only these facts. Say 'last seen' and 'likely', never that it is definitely there. Never say who moved it.",
     item: it.id + "-1",
     zones: MAP.zones.map((z) => ({ id: z.id, name: z.name, phone: z.camera })),
     last_seen: lastSeen[it.id] ? { zone: lastSeen[it.id].zone, time: clockAt(lastSeen[it.id].tick).slice(0, 5), ago: agoText(world.tick - lastSeen[it.id].tick) } : null,
     recent_events: events.filter((e) => e.item === it.id + "-1").slice(-6),
-    already_checked: session && session.item === it.id ? session.tried : [],
+    already_checked: mine ? session.tried : [],
+    visible_now: visibleAt(it.id), item_plural: !!it.plural,
     search_plan: rank(b).slice(0, 4).map((x) => ({ place: x.pl.name, zone: x.pl.id, probability: +x.p.toFixed(3), word: probWord(x.p), seconds: x.t })),
     // where the person went since it was last seen (SPEC 5.3 memory prompts); times from code
     trail_since_last_seen: trailFor(it.id).visits.slice(-8).map((v) => ({ place: placeName(v.zone), from: hhmm(v.from), minutes: Math.max(1, Math.round((v.to - v.from) / 60)) })),
@@ -1571,7 +1573,23 @@ function nextPhone() {
   step();
 }
 
+// Real events only: share the model's current belief for every item with the server, so the
+// proper front end (trace.html) can answer from it. At most once a second, only when it changed.
+let modelPost = { at: 0, last: "", busy: false };
+function postModel() {
+  if (!replay || modelPost.busy || performance.now() - modelPost.at < 1000) return;
+  const items = {}; for (const it of ITEMS) items[it.id] = bundleFor(it, false);
+  const body = JSON.stringify({ room: MAP.name, items });
+  if (body === modelPost.last) return;
+  modelPost.busy = true; modelPost.at = performance.now();
+  fetch(API + "/api/model", { method: "POST", headers: { "Content-Type": "application/json" }, body })
+    .then((r) => { if (r.ok) modelPost.last = body; })
+    .catch(() => { /* no server: the analytics page still works on its own */ })
+    .finally(() => { modelPost.busy = false; });
+}
+setInterval(postModel, 1500);   // the last change gets out even if nothing redraws afterwards
 function renderAll() {
+  postModel();
   $("#clock").textContent = MAP.name + " · " + clockAt(world.tick);
   $("#play").textContent = session ? "Paused while searching" : running ? "Pause" : "Play";
   $("#play").disabled = !!session;
