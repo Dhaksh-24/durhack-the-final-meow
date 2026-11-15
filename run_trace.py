@@ -8,7 +8,10 @@
 What it starts:
   cameras / --video  ->  multicam.py   (detects items; serves the page on :8000; starts bridge.py)
   --demo             ->  trace_api.py (serves the page) + bridge.py + events_adapter.py --demo, looping
-Then it opens http://localhost:8000/sim?live in your browser. Ctrl+C stops everything.
+Then it opens two tabs:
+  http://localhost:8000/sim?live  the model + 3D room (keep it open: it runs the model; big screen)
+  http://localhost:8000/          trace.html, where you talk to Trace ("Hey Trace", voice)
+Ctrl+C stops everything.
 
 cameras.json (see cameras.example.json): [{"name": "Sofa", "source": "http://192.168.1.23:4747/video"}, ...]
 """
@@ -41,6 +44,14 @@ def wait_for_server(seconds):
         except Exception:
             time.sleep(1)
     return False
+
+
+def open_pages(url):
+    webbrowser.open(url)
+    time.sleep(1)
+    webbrowser.open("http://localhost:8000/")
+    print(f"\nOpened two tabs:\n  {url}   the model + 3D room: keep it open, it runs the model (big screen)")
+    print("  http://localhost:8000/   talk to Trace here (\"Hey Trace\", or type)")
 
 
 def start(args, **kw):
@@ -84,8 +95,8 @@ def main():
             if not wait_for_server(20):
                 print("The page server didn't start: look for an error above.")
                 return
-            webbrowser.open(url)
-            print(f"\nOpened {url}\nA fake session plays every minute: keys appear on the desk, then move to the sofa.")
+            open_pages(url)
+            print("A fake session plays every minute: keys appear on the desk, then move to the sofa.")
             print("Ctrl+C to stop.\n")
             while True:
                 subprocess.run([PY, str(ROOT / "events_adapter.py"), "--demo", "--out", str(EVENTS)],
@@ -100,8 +111,7 @@ def main():
             if not wait_for_server(180):
                 print("multicam.py didn't start its page server: look for an error above.")
                 return
-            webbrowser.open(url)
-            print(f"\nOpened {url}")
+            open_pages(url)
             print("1. In the multicam window, drag a box over each piece of furniture a camera watches and")
             print("   type its name in this terminal, exactly as in the room map (Sofa, Desk, Coat hook...).")
             print("2. If the page shows the wrong room, use 'Draw the room' there and press 'Build the room'.")

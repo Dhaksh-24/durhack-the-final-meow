@@ -40,8 +40,13 @@ Optional, for the LLM wording: create a file `.env` in the repo folder containin
 For the real thing, first copy `cameras.example.json` to `cameras.json` and put in each phone's
 DroidCam address (the phone app shows it, e.g. `http://192.168.1.23:4747/video`).
 
-The page is **http://localhost:8000/sim**. "Presentation view" / "Show everything" switches between
-the clean judge view and the full page.
+It opens **two tabs**, and both matter:
+- **http://localhost:8000/sim**: the model and the 3D room. **Keep it open** (in Real events, which
+  `run_trace.py` does for you): it runs the probability model and sends it to the server. Put it on
+  the big screen. "Presentation view" / "Show everything" switches between the clean judge view and
+  the full page.
+- **http://localhost:8000/**: `trace.html`, where you talk to Trace ("Hey Trace", the mascot, voice).
+  Its answers come from the model running in the other tab.
 
 ---
 
@@ -70,6 +75,7 @@ the clean judge view and the full page.
 | Green boxes, but nothing happens on the page | zone names don't match the room | read the note under the event log ("zones not in the room map") and rename |
 | "Live: couldn't connect" | the bridge didn't start | `python bridge.py --file trace-events.jsonl` in another terminal |
 | Trace answers but doesn't speak | browser voice blocked | click anywhere on the page once, then ask again |
+| Trace's answers are vague / ignore the cameras | the `/sim` tab isn't open or isn't live | open `http://localhost:8000/sim?live`; `http://localhost:8000/api/model` should show items |
 | Wrong room on the page | an old room is loaded | "Draw the room" → Build, or "Load a different room" |
 
 ---
@@ -77,6 +83,7 @@ the clean judge view and the full page.
 ## 5. The demo, step by step
 
 1. `python run_trace.py --present` before the judges arrive; room drawn, zones named, keys tested.
+   Big screen: the `/sim` tab (3D room + cameras). The presenter talks to the `/` tab (laptop or phone).
 2. Presenter puts the keys down in view (the room reacts), walks around, and the keys end up hidden
    (pocketed and dropped elsewhere, or under a cushion) while no phone sees.
 3. Presenter is blindfolded, **a teammate stays beside them**, clear floor.
@@ -101,8 +108,8 @@ that morning (`trace-events.jsonl`, copy it somewhere first). Same 3D room, same
 | `bridge.py` | streams `trace-events.jsonl` to the page |
 | `trace_api.py` | the web server: page, live video, voice, `/api/ask`, `/api/room`, phone beeper |
 | `guide.py` | the LLM: turns what you say into evidence, words the answer (Gemini, 2 calls max) |
-| `trace-sim/index.html` | the page: model, 3D room, Ask Trace |
-| `trace.html` | Adel's camera console (setup and debugging) at `http://localhost:8000/` |
+| `trace-sim/index.html` | `/sim`: runs the model, 3D room, cameras, metrics (keep it open) |
+| `trace.html` | `/`: the front end you talk to ("Hey Trace", voice, mascot) |
 | `tts.py` | the offline voice |
 
 Not needed for the demo (benchmarking and earlier experiments): `bench.py`, `pull_lvis.py`,
@@ -121,7 +128,7 @@ Never commit: `memory/`, `baseline/`, `events.jsonl`, `trace-events.jsonl`, `roo
 | 3D room, drawing the room from a photo/video, metrics | **Done** | in the browser |
 | Events from cameras (`multicam.py` → `trace-events.jsonl`) | **Done, not tried on real phones** | fake camera frames: correct appeared / moved / person events |
 | Live link to the page (bridge, Connect live, camera feeds beside the 3D room) | **Done** | end to end with fake cameras and with `--demo` |
-| Ask Trace: text, voice in, voice out, LLM wording, validation, phone beep | **Done, not tried with a real key** | `python test_guide.py` (rules path, no network) |
+| Talking to Trace (`trace.html` + `/sim` model + LLM wording, validation, phone beep) | **Done, not tried with a real key** | `python test_guide.py` (rules path, no network) |
 | One-command start, presentation view, shared room | **Done** | `run_trace.py --demo` end to end |
 | **Your real keys seen by a phone in the demo room** | **Not tested: the biggest risk** | benchmark said keys are the hardest object; test tonight / first thing |
 | Real phones → page → voice, start to finish | **Not tested** | needs the demo room |
