@@ -210,7 +210,9 @@ Rules (they are checked by code; break one and your answer is thrown away):
 - chirp: the first place's zone if it has "phone": true and it's very likely or probably there, else null.
 MODE default: one or two short sentences.
 MODE blind: name where it is relative to big furniture and the person, step by step, no colours, never "over there".
-MODE dementia: one calm step only, short words, you may add one memory prompt from TRAIL ("you were at the desk around two")."""
+MODE dementia: one calm step only, short words, you may add one memory prompt from TRAIL ("you were at the desk around two").
+STORY is the model's most likely account of what happened to the item (times from it are fine). If the
+person asks what happened, retell it in one or two sentences, saying "most likely"; never present it as certain."""
 
 
 def _sanitize_evidence(raw, places):
@@ -259,6 +261,7 @@ def ask(bundle, utterance, mode="default", llm=None):
                  "ALREADY_CHECKED": bundle.get("already_checked") or [],
                  "LAST_SEEN": bundle.get("last_seen"),
                  "TRAIL": bundle.get("trail_since_last_seen") or [],
+                 "STORY": bundle.get("story") or [],
                  "PLAN": [{k: r[k] for k in ("zone", "name", "word", "seconds", "covered", "phone")} for r in plan[:4]]}
         out = llm_out = use_llm(WORD_SYSTEM, json.dumps(facts))
         say = str(llm_out.get("say") or "").strip()
@@ -280,6 +283,7 @@ def ask(bundle, utterance, mode="default", llm=None):
 SESSION_IDLE = 15 * 60       # forget a search after this long without a word about it
 ITEM_ALIASES = {"keys": r"\b(keys?|keyring)\b", "wallet": r"\b(wallet|purse|cards?)\b",
                 "glasses": r"\b(glasses|specs|spectacles)\b"}
+WHAT_HAPPENED = re.compile(r"\b(what happened|how did i lose|where did i (put|leave)|what did i do with)\b")
 AGAIN = re.compile(r"^(again|repeat|repeat that|say (that|it) again|what|pardon|sorry what)$")
 NOT_THERE = re.compile(r"^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$")
 FOUND_IT = re.compile(r"^(yes |yay |great )?(i )?(found|got|have) (it|them)( now)?$|^found$")
@@ -440,6 +444,8 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         ses["tried"].append(plan[0]["name"])
         plan = plan_now()
         return turn(template(bundle, plan, len(ses["tried"])), evidence=[ev])
+    if WHAT_HAPPENED.search(n) and bundle.get("story_text"):
+        return turn(bundle["story_text"])
     if FOUND_IT.match(n) and plan and ses["last"]:
         return found_at(plan[0]["zone"], plan[0]["name"])
 
