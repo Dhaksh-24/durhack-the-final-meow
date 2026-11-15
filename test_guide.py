@@ -431,5 +431,17 @@ finally:
     guide.load_key = guide_key
     srv.stop()
 
+print("\ncamera memory when the model has no sighting")
+cam = {"id": 7, "category": "keys", "camera_name": "Phone 1", "zone": "Desk", "last_time": 1000, "in_view": True}
+check(guide.camera_reply(dict(BUNDLE, last_seen=None, visible_now=None), cam, 1005) ==
+      "I can see your keys on the Phone 1 camera right now, near the desk.", "in view on a camera the model never heard of: says so")
+old = dict(cam, in_view=False, zone=None)
+check(guide.camera_reply(dict(BUNDLE, last_seen=None), old, 1000 + 300) ==
+      "I last spotted your keys on the Phone 1 camera 5 minutes ago. That's the latest a camera saw them.", "seen earlier: when and on which camera")
+check(guide.camera_reply(dict(BUNDLE, last_seen={"zone": "desk"}), old, 1300) is None, "model has a last sighting: the model answers")
+check(guide.camera_reply(dict(BUNDLE, visible_now="desk"), cam, 1005) is None, "model sees it now: the model answers")
+check(guide.camera_reply(dict(BUNDLE, last_seen={"zone": "sofa"}), cam, 1005) is not None, "camera sees it now, model only remembers: camera wins")
+check(guide.camera_reply(BUNDLE, None, 1005) is None, "camera never saw it: nothing to add")
+
 print("\nall checks passed" if ok else "\nSOME CHECKS FAILED")
 raise SystemExit(0 if ok else 1)
