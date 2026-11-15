@@ -228,17 +228,17 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
   <div class="full">
     <section class="card" id="drawCard">
       <h2>Draw the room (top view)</h2>
-      <p class="lead">The quick way to model a room. Type its size, then drag one box for each piece of furniture, as seen from above. To trace instead of measuring, put a top-view photo, a video frame or a sketch underneath. Nothing is uploaded.</p>
+      <p class="lead">The quick way to model a room. Type its size, then drag one box for each piece of furniture, as seen from above. To trace instead of measuring, add a phone photo or video frame from any angle and click the room's 4 floor corners: the page flattens it into a true top view. Nothing is uploaded.</p>
       <div class="controls">
         <label class="check">Room name <input type="text" id="dName" value="Demo room" style="width:150px"></label>
         <label class="check">Width (along the back wall) <input type="number" id="dW" value="6" step="0.1" min="1" max="30"> m</label>
         <label class="check">Depth <input type="number" id="dH" value="5" step="0.1" min="1" max="30"> m</label>
       </div>
       <div class="controls">
-        <label class="btn" for="dFile" style="display:inline-block">Trace a top-view photo or video</label>
+        <label class="btn" for="dFile" style="display:inline-block">Trace a phone photo or video</label>
         <input type="file" id="dFile" accept="image/*,video/*" hidden>
         <button class="btn primary" id="dFrame" type="button" hidden>Use this video frame</button>
-        <button class="btn" id="dOutline" type="button" hidden>Redo the room outline</button>
+        <button class="btn" id="dOutline" type="button" hidden>Redo the corners</button>
         <button class="btn" id="dNoPhoto" type="button" hidden>Remove the photo</button>
         <button class="btn" id="dFromRoom" type="button">Start from the room above</button>
         <button class="btn" id="dClear" type="button">Clear the furniture</button>
@@ -2005,13 +2005,35 @@ function samplePhoto() {
 
 // ---------- wiring ----------
 // ---------- draw the room from above ----------
-// Everything is kept in metres. With a photo underneath, the first drag marks the room's floor
-// in the picture; from then on the picture is stretched so that outline fills the room.
-const DR = { zones: [], img: null, outline: null, outW: 1000, drag: null, sel: -1 };
+// Everything is kept in metres. With a photo or video frame underneath (any angle), the user
+// clicks the room's 4 floor corners; a homography (room metres -> picture pixels) then
+// flattens the picture into a true top view, which is traced like a floor plan.
+const DR = { zones: [], img: null, pts: [], warp: null, drag: null, sel: -1 };
+const CORNER_NAMES = ["back-left", "back-right", "front-right", "front-left"];
 const DSNAP = 0.05, DPX = 1000;
 function dDims() { return { W: Math.max(1, +$("#dW").value || 6), H: Math.max(1, +$("#dH").value || 5) }; }
 function dImgSize() { const i = DR.img; return i ? [i.naturalWidth || i.videoWidth || i.width, i.naturalHeight || i.videoHeight || i.height] : [0, 0]; }
-function dOutlining() { return !!DR.img && !DR.outline; }
+function dOutlining() { return !!DR.img && !DR.warp; }
+// Flatten the picture: for every top-view pixel, find where that floor point is in the picture.
+function dMakeWarp() {
+  const { W, H } = dDims(), [iw, ih] = dImgSize();
+  const Hm = solveH([[0, 0], [W, 0], [W, H], [0, H]], DR.pts);   // metres -> picture pixels
+  if (!Hm) return null;
+  const src = document.createElement("canvas"); src.width = iw; src.height = ih;
+  const sctx = src.getContext("2d", { willReadFrequently: true }); sctx.drawImage(DR.img, 0, 0, iw, ih);
+  const sd = sctx.getImageData(0, 0, iw, ih).data;
+  const ow = DPX, oh = Math.round(DPX * H / W), out = document.createElement("canvas"); out.width = ow; out.height = oh;
+  const octx = out.getContext("2d"), od = octx.createImageData(ow, oh), d = od.data, k = ow / W;
+  for (let y = 0; y < oh; y++) for (let x = 0; x < ow; x++) {
+    const mx = (x + 0.5) / k, my = (y + 0.5) / k, w = Hm[6] * mx + Hm[7] * my + Hm[8];
+    const u = Math.round((Hm[0] * mx + Hm[1] * my + Hm[2]) / w), v = Math.round((Hm[3] * mx + Hm[4] * my + Hm[5]) / w);
+    const o = (y * ow + x) * 4;
+    if (w > 0 && u >= 0 && v >= 0 && u < iw && v < ih) { const i = (v * iw + u) * 4; d[o] = sd[i]; d[o + 1] = sd[i + 1]; d[o + 2] = sd[i + 2]; d[o + 3] = 255; }
+    else { d[o] = d[o + 1] = d[o + 2] = 40; d[o + 3] = 255; }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
+}
 function dSnap(v) { return Math.round(v / DSNAP) * DSNAP; }
 function dSize() {
   const cv = $("#dCanvas"), { W, H } = dDims(), [iw, ih] = dImgSize();
@@ -2027,11 +2049,16 @@ function dDraw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   if (dOutlining()) {
     ctx.drawImage(DR.img, 0, 0, cv.width, cv.height);
-    if (DR.drag) { const d = DR.drag; ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 4; ctx.strokeRect(d.x0, d.y0, d.x1 - d.x0, d.y1 - d.y0); }
+    const s = cv.width / iw, P = DR.pts.map((p) => [p[0] * s, p[1] * s]);
+    ctx.strokeStyle = "#ffd23f"; ctx.lineWidth = 3; ctx.beginPath();
+    P.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]))); ctx.stroke();
+    ctx.font = "600 24px " + font; ctx.shadowColor = "#000"; ctx.shadowBlur = 6;
+    P.forEach((p, i) => { ctx.fillStyle = "#ffd23f"; ctx.beginPath(); ctx.arc(p[0], p[1], 9, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = "#fff"; ctx.fillText(CORNER_NAMES[i], p[0] + 12, p[1] - 10); });
+    ctx.shadowBlur = 0;
     return;
   }
   ctx.fillStyle = C.floor; ctx.fillRect(0, 0, cv.width, cv.height);
-  if (DR.img) { const o = DR.outline, s = iw / DR.outW; ctx.globalAlpha = 0.9; ctx.drawImage(DR.img, o.x * s, o.y * s, o.w * s, o.h * s, 0, 0, cv.width, cv.height); ctx.globalAlpha = 1; }
+  if (DR.warp) { ctx.globalAlpha = 0.95; ctx.drawImage(DR.warp, 0, 0, cv.width, cv.height); ctx.globalAlpha = 1; }
   ctx.strokeStyle = DR.img ? "rgba(255,255,255,0.35)" : C.zoneLine; ctx.lineWidth = 1;
   for (let x = 1; x < W; x++) { ctx.beginPath(); ctx.moveTo(x * k, 0); ctx.lineTo(x * k, cv.height); ctx.stroke(); }
   for (let y = 1; y < H; y++) { ctx.beginPath(); ctx.moveTo(0, y * k); ctx.lineTo(cv.width, y * k); ctx.stroke(); }
@@ -2072,21 +2099,25 @@ function dRenderList() {
 }
 function dStatus() {
   const hasVid = !$("#dVideo").hidden;
-  $("#dFrame").hidden = !hasVid; $("#dOutline").hidden = !(DR.img && DR.outline); $("#dNoPhoto").hidden = !DR.img;
+  $("#dFrame").hidden = !hasVid; $("#dOutline").hidden = !(DR.img && DR.pts.length); $("#dNoPhoto").hidden = !DR.img;
   $("#dCanvas").hidden = hasVid && !DR.img;
   $("#dHint").textContent = hasVid && !DR.img ? "Pause the video on a frame that shows the whole floor from above, then press Use this video frame."
-    : dOutlining() ? "Drag a box around the room's floor in the picture, wall to wall. That tells the page how big things are."
-    : "Drag a box over each piece of furniture" + (DR.img ? ", around where it meets the floor" : "") + ". The back wall is at the top; each grid square is 1 m. Drag a box to move it; rename it below.";
+    : dOutlining() ? "Click the room's 4 floor corners, where the walls meet the floor: next is the " + CORNER_NAMES[DR.pts.length] + " corner (" + DR.pts.length + " of 4). Any camera angle works. If furniture hides a corner, click where it would be."
+    : "Drag a box over each piece of furniture" + (DR.img ? ", around where it touches the floor (tall things lean away from the camera in the flattened view)" : "") + ". The back wall is at the top; each grid square is 1 m. Drag a box to move it; rename it below.";
   const n = DR.zones.length, w = DR.zones.filter((z) => z.watch).length;
   $("#dStatus").textContent = n ? n + " piece" + (n === 1 ? "" : "s") + " of furniture, " + w + " watched by a phone" : "";
 }
-function dRefresh(list) { dSize(); dDraw(); if (list) dRenderList(); dStatus(); }
+function dRefresh(list) {
+  if (DR.img && DR.pts.length === 4 && (!DR.warp || DR.warpKey !== dDims().W + "x" + dDims().H)) { DR.warp = dMakeWarp(); DR.warpKey = dDims().W + "x" + dDims().H; }
+  dSize(); dDraw(); if (list) dRenderList(); dStatus();
+}
 function dFromMap() {
   $("#dW").value = MAP.width; $("#dH").value = MAP.height; $("#dName").value = MAP.name;
   DR.zones = MAP.zones.map((z) => ({ name: z.name, type: z.type, auto: false, watch: z.camera, x: z.x, y: z.y, w: z.w, h: z.h }));
   DR.sel = -1; dRefresh(true);
 }
-function dSetImage(img) { DR.img = img; DR.outline = null; $("#dErr").textContent = ""; dRefresh(false); }
+function dSetImage(img) { DR.img = img; DR.pts = []; DR.warp = null; $("#dErr").textContent = ""; dRefresh(false); }
+function dClearImage() { DR.img = null; DR.pts = []; DR.warp = null; }
 function dBuild() {
   const { W, H } = dDims(), ids = new Set();
   $("#dErr").textContent = "";
@@ -2111,7 +2142,12 @@ function dBuild() {
   cv.addEventListener("pointerdown", (e) => {
     const [x, y] = dPos(e);
     try { cv.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
-    if (dOutlining()) { DR.drag = { mode: "outline", x0: x, y0: y, x1: x, y1: y }; return; }
+    if (dOutlining()) {
+      const s = dImgSize()[0] / cv.width;
+      DR.pts.push([x * s, y * s]);
+      if (DR.pts.length === 4) { DR.warp = dMakeWarp(); DR.warpKey = dDims().W + "x" + dDims().H; if (!DR.warp) { DR.pts = []; $("#dErr").textContent = "Those 4 points don't make a floor. Click the corners in order: back-left, back-right, front-right, front-left."; } }
+      dRefresh(false); return;
+    }
     const k = cv.width / dDims().W, mx = x / k, my = y / k;
     let hit = -1; DR.zones.forEach((z, i) => { if (mx >= z.x && mx <= z.x + z.w && my >= z.y && my <= z.y + z.h) hit = i; });
     if (hit >= 0) { const z = DR.zones[hit]; DR.sel = hit; DR.drag = { mode: "move", i: hit, dx: mx - z.x, dy: my - z.y }; }
@@ -2129,11 +2165,6 @@ function dBuild() {
   });
   const end = () => {
     const d = DR.drag; if (!d) return; DR.drag = null;
-    if (d.mode === "outline") {
-      const o = { x: Math.min(d.x0, d.x1), y: Math.min(d.y0, d.y1), w: Math.abs(d.x1 - d.x0), h: Math.abs(d.y1 - d.y0) };
-      if (o.w > 40 && o.h > 40) { DR.outline = o; DR.outW = cv.width; }
-      dRefresh(false); return;
-    }
     if (d.mode === "new") {
       const z = dRect(d);
       if (z.w >= 0.15 && z.h >= 0.15) {
@@ -2162,7 +2193,7 @@ function dBuild() {
   $("#dFile").addEventListener("change", (e) => {
     const f = e.target.files && e.target.files[0]; e.target.value = ""; if (!f) return;
     const url = URL.createObjectURL(f), v = $("#dVideo");
-    if (/^video\//.test(f.type)) { DR.img = null; DR.outline = null; v.src = url; v.hidden = false; dRefresh(false); return; }
+    if (/^video\//.test(f.type)) { dClearImage(); v.src = url; v.hidden = false; dRefresh(false); return; }
     v.hidden = true; v.removeAttribute("src");
     const img = new Image();
     img.onload = () => dSetImage(img);
@@ -2176,8 +2207,8 @@ function dBuild() {
     c.getContext("2d").drawImage(v, 0, 0);
     v.pause(); v.hidden = true; dSetImage(c);
   };
-  $("#dOutline").onclick = () => { DR.outline = null; dRefresh(false); };
-  $("#dNoPhoto").onclick = () => { DR.img = null; DR.outline = null; const v = $("#dVideo"); v.hidden = true; v.removeAttribute("src"); dRefresh(false); };
+  $("#dOutline").onclick = () => { DR.pts = []; DR.warp = null; dRefresh(false); };
+  $("#dNoPhoto").onclick = () => { dClearImage(); const v = $("#dVideo"); v.hidden = true; v.removeAttribute("src"); dRefresh(false); };
   $("#dFromRoom").onclick = dFromMap;
   $("#dClear").onclick = () => { DR.zones = []; DR.sel = -1; dRefresh(true); };
   $("#dBuild").onclick = dBuild;
