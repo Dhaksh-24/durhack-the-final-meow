@@ -197,7 +197,8 @@ def main():
                 print("The page server didn't start: look for an error above.")
                 return
             open_pages(query)
-            print("A fake session plays every minute: keys appear on the desk, then move to the sofa.")
+            print("A fake session plays every minute (simulated): glasses on the sofa go under a cloth, "
+                  "then you walk to the desk; the keys stay on the desk.")
             print("Ctrl+C to stop.\n")
             while True:
                 subprocess.run([PY, str(ROOT / "events_adapter.py"), "--demo", "--out", str(EVENTS)],

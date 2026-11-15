@@ -1,7 +1,7 @@
 """events_adapter.py -- turn a camera program's raw detections into SPEC 3.2 events.
 
     python live_scene.py --jsonl --no-window | python events_adapter.py
-    python events_adapter.py --demo            # a fake ~45 s session, no camera needed
+    python events_adapter.py --demo            # a fake ~45 s glasses demo, no camera needed
     python events_adapter.py --demo --fast     # the same, instantly
     python events_adapter.py --zones zones_map.json --out trace-events.jsonl
 
@@ -259,9 +259,11 @@ def run_stdin(ad, default_cam):
 
 # ---------------------------------------------------------------- demo mode ---
 def run_demo(ad, fast, seed=None):
-    """A ~45 s session for the page's default room (zones desk, sofa, shelf, ...):
-    keys and wallet on the desk, a weak false alarm on the shelf, you pick the keys
-    up, walk to the sofa and put them down there."""
+    """A ~45 s session for the page's default room, playing the stage demo with the glasses
+    (HANDOVER "demo-final"): glasses on the sofa and keys on the desk, both in view; you sit at
+    the sofa and slide the glasses under a cloth (they vanish while you're there, so the model
+    splits them between "covered on the sofa" and "with you"), then walk to the desk. A weak
+    one-frame false alarm on the shelf and an oversized box are thrown in; both are ignored."""
     rnd = random.Random(seed)
     cam, fps = "demo-phone", 2.0
     t0 = time.time()
@@ -286,34 +288,26 @@ def run_demo(ad, fast, seed=None):
         wait(t)
         ad.person_event(event, zone, t, cam)
 
-    person("person_here", "desk", t0)
     i = 0
-    for _ in range(30):                       # 15 s: keys and wallet on the desk, keys blink out now and then
-        dets = [det("wallet", "desk", 0.7)]
-        if rnd.random() > 0.15:
-            dets.append(det("keys", "desk", 0.75))
-        if i == 20:
-            dets.append(det("keys", "shelf", 0.25))          # one-frame false alarm: ignored
-        if i == 22:
-            dets.append(det("keys", "desk", 0.7) | {"box": [0, 0, 900, 500]})   # huge box: dropped
-        frame(i, dets); i += 1
-    for _ in range(8):                        # 4 s: keys picked up, only the wallet is seen
-        frame(i, [det("wallet", "desk", 0.7)]); i += 1
-    t = t0 + i / fps
-    person("person_left", "desk", t)
-    person("person_here", "sofa", t + 0.5)
-    for _ in range(10):                       # 5 s: walking, nothing new
-        frame(i, [det("wallet", "desk", 0.7)]); i += 1
-    for _ in range(20):                       # 10 s: keys put down on the sofa
-        dets = [det("wallet", "desk", 0.7)]
+    for _ in range(24):                       # 12 s: glasses on the sofa, keys on the desk, nobody around
+        dets = [det("keys", "desk", 0.75)]
         if rnd.random() > 0.1:
-            dets.append(det("keys", "sofa", 0.65))
+            dets.append(det("glasses", "sofa", 0.8))
+        if i == 16:
+            dets.append(det("glasses", "shelf", 0.25))       # one-frame false alarm: ignored
+        if i == 18:
+            dets.append(det("glasses", "sofa", 0.7) | {"box": [0, 0, 900, 500]})   # huge box: dropped
         frame(i, dets); i += 1
+    person("person_here", "sofa", t0 + i / fps)
+    for _ in range(8):                        # 4 s: you sit down at the sofa, the glasses still in view
+        frame(i, [det("keys", "desk", 0.75), det("glasses", "sofa", 0.8)]); i += 1
+    for _ in range(10):                       # 5 s: glasses slid under the cloth: gone while you're there
+        frame(i, [det("keys", "desk", 0.75)]); i += 1
     t = t0 + i / fps
     person("person_left", "sofa", t)
-    for _ in range(8):                        # the wallet is still there; the keys stay on the sofa
-        frame(i, [det("wallet", "desk", 0.7), det("keys", "sofa", 0.6)]); i += 1
-
+    person("person_here", "desk", t + 0.5)
+    for _ in range(30):                       # 15 s: you're at the desk; the keys stay in view
+        frame(i, [det("keys", "desk", 0.75)]); i += 1
 
 def main():
     ap = argparse.ArgumentParser(description="Raw detections (JSON lines on stdin) -> SPEC 3.2 events")

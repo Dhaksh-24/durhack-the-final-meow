@@ -1595,7 +1595,9 @@ function storyFor(it) {
   let k0 = storySteps.findIndex((st) => st.s >= since); if (k0 < 0) k0 = 0;
   let segs = [];
   try { segs = viterbiStory(it, storySteps.slice(k0), PRIORS[it.id]); } catch (e) { segs = []; }
-  segs = segs.filter((g) => g.to - g.from >= TICK_S || g === segs[segs.length - 1]).slice(-4);
+  segs = segs.filter((g) => g.to - g.from >= TICK_S || g === segs[segs.length - 1])
+    .reduce((a, g) => { const p = a[a.length - 1]; if (p && p.kind === g.kind && p.zone === g.zone && !!p.covered === !!g.covered) p.to = g.to; else a.push(g); return a; }, [])
+    .slice(-4);
   for (const g of segs) if (g.kind === "person") {   // where they went while carrying it
     const v = trailVisits(personLog, g.from, g.to + TICK_S).map((x) => placeName(x.zone)).filter((x, i, a) => a.indexOf(x) === i);
     g.via = v;

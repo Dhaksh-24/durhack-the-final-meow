@@ -11,8 +11,9 @@ wallet and glasses probably are; Trace talks you to them, and shows it all on a 
 
 ## demo-final: the demo, in one command
 
-Branch **`demo-final`** (demo14 + the camera fallback in Ask Trace). On Windows, Smart App Control
-blocks `pip.exe`, so use `python -m pip`:
+Branch **`demo-final`** (demo14 + the camera fallback in Ask Trace). **The demo item is the glasses**
+(the detector finds them more reliably than keys). On Windows, Smart App Control blocks `pip.exe`,
+so use `python -m pip`:
 
 ```powershell
 git fetch origin
@@ -21,7 +22,23 @@ python -m pip install -r requirements.txt
 python run_trace.py --present --min-prob keys=0.65
 ```
 
-(`cameras.json` lists the phones; see section 2. No cameras? `python run_trace.py --demo`.)
+(`cameras.json` lists the phones; see section 2. No cameras? `python run_trace.py --demo` plays the
+same glasses story, simulated: say so if you show it.)
+
+**The glasses demo** (one phone on the sofa, named "Sofa" in Draw the room *and* the camera window;
+a cloth on the sofa; keys on the desk for contrast). Keep the `/sim` tab open the whole time: it
+runs the model, and Ask Trace answers from the last model it sent.
+
+| Presenter | Trace (as tested on the simulated run) |
+|---|---|
+| Slides the glasses under the cloth, walks to the desk, is blindfolded | the glasses' column splits: under the sofa / with you |
+| "Hey Trace, where are my glasses?" | "Your glasses were last seen on the sofa just now. Check your pockets and hands first: possibly there, about 5 seconds. If not, try under things on the sofa (probably)." |
+| "Not there." | "Not there. Check under things on the sofa next: very likely there, about 20 seconds…" |
+| "Found them!" | "Great, you found them on the sofa. I'll remember that." |
+| "Where are my keys?" | "The desk phone can see your keys right now." |
+
+If the real glasses never get a solid box, lower their threshold (verifier.json: 0.72) the same
+way as the keys below: `--verifier-debug`, then `--min-prob glasses=P`.
 
 **Tuning the keys threshold.** `--min-prob keys=0.65` lowers the CLIP check for keys from
 verifier.json's strict 0.86. To pick the number from real frames, put the keys where the demo
