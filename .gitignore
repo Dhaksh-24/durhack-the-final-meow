@@ -21,3 +21,8 @@ test_out/
 memory/
 events.jsonl
 cameras.json
+
+# tts.py output -- regenerate with: python tts.py --samples / --prerender
+samples/
+audio/
+out.wav

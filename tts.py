@@ -168,16 +168,27 @@ def _pipeline(lang):
 
 def warm_up(block=True):
     """Load the model and say one short line silently, so the first real
-    reply is not slow. Returns the seconds it took (None when block=False,
-    which does the same in a background thread)."""
+    reply is not slow. Returns the seconds it took.
+
+    block=False does the same in a background thread and returns None at
+    once; a failure there (say, the model was never downloaded and there is
+    no internet) is printed as one line rather than raised.
+    """
     if not block:
-        threading.Thread(target=warm_up, daemon=True).start()
+        threading.Thread(target=_warm_up_quietly, daemon=True).start()
         return None
     t0 = time.perf_counter()
     synth("Hello.")
     took = time.perf_counter() - t0
     print("voice ready in %.1fs (%s)" % (took, _voice))
     return took
+
+
+def _warm_up_quietly():
+    try:
+        warm_up()
+    except Exception as exc:
+        print("tts: voice failed to load: %s: %s" % (type(exc).__name__, exc))
 
 
 # --------------------------------------------------------------------------
@@ -227,7 +238,7 @@ def save(text, path, gender=None, speed=None):
 
 def slug(text):
     """"I can't see them yet." -> "i-can-t-see-them-yet" (a file name)."""
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60]
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:80]
 
 
 def _prerendered(text, voice):
