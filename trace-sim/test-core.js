@@ -103,5 +103,32 @@ const f3 = C.liveFeed(); f3.push([evs[1]]);
 check(f3.idle(evs[1].t + 35).length === 3, "35 s of silence adds 3 idle ticks");
 check(f3.push([{ t: evs[1].t + 36, event: "person_here", zone: "desk" }]).length === 1, "a new event is applied at once, not at the next 10 s step");
 
+// The guide loop: checks with confidence, the trail, and SPEC 5.2 validation of LLM answers.
+console.log("\nguide: checks, trail, validation");
+C.setupMap(JSON.parse(JSON.stringify(C.DEFAULT_MAP)));
+const pl = (id) => C.PLACES.find((x) => x.id === id);
+const b0 = Float64Array.from(C.PRIORS.keys), sofaP = (b) => C.placeP(b, pl("sofa"));
+const full = C.checkUpdate(b0, pl("sofa"), "all", 1), half = C.checkUpdate(b0, pl("sofa"), "all", 0.5), same = C.failUpdate(b0, pl("sofa"));
+check(Math.abs(sofaP(full) - sofaP(same)) < 1e-12, "a sure check equals the old 'not there'");
+check(sofaP(half) > sofaP(full) && sofaP(half) < sofaP(b0), "'I think I looked' lowers it less");
+const under = C.checkUpdate(b0, pl("sofa"), "covered", 1), i = pl("sofa").i;
+check(under[2 * i] / under[2 * i + 1] > b0[2 * i] / b0[2 * i + 1], "looking under things only lowers the covered part");
+check(["very likely", "probably", "might be", "possibly"].join() === [0.9, 0.7, 0.5, 0.1].map(C.probWord).join(), "probability words come from code");
+const log = [{ s: 0, zone: "desk" }, { s: 60, zone: "desk" }, { s: 120, zone: "sofa" }, { s: 180, zone: null }, { s: 240, zone: "outside" }];
+const vis = C.trailVisits(log, 60, 300);
+check(JSON.stringify(vis) === JSON.stringify([{ zone: "desk", from: 60, to: 120 }, { zone: "sofa", from: 120, to: 180 }, { zone: "outside", from: 240, to: 300 }]), "trail since last seen: desk 1 min, sofa 1 min, outside 1 min");
+// a belief where the desk is clearly the best place
+let bd = Float64Array.from(b0); for (let k = 0; k < 3; k++) bd = C.filterStep(bd, C.ITEMS[0], { prev: "kitchen", person: "kitchen", det: { keys: "desk" }, conf: { keys: 0.9 } });
+const dw = C.probWord(C.placeP(bd, pl("desk"))), facts = "last seen 12 minutes ago at 14:05";
+const v = (say, places) => C.validateSay(say, places, bd, ["Sofa"], facts);
+check(v("Not on the sofa. The desk is " + dw + " the place to check next.", [{ zone: "desk", label: dw }]).ok, "good answer passes ('" + dw + "' for the desk)");
+check(!v("They are definitely on the desk.").ok, "rejects 'definitely'");
+check(!v("It's on the desk.").ok, "rejects stating where it is as fact");
+check(!v("Check the desk, " + (dw === "possibly" ? "very likely" : "possibly") + ".").ok, "rejects a probability word that doesn't match the plan");
+check(!v("Check the desk: 87% likely.").ok, "rejects percentages");
+check(!v("Your husband moved them to the desk.").ok, "rejects saying who moved it");
+check(!v("You had them on the desk about 3 minutes ago.").ok && v("You had them on the desk 12 minutes ago.").ok, "times only from the model");
+check(!v("Check the desk.", [{ zone: "garage", label: "probably" }]).ok, "rejects places that aren't in the plan");
+
 console.log(ok ? "\nall checks passed" : "\nSOME CHECKS FAILED");
 process.exit(ok ? 0 : 1);

@@ -128,6 +128,11 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
 .pill { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
 .pill.off { background: var(--line); color: var(--muted); }
 .progress { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.askbar input[type="text"] { flex: 1 1 220px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
+.askbar select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
+.btn.listening { background: #e07a2e; border-color: #e07a2e; color: #fff; }
+.trail { font-size: 13px; color: var(--muted); margin: -4px 0 10px; }
+.trail b { color: #e07a2e; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -172,6 +177,7 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
           <button class="btn" id="rebuild" type="button">Rebuild the room</button>
           <button class="btn" id="resetView" type="button">Reset view</button>
           <label class="check"><input type="checkbox" id="spin"> Slowly turn</label>
+          <label class="check"><input type="checkbox" id="trailChk" checked> Your trail since it was last seen</label>
         </div>
         <div class="legend" id="legend"></div>
       </section>
@@ -210,13 +216,24 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
         <h2>Where Trace thinks it is</h2>
         <div class="tabs" id="itemTabs" role="group" aria-label="Item"></div>
         <div class="lastseen" id="lastSeen"></div>
+        <div class="trail" id="trailLine"></div>
         <div class="bars" id="bars"></div>
       </section>
 
       <section class="card" id="askCard">
         <h2>Ask Trace</h2>
         <p class="lead">Pauses the room and plans a search: the best chance of finding it per second of effort.</p>
-        <div id="ask"></div>
+        <div class="controls askbar" style="margin-top:0">
+          <input type="text" id="askText" placeholder="Ask, or say what you checked: &quot;not under the sofa&quot;" aria-label="Ask Trace">
+          <button class="btn primary" id="askSend" type="button">Ask</button>
+          <button class="btn" id="askMic" type="button" title="Press, then speak">🎤 Talk</button>
+        </div>
+        <div class="controls askbar" style="margin-top:6px">
+          <label class="check">Mode <select id="askMode"><option value="default">Everyone</option><option value="blind">Blind / low vision</option><option value="dementia">Dementia</option></select></label>
+          <label class="check"><input type="checkbox" id="askVoice" checked> Speak answers</label>
+          <span class="note" id="askInfo" style="margin-top:0"></span>
+        </div>
+        <div id="ask" style="margin-top:10px"></div>
       </section>
 
       <section class="card">
@@ -738,6 +755,84 @@ function failUpdate(b, pl) {
   else nb[2 * Z + 1] *= 1 - S_OUT;
   return normalize(nb) || nb;
 }
+// A check that didn't find it (SPEC 4.4): part "visible" | "covered" | "all"; w = how sure they
+// were (1 "definitely checked", 0.5 "I think I looked", 0.3 "had a quick look").
+const SURE_W = { high: 1, medium: 0.5, low: 0.3 };
+function checkUpdate(b, pl, part, w) {
+  const nb = Float64Array.from(b), k = w == null ? 1 : w;
+  if (pl.kind === "zone") {
+    if (part !== "covered") nb[2 * pl.i] *= 1 - k * S_VIS;
+    if (part !== "visible") nb[2 * pl.i + 1] *= 1 - k * S_COV;
+  } else if (pl.kind === "person") nb[2 * Z] *= 1 - k * S_PERSON;
+  else nb[2 * Z + 1] *= 1 - k * S_OUT;
+  return normalize(nb) || nb;
+}
+// SPEC 5.2: probability words are decided in code.
+function probWord(p) { return p >= 0.8 ? "very likely" : p >= 0.6 ? "probably" : p >= 0.4 ? "might be" : "possibly"; }
+// Where the person was since a moment: log = [{s, zone}] one entry per step (zone null = unknown).
+function trailVisits(log, since, now) {
+  const out = [];
+  for (let k = 0; k < log.length; k++) {
+    const e = log[k]; if (e.s < since || e.zone == null) continue;
+    const end = k + 1 < log.length ? log[k + 1].s : now;
+    const last = out[out.length - 1];
+    if (last && last.zone === e.zone && Math.abs(last.to - e.s) < 1e-6) last.to = end;
+    else out.push({ zone: e.zone, from: e.s, to: end });
+  }
+  return out;
+}
+// Words that point at each place, for checking what an answer mentions.
+function placeAliases() {
+  const out = [];
+  for (const pl of PLACES) {
+    const names = new Set([pl.name.toLowerCase()]);
+    if (pl.kind === "zone") { names.add(pl.id.replace(/-/g, " ")); const last = pl.name.toLowerCase().split(/\s+/).pop(); if (last.length > 2) names.add(last); }
+    else if (pl.kind === "person") ["pocket", "pockets", "hands", "your coat"].forEach((n) => names.add(n));
+    else ["car", "bag", "outside"].forEach((n) => names.add(n));
+    for (const n of names) out.push([n, pl]);
+  }
+  return out.sort((a, c) => c[0].length - a[0].length);
+}
+// SPEC 5.2 validation of an LLM answer. facts: the text the answer may take times from.
+function validateSay(say, places, b, tried, facts) {
+  const s = String(say || "").trim(), low = s.toLowerCase(), fx = String(facts || "").toLowerCase();
+  const no = (why) => ({ ok: false, why });
+  if (!s) return no("empty");
+  if (s.length > 400) return no("too long");
+  if (/\b(definitely|certainly|for sure|guaranteed?|no doubt|without a doubt)\b/.test(low)) return no("says it is certain");
+  if (/\b(it is|it's|its|they are|they're) (right |still |now )?(there|here|on|in|under|inside|at|behind)\b/.test(low)) return no("says where it is as a fact");
+  if (/\d+(\.\d+)? ?(%|percent|per cent)/.test(low)) return no("gives a number instead of a word");
+  if (/\b(someone|somebody|he|she|your (mum|mom|dad|husband|wife|son|daughter|partner|carer|flatmate|roommate))\b[^.!?]*\b(moved|took|put|left|hid|dropped|grabbed)\b/.test(low) ||
+      /\b(mum|mom|dad|husband|wife|partner|carer|flatmate|roommate) (moved|took|put|left|hid|dropped|grabbed)\b/.test(low)) return no("says who moved it");
+  const plan = rank(b), inPlan = new Set(plan.map((x) => x.pl.id)), done = new Set((tried || []).map((t) => String(t).toLowerCase()));
+  const aliases = placeAliases(), WORDS = ["very likely", "probably", "might be", "possibly"];
+  for (const sentence of low.split(/(?<=[.!?])\s+/)) {
+    let rest = " " + sentence.replace(/[^a-z' ]+/g, " ") + " ";
+    const said = [];
+    for (const [n, pl] of aliases) {
+      const re = new RegExp("\\b" + n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b");
+      if (re.test(rest)) { if (!said.includes(pl)) said.push(pl); rest = rest.replace(new RegExp(re.source, "g"), " "); }
+    }
+    for (const pl of said) if (!inPlan.has(pl.id) && ![...done].some((t) => t.startsWith(pl.name.toLowerCase()))) return no("mentions " + pl.name + ", which isn't in the plan");
+    let w = " " + sentence + " ";
+    const used = [];
+    for (const word of WORDS) while (w.includes(word)) { used.push(word); w = w.replace(word, " "); }
+    if (/\blikely\b/.test(w.replace(/\bunlikely\b/g, ""))) return no("says 'likely' instead of the word from the plan");
+    if (used.length) {
+      const allowed = new Set(said.map((pl) => probWord(placeP(b, pl))));
+      for (const word of used) if (!allowed.has(word)) return no("'" + word + "' doesn't match the plan" + (said.length ? " for " + said.map((pl) => pl.name).join(", ") : ""));
+    }
+  }
+  for (const pc of places || []) {
+    const pl = PLACES.find((x) => x.id === pc.zone);
+    if (!pl || !inPlan.has(pl.id)) return no("place " + pc.zone + " isn't in the plan");
+    if (WORDS.includes(pc.label) && pc.label !== probWord(placeP(b, pl))) return no("label for " + pl.name + " doesn't match the plan");
+  }
+  const times = low.match(/\b(\d{1,2}[:.]\d{2}|\d{1,2} ?(am|pm)|(about |around )?(a|an|one|two|three|four|five|ten|fifteen|twenty|thirty|forty|\d+) (minute|minutes|hour|hours) ago|half an hour ago)\b/g) || [];
+  for (const t of times) if (!fx.includes(t.replace(/^(about|around) /, ""))) return no("gives a time ('" + t + "') that isn't from the model");
+  return { ok: true, why: "" };
+}
+
 // Best chance of finding it per second of effort.
 function rank(b) {
   return PLACES.map((pl) => ({ pl, p: placeP(b, pl), f: findP(b, pl), t: pl.t }))
@@ -801,7 +896,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -818,6 +913,9 @@ let session = null, panelDirty = true, personPos = null, lastPersonZone = null;
 let replay = null, clock0 = 8 * 3600;
 // Live: {ws, url, feed, buf, timer} while connected to bridge.py (ws://localhost:8765, or ?ws=... in the URL).
 let live = null;
+// Where the person was, one entry per step: [{s: seconds on the page's clock, zone}]
+let personLog = [], trailCache = null;
+function nowSecs() { return clock0 + world.tick * TICK_S; }
 
 function clockAt(tick) {
   const s = clock0 + tick * TICK_S, h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60, sec = s % 60;
@@ -847,7 +945,7 @@ function resetDay() {
   resetStats();
   world = newWorld(); beliefs = {}; lastSeen = {}; visHist = {}; events = [];
   for (const it of ITEMS) { beliefs[it.id] = Float64Array.from(PRIORS[it.id]); lastSeen[it.id] = null; visHist[it.id] = [null, null, null]; }
-  session = null; personPos = null; lastPersonZone = world.person.zone;
+  session = null; personPos = null; lastPersonZone = world.person.zone; personLog = [];
   logEvent({ time: clockAt(0), event: "person_here", zone: world.person.zone });
   panelDirty = true;
 }
@@ -886,7 +984,7 @@ function beginReal() {
   const d = new Date(); clock0 = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); events = [];
   world.items = {}; for (const it of ITEMS) world.items[it.id] = { loc: "unknown", covered: false, pocket: false };
   world.person = { zone: MAP.zones[DOOR].id, outside: false, dwell: 0, outsideFor: 0 };
-  lastPersonZone = null; session = null; running = true; personPos = null;
+  lastPersonZone = null; session = null; running = true; personPos = null; personLog = [];
   setReplayUI();
 }
 function liveNote(msg) { $("#replayNote").textContent = msg; }
@@ -958,9 +1056,11 @@ function applyObs(obs) {
     lastPersonZone = obs.person;
   }
   ST.ticks++;
+  personLog.push({ s: nowSecs(), zone: obs.person == null ? null : obs.person });
+  if (personLog.length > 20000) personLog.splice(0, 5000);
   for (const it of ITEMS) {
     beliefs[it.id] = filterStep(beliefs[it.id], it, obs);
-    if (obs.det[it.id] && obs.conf[it.id] >= LAST_SEEN_MIN) { lastSeen[it.id] = { zone: obs.det[it.id], tick: world.tick }; ST.sight[obs.det[it.id]]++; ST.lastSight[obs.det[it.id]] = world.tick; }
+    if (obs.det[it.id] && obs.conf[it.id] >= LAST_SEEN_MIN) { lastSeen[it.id] = { zone: obs.det[it.id], tick: world.tick, s: nowSecs() }; ST.sight[obs.det[it.id]]++; ST.lastSight[obs.det[it.id]] = world.tick; }
     const st = world.items[it.id];
     if (!replay) {
       if (topPlace(beliefs[it.id]).pl.id === st.loc) ST.right[it.id]++;
@@ -1093,9 +1193,24 @@ function lastSeenText(it) {
   if (!ls) return "No phone has seen " + (it.plural ? "them" : "it") + " yet today.";
   return "Last seen on the " + MAP.zones[ZI[ls.zone]].name.toLowerCase() + " at " + clockAt(ls.tick).slice(0, 5) + " (" + agoText(world.tick - ls.tick) + ").";
 }
+// The person's trail since the item was last seen (or since the start), minutes per place.
+function trailFor(id) {
+  const ls = lastSeen[id], since = ls ? ls.s : (personLog.length ? personLog[0].s : 0), now = nowSecs();
+  const visits = trailVisits(personLog, since, now), minutes = {};
+  for (const v of visits) minutes[v.zone] = (minutes[v.zone] || 0) + (v.to - v.from) / 60;
+  return { visits, minutes, since };
+}
+function placeName(zone) { return zone === "outside" ? "outside the room" : zone === "person" ? "with you" : MAP.zones[ZI[zone]] ? MAP.zones[ZI[zone]].name.toLowerCase() : zone; }
+function hhmm(secs) { const d = Math.floor(((secs % 86400) + 86400) % 86400); return String(Math.floor(d / 3600)).padStart(2, "0") + ":" + String(Math.floor(d / 60) % 60).padStart(2, "0"); }
+function renderTrail(it) {
+  const tr = trailCache && trailCache.id === it.id ? trailCache : (trailCache = Object.assign({ id: it.id }, trailFor(it.id)));
+  const parts = tr.visits.slice(-5).map((v) => "<b>" + esc(placeName(v.zone)) + "</b> " + Math.max(1, Math.round((v.to - v.from) / 60)) + " min");
+  $("#trailLine").innerHTML = parts.length ? (lastSeen[it.id] ? "Since then you were: " : "Today you were: ") + parts.join(" → ") : "";
+}
 function renderBars() {
   const it = itemById(selected), b = beliefs[selected];
   $("#lastSeen").textContent = lastSeenText(it);
+  trailCache = null; renderTrail(it);
   const rows = PLACES.map((pl) => ({ pl, p: placeP(b, pl) })).sort((a, c) => c.p - a.p);
   $("#bars").innerHTML = rows.map((r) => {
     let tag = "";
@@ -1117,14 +1232,37 @@ function sentence(it, b, tries) {
   const name = it.name.toLowerCase(), r = rank(b);
   if (!r.length) return "I don't have a good idea where " + (it.plural ? "they are" : "it is") + ".";
   const v = visibleAt(it.id);
-  if (!tries && v) return "Your " + name + " " + (it.plural ? "are" : "is") + " on the " + MAP.zones[ZI[v]].name.toLowerCase() + ". The phone there can see " + (it.plural ? "them" : "it") + " right now.";
+  if (!tries && v) return "The " + MAP.zones[ZI[v]].name.toLowerCase() + " phone can see your " + name + " right now.";
   let s = tries ? "Not there. " : "";
   const ls = lastSeen[it.id];
   if (!tries) s += ls ? "Your " + name + " " + (it.plural ? "were" : "was") + " last seen on the " + MAP.zones[ZI[ls.zone]].name.toLowerCase() + " " + agoText(world.tick - ls.tick) + ". "
                       : "No phone has seen your " + name + " today. ";
-  s += "Check " + whereText(r[0].pl, b) + (tries ? " next" : " first") + ": " + pct(r[0].p) + " likely, about " + r[0].t + " seconds.";
-  if (r[1]) s += " If not, try " + whereText(r[1].pl, b) + " (" + pct(r[1].p) + ").";
+  // probability words, not numbers (SPEC 5.2); the percentages stay on screen in the plan
+  s += "Check " + whereText(r[0].pl, b) + (tries ? " next" : " first") + ": " + probWord(r[0].p) + " there, about " + r[0].t + " seconds.";
+  if (r[1]) s += " If not, try " + whereText(r[1].pl, b) + " (" + probWord(r[1].p) + ").";
   return s;
+}
+function startSession(id) {
+  selected = id;
+  session = { item: id, b: Float64Array.from(beliefs[id]), tried: [], secs: 0, result: null, say: null };
+}
+function currentSay() {
+  if (!session) return "";
+  if (session.result) return session.result.text;
+  return session.say || sentence(itemById(session.item), session.b, session.tried.length);
+}
+function failAt(x, part, sure) {
+  if (!session || !x) return;
+  const w = SURE_W[sure] == null ? 1 : SURE_W[sure];
+  session.tried.push(x.pl.name + (sure === "low" ? " (quick look)" : sure === "medium" ? " (not sure)" : part === "covered" ? " (under things)" : ""));
+  session.secs += x.t; session.b = checkUpdate(session.b, x.pl, part || "all", w); session.say = null;
+  if (session.tried.length >= MAX_CHECKS) session.result = { ok: false, text: "I've run out of good places to suggest.", detail: "Stopped after " + MAX_CHECKS + " checks." };
+}
+function doneAt(ok, x) {
+  if (!session || !x) return;
+  const sit = itemById(session.item), n = session.tried.length + 1, secs = session.secs + x.t;
+  session.say = null;
+  session.result = { ok, text: "Found " + (sit.plural ? "them" : "it") + ": " + x.pl.name.toLowerCase() + ".", detail: "Found on check " + n + ", after about " + secs + " seconds of searching." };
 }
 function renderAsk() {
   const el = $("#ask"), it = itemById(selected);
@@ -1132,45 +1270,193 @@ function renderAsk() {
     const cur = $("#startAsk");
     if (cur && cur.dataset.id === selected) return;
     el.innerHTML = '<button class="btn primary" type="button" id="startAsk" data-id="' + selected + '">Where ' + (it.plural ? "are" : "is") + " my " + esc(it.name.toLowerCase()) + "?</button>";
-    $("#startAsk").onclick = () => { session = { item: selected, b: Float64Array.from(beliefs[selected]), tried: [], result: null }; renderAll(); };
+    $("#startAsk").onclick = () => handleUtterance("Where " + (it.plural ? "are" : "is") + " my " + it.name.toLowerCase() + "?");
     return;
   }
   const sit = itemById(session.item), r = rank(session.b);
-  let html = '<div class="say">' + esc(session.result ? session.result.text : sentence(sit, session.b, session.tried.length)) + "</div>";
+  let html = '<div class="say">' + esc(currentSay()) + "</div>";
   if (session.result) {
     html += '<div class="result ' + (session.result.ok ? "good" : "warn") + '">' + esc(session.result.detail) + "</div>";
     html += '<div class="controls"><button class="btn primary" type="button" id="endAsk">Back to the room</button></div>';
   } else {
     html += '<div class="plan">' + r.slice(0, 4).map((x, k) =>
       '<div class="step' + (k === 0 ? " first" : "") + '"><span class="n">' + (k + 1) + "</span><span>" + esc(x.pl.name) +
-      '</span><span class="meta">' + pct(x.p) + " · " + x.t + " s</span></div>").join("") + "</div>";
+      '</span><span class="meta">' + probWord(x.p) + " · " + pct(x.p) + " · " + x.t + " s</span></div>").join("") + "</div>";
     if (session.tried.length) html += '<div class="tried">Already checked: ' + esc(session.tried.join(", ")) + "</div>";
     html += '<div class="controls">' +
       (replay ? "" : '<button class="btn primary" type="button" id="simCheck">Check it in the simulation</button>') +
       '<button class="btn" type="button" id="notThere">Not there</button>' +
       '<button class="btn good" type="button" id="foundIt">Found it</button>' +
+      '<button class="btn" type="button" id="againBtn">Again</button>' +
       '<button class="btn" type="button" id="endAsk">Cancel</button></div>' +
-      (replay ? '<p class="note">Replaying a recording: there is no true position, so say "Not there" or "Found it" after you look.</p>' : '<p class="note">"Check it in the simulation" uses the true position, like a person actually looking. Searches find uncovered things 95% of the time and covered things 75%.</p>');
+      (replay ? '<p class="note">Real events: there is no true position, so say "not there" or "found it" after you look.</p>' : '<p class="note">"Check it in the simulation" uses the true position, like a person actually looking. Searches find uncovered things 95% of the time and covered things 75%.</p>');
   }
   el.innerHTML = html;
-  const end = $("#endAsk"); if (end) end.onclick = () => { session = null; renderAll(); };
-  const nt = $("#notThere"); if (nt) nt.onclick = () => fail(r[0]);
-  const fi = $("#foundIt"); if (fi) fi.onclick = () => done(true, r[0]);
+  const end = $("#endAsk"); if (end) end.onclick = () => { session = null; stopSpeaking(); renderAll(); };
+  const nt = $("#notThere"); if (nt) nt.onclick = () => handleUtterance("not there");
+  const fi = $("#foundIt"); if (fi) fi.onclick = () => handleUtterance("found it");
+  const ag = $("#againBtn"); if (ag) ag.onclick = () => handleUtterance("again");
   const sc = $("#simCheck"); if (sc) sc.onclick = () => {
     if (!r.length) return;
-    if (trueFound(world, sit, r[0].pl)) done(true, r[0]); else fail(r[0]);
+    if (trueFound(world, sit, r[0].pl)) doneAt(true, r[0]); else failAt(r[0]);
+    renderAll(); speak(currentSay());
   };
-  function fail(x) {
-    if (!x) return;
-    session.tried.push(x.pl.name); session.b = failUpdate(session.b, x.pl);
-    if (session.tried.length >= MAX_CHECKS) session.result = { ok: false, text: "I've run out of good places to suggest.", detail: "Stopped after " + MAX_CHECKS + " checks." };
-    renderAll();
+}
+
+// ---------- the guide: voice in, the LLM for everything but the simple commands, voice out ----------
+// The guide server is trace_api.py (python trace_api.py, or multicam.py); ?api=http://host:port overrides.
+const API = new URLSearchParams(location.search).get("api") || (location.protocol.startsWith("http") && location.port === "8000" ? "" : "http://localhost:8000");
+const ITEM_WORDS = { keys: /\b(keys?|keyring)\b/, wallet: /\b(wallet|purse|cards?)\b/, glasses: /\b(glasses|specs|spectacles)\b/ };
+function askInfo(t) { $("#askInfo").textContent = t || ""; }
+async function postJSON(path, body, ms) {
+  const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), ms || 15000);
+  try {
+    const r = await fetch(API + path, { method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+async function handleUtterance(text) {
+  const said = String(text || "").trim(); if (!said) return;
+  const n = said.toLowerCase().replace(/[^a-z' ]+/g, " ").replace(/\s+/g, " ").trim();
+  // the three simple commands never need the LLM
+  if (/^(again|repeat|repeat that|say that again|say it again|what|pardon|sorry what)$/.test(n)) { speak(voice.last || currentSay()); return; }
+  if (session && !session.result) {
+    const r = rank(session.b);
+    if (/^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$/.test(n)) {
+      failAt(r[0]); askInfo("Handled here: not there."); renderAll(); speak(currentSay()); return;
+    }
+    if (/^(yes |yay |great )?(i )?(found|got|have) (it|them)( now)?$|^found$/.test(n)) {
+      doneAt(true, r[0]); askInfo("Handled here: found it."); renderAll(); speak(currentSay()); return;
+    }
   }
-  function done(ok, x) {
-    const n = session.tried.length + 1, secs = session.tried.reduce((a, nm) => a + PLACES.find((p) => p.name === nm).t, 0) + x.t;
-    session.result = { ok, text: "Found " + (sit.plural ? "them" : "it") + ": " + x.pl.name.toLowerCase() + ".", detail: "Found on check " + n + ", after about " + secs + " seconds of searching." };
-    renderAll();
+  const named = Object.keys(ITEM_WORDS).find((id) => ITEM_WORDS[id].test(n));
+  if (!session || session.result || (named && named !== session.item)) startSession(named || selected);
+  renderAll();
+  const it = itemById(session.item), bundle = bundleFor(it), facts = JSON.stringify(bundle) + " " + currentSay();
+  const mode = $("#askMode").value;
+  askInfo("Thinking…");
+  let res = null;
+  try { res = await postJSON("/api/ask", { bundle, utterance: said, mode }); }
+  catch (err) { askInfo("Guide server not reachable (" + (API || location.origin) + "): answered from Trace's own plan."); }
+  if (!session) return;
+  if (res && Array.isArray(res.evidence)) {
+    for (const ev of res.evidence) {
+      const pl = PLACES.find((x) => x.id === ev.zone); if (!pl) continue;
+      if (ev.found) { doneAt(true, { pl, t: pl.t }); break; }
+      failAt({ pl, t: pl.t }, ev.part, ev.sure);
+    }
   }
+  let note = res ? (res.source === "llm" ? "LLM" : "no LLM key: rules") + " · " + (res.ms != null ? res.ms + " ms" : "") : "";
+  session.say = null;
+  if (res && res.say && !session.result) {
+    const v = validateSay(res.say, res.places, session.b, session.tried, facts);
+    if (v.ok) {
+      session.say = res.say;
+      if (res.chirp && rank(session.b).slice(0, 2).some((x) => x.pl.id === res.chirp)) chirp(res.chirp);
+    } else note += " · answer rejected (" + v.why + "), template used";
+  }
+  if (res && res.evidence && res.evidence.length) note += " · evidence: " + res.evidence.map((e) => (e.found ? "found at " : "not at ") + e.zone + (e.part !== "all" ? " (" + e.part + ")" : "") + (e.sure !== "high" ? ", " + e.sure : "")).join("; ");
+  if (res) askInfo(note);
+  renderAll(); speak(currentSay());
+}
+// Chirp (SPEC 5.1): the target zone's phone beeps if a phone page is open for it, else the laptop.
+async function chirp(zone) {
+  let phone = false;
+  try { phone = !!(await postJSON("/api/chirp/" + encodeURIComponent(zone), {}, 3000)).phone; } catch (err) { /* no server */ }
+  if (!phone) beepHere();
+}
+let audioCtx = null;
+function beepHere() {
+  try {
+    audioCtx = audioCtx || new AudioContext();
+    const t = audioCtx.currentTime;
+    for (let k = 0; k < 3; k++) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 1320; o.connect(g); g.connect(audioCtx.destination);
+      g.gain.setValueAtTime(0.0001, t + k * 0.35); g.gain.exponentialRampToValueAtTime(0.4, t + k * 0.35 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + k * 0.35 + 0.25); o.start(t + k * 0.35); o.stop(t + k * 0.35 + 0.3);
+    }
+  } catch (err) { /* no audio */ }
+}
+
+// Voice out: the same approach as trace.html (Adel's) -- Kokoro on the server via POST /api/speech,
+// else the browser's own voice, sentence by sentence.
+const voice = { gen: 0, last: "", stop: null, server: true, speaking: false };
+function stopSpeaking() {
+  voice.gen++;
+  if (voice.stop) { voice.stop(); voice.stop = null; }
+  try { speechSynthesis.cancel(); } catch (err) { /* no speech synthesis */ }
+  voice.speaking = false;
+}
+function playBlob(blob) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob), a = new Audio(url);
+    const done = (ok) => { URL.revokeObjectURL(url); voice.stop = null; resolve(ok); };
+    voice.stop = () => { a.pause(); done(true); };
+    a.onended = () => done(true); a.onerror = () => done(false);
+    a.play().catch(() => done(false));
+  });
+}
+function browserSay(text) {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) return resolve(false);
+    const u = new SpeechSynthesisUtterance(text);
+    const vs = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang));
+    const v = vs.find((x) => /natural|neural|online/i.test(x.name)) || vs.find((x) => x.localService) || vs[0];
+    if (v) u.voice = v;
+    u.rate = 0.95;
+    const guard = setTimeout(() => finish(true), 2500 + text.length * 90);
+    const finish = (ok) => { clearTimeout(guard); voice.stop = null; resolve(ok); };
+    voice.stop = () => { speechSynthesis.cancel(); finish(true); };
+    u.onend = () => finish(true); u.onerror = () => finish(false);
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  });
+}
+async function fetchSpeech(text) {
+  try {
+    const ctrl = new AbortController(), t = setTimeout(() => ctrl.abort(), 20000);
+    const r = await fetch(API + "/api/speech", { method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice: "female" }) });
+    clearTimeout(t);
+    if (r.ok) return await r.blob();
+    if ([404, 501, 503].includes(r.status)) voice.server = false;
+  } catch (err) { voice.server = false; }
+  return null;
+}
+async function speak(text) {
+  voice.last = text || voice.last;
+  if (!text || !$("#askVoice").checked) return;
+  stopSpeaking();
+  const g = voice.gen, parts = (text.match(/[^.!?]+[.!?]*/g) || [text]).map((x) => x.trim()).filter(Boolean);
+  voice.speaking = true; listenStop();
+  let i = 0;
+  if (voice.server) {
+    let next = fetchSpeech(parts[0]);
+    for (; i < parts.length; i++) {
+      const blob = await next; if (g !== voice.gen) return;
+      if (!blob) break;
+      if (i + 1 < parts.length) next = fetchSpeech(parts[i + 1]);
+      if (!(await playBlob(blob))) break;
+      if (g !== voice.gen) return;
+    }
+  }
+  if (i < parts.length && g === voice.gen) await browserSay(parts.slice(i).join(" "));
+  if (g === voice.gen) voice.speaking = false;
+}
+// Voice in: press Talk, say one thing (Chrome's speech recognition).
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;
+function listenStop() { if (rec) { try { rec.abort(); } catch (err) { /* already stopped */ } rec = null; $("#askMic").classList.remove("listening"); } }
+function listenOnce() {
+  if (!SR) { askInfo("Voice input needs Chrome: type instead."); return; }
+  if (rec) { listenStop(); return; }
+  stopSpeaking();
+  rec = new SR(); rec.lang = "en-GB"; rec.interimResults = false; rec.maxAlternatives = 1;
+  $("#askMic").classList.add("listening"); askInfo("Listening…");
+  rec.onresult = (e) => { const t = e.results[0][0].transcript; $("#askText").value = t; listenStop(); handleUtterance(t); };
+  rec.onerror = (e) => { askInfo(e.error === "not-allowed" ? "Microphone blocked: allow it in the address bar, or type." : "Didn't catch that (" + e.error + "). Try again or type."); listenStop(); };
+  rec.onend = () => listenStop();
+  try { rec.start(); } catch (err) { listenStop(); }
 }
 function renderEvents() {
   $("#events").textContent = events.slice(-14).reverse().map((e) => JSON.stringify(e)).join("\n");
@@ -1184,7 +1470,15 @@ function bundleFor(it) {
     last_seen: lastSeen[it.id] ? { zone: lastSeen[it.id].zone, time: clockAt(lastSeen[it.id].tick).slice(0, 5), ago: agoText(world.tick - lastSeen[it.id].tick) } : null,
     recent_events: events.filter((e) => e.item === it.id + "-1").slice(-6),
     already_checked: session && session.item === it.id ? session.tried : [],
-    search_plan: rank(b).slice(0, 4).map((x) => ({ place: x.pl.name, probability: +x.p.toFixed(3), seconds: x.t }))
+    search_plan: rank(b).slice(0, 4).map((x) => ({ place: x.pl.name, zone: x.pl.id, probability: +x.p.toFixed(3), word: probWord(x.p), seconds: x.t })),
+    // where the person went since it was last seen (SPEC 5.3 memory prompts); times from code
+    trail_since_last_seen: trailFor(it.id).visits.slice(-8).map((v) => ({ place: placeName(v.zone), from: hhmm(v.from), minutes: Math.max(1, Math.round((v.to - v.from) / 60)) })),
+    // for the guide server's plan update (SPEC 4.4): what Trace believes, per place
+    item_name: it.name.toLowerCase(),
+    places: PLACES.map((pl) => ({ id: pl.id, name: pl.name, kind: pl.kind, t: pl.t,
+      pv: +(pl.kind === "zone" ? b[2 * pl.i] : pl.kind === "person" ? b[2 * Z] : b[2 * Z + 1]).toFixed(5),
+      pc: +(pl.kind === "zone" ? b[2 * pl.i + 1] : 0).toFixed(5), phone: pl.kind === "zone" && MAP.zones[pl.i].camera })),
+    search: { vis: S_VIS, cov: S_COV, person: S_PERSON, out: S_OUT }
   };
 }
 function renderBundle() { $("#bundle").textContent = JSON.stringify(bundleFor(itemById(selected)), null, 2); }
@@ -1192,7 +1486,8 @@ function renderLegend() {
   $("#legend").innerHTML = ITEMS.map((it) => '<span><span class="dot" style="background:' + it.color + '"></span>' + esc(it.name) + "</span>").join("") +
     '<span><span class="dot" style="border:2px dashed var(--muted);width:10px;height:10px"></span>covered</span>' +
     '<span><span class="dot" style="background:var(--ink)"></span>person</span>' +
-    '<span><span class="dot" style="background:var(--muted);border-radius:2px"></span>phone watching the zone</span>';
+    '<span><span class="dot" style="background:var(--muted);border-radius:2px"></span>phone watching the zone</span>' +
+    '<span><span class="dot" style="background:#e07a2e;opacity:.6"></span>where you were since it was last seen</span>';
 }
 function tile(k, v, sub) { return '<div class="tile"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + "</div>" + (sub ? '<div class="s">' + esc(sub) + "</div>" : "") + "</div>"; }
 function durText(ticks) { const m = Math.round(ticks * TICK_S / 60); return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min"; }
@@ -1612,8 +1907,12 @@ function build3D() {
       phone = { coneM, ledM };
     }
     const bm = beam(P); bm.scale.set(Math.min(0.42, f.D * 0.3 + 0.08), 0.01, Math.min(0.42, f.D * 0.3 + 0.08)); root.add(bm);
+    // the person's trail: a warm patch where they stand at this zone, brighter the longer they stayed
+    const trailM = new THREE.MeshBasicMaterial({ color: P.next, transparent: true, opacity: 0, depthWrite: false });
+    const trail = new THREE.Mesh(new THREE.CircleGeometry(0.6, 24), trailM);
+    trail.rotation.x = -Math.PI / 2; trail.position.copy(standSpot(f, W, H)); trail.position.y = 0.009; trail.renderOrder = 1; root.add(trail);
     const lbl = document.createElement("div"); lbl.className = "lbl";
-    return { z, f, glowM, beam: bm, phone, lbl, base: TOP[z.type] };
+    return { z, f, glowM, beam: bm, phone, lbl, base: TOP[z.type], trailM };
   });
 
   // person
@@ -1636,7 +1935,10 @@ function build3D() {
   const oL = document.createElement("div"); oL.className = "lbl"; labels.appendChild(oL);
 
   for (const a of anim) { if (a.mode === "y") a.o.scale.y = 0.001; else a.o.scale.setScalar(0.001); }
-  Object.assign(R3, { P, zones, person, pBeam, oBeam, car, items, pL, oL, anim, W, H, doorZ,
+  const outTrailM = new THREE.MeshBasicMaterial({ color: P.next, transparent: true, opacity: 0, depthWrite: false });
+  const outTrail = new THREE.Mesh(new THREE.CircleGeometry(0.9, 24), outTrailM);
+  outTrail.rotation.x = -Math.PI / 2; outTrail.position.set(car.position.x + 0.7, 0.012, car.position.z + 0.6); root.add(outTrail);
+  Object.assign(R3, { outTrailM, P, zones, person, pBeam, oBeam, car, items, pL, oL, anim, W, H, doorZ,
     personPos: null, t0: performance.now(), buildEnd: 0.4 + MAP.zones.length * 0.14 + 0.9 });
   resetView();
 }
@@ -1650,15 +1952,18 @@ function resetView() {
 
 function easeBack(t) { const c = 1.70158, u = t - 1; return 1 + (c + 1) * u * u * u + c * u * u; }
 
-function personTarget3() {
-  if (world.person.outside) return new THREE.Vector3(R3.car.position.x + 0.7, 0, R3.car.position.z + 0.6);
-  const zo = R3.zones[ZI[world.person.zone]], f = zo.f;
-  const dir = new THREE.Vector3(R3.W / 2 - f.cx, 0, R3.H / 2 - f.cz);
+// Where someone stands to use a piece of furniture: in front of it, towards the middle of the room.
+function standSpot(f, W, H) {
+  const dir = new THREE.Vector3(W / 2 - f.cx, 0, H / 2 - f.cz);
   if (dir.lengthSq() < 0.01) dir.set(0, 0, 1);
   dir.normalize();
   const p = new THREE.Vector3(f.cx, 0, f.cz).add(dir.multiplyScalar(f.D / 2 + 0.3));
-  p.x = Math.max(0.25, Math.min(R3.W - 0.25, p.x)); p.z = Math.max(0.25, Math.min(R3.H - 0.25, p.z));
+  p.x = Math.max(0.25, Math.min(W - 0.25, p.x)); p.z = Math.max(0.25, Math.min(H - 0.25, p.z));
   return p;
+}
+function personTarget3() {
+  if (world.person.outside) return new THREE.Vector3(R3.car.position.x + 0.7, 0, R3.car.position.z + 0.6);
+  return standSpot(R3.zones[ZI[world.person.zone]].f, R3.W, R3.H);
 }
 
 function itemSpot(it, st, k, n) {
@@ -1716,6 +2021,9 @@ function draw3D(now) {
 
   const b = session ? session.b : beliefs[selected], it = itemById(selected);
   const nextId = session && !session.result ? (rank(session.b)[0] || {}).pl : null;
+  const trailShown = $("#trailChk").checked, trailMin = trailCache && trailCache.id === selected ? trailCache.minutes : {};
+  const trailMax = Math.max(0, ...Object.values(trailMin));
+  R3.outTrailM.opacity = trailShown && trailMax > 0 && trailMin.outside ? (0.12 + 0.5 * trailMin.outside / trailMax) * built : 0;
   const seen = visibleAt(selected);
 
   // person
@@ -1731,6 +2039,7 @@ function draw3D(now) {
   R3.zones.forEach((zo, i) => {
     const p = placeP(b, PLACES[i]), isNext = nextId && nextId.kind === "zone" && nextId.i === i;
     zo.glowM.opacity = Math.min(0.5, p * 0.55) * built;
+    zo.trailM.opacity = trailShown && trailMax > 0 ? (0.12 + 0.5 * (trailMin[zo.z.id] || 0) / trailMax) * ((trailMin[zo.z.id] || 0) > 0 ? 1 : 0) * built : 0;
     zo.glowM.color.setHex(isNext ? P.next : P.accent);
     setBeam(zo.beam, zo.base, p, zo.f.cx, zo.f.cz, isNext, P, built);
     if (zo.phone) {
@@ -2344,6 +2653,10 @@ $("#play").onclick = () => { running = !running; renderAll(); };
 $("#speed").addEventListener("click", (e) => { const bt = e.target.closest("button[data-s]"); if (!bt) return; speed = +bt.dataset.s; document.querySelectorAll("#speed button").forEach((x) => x.setAttribute("aria-pressed", String(x === bt))); });
 $("#skip").onclick = () => { if (session) return; for (let k = 0; k < 360; k++) liveTick(); renderAll(); };
 $("#reset").onclick = () => { resetDay(); renderAll(); };
+$("#askSend").onclick = () => { const t = $("#askText").value; $("#askText").value = ""; handleUtterance(t); };
+$("#askText").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#askSend").click(); });
+$("#askMic").onclick = listenOnce;
+if (!SR) $("#askMic").title = "Voice input needs Chrome";
 $("#liveBtn").onclick = () => { if (live) { closeLive(); setReplayUI(); liveNote("Live: disconnected."); } else connectLive(); };
 $("#modeSeg").addEventListener("click", (e) => { const bt = e.target.closest("button[data-m]"); if (bt && (bt.dataset.m === "real") !== !!replay) setMode(bt.dataset.m); });
 $("#replayFile").addEventListener("change", (e) => {

@@ -12,14 +12,27 @@ plus OpenCV only; no keys, and nothing leaves your network.
   GET /api/snapshots/<id>.jpg    frame it was last seen in      (memory/snapshots)
   GET /api/live/<camera>.mjpg    live video of one camera (MJPEG, about LIVE_FPS frames a second)
   GET /api/live/<camera>.jpg     the latest single frame
+  POST /api/ask {"bundle", "utterance", "mode"}
+                                 the guide (guide.py, SPEC 5): parses what was said into evidence
+                                 and words the answer with the LLM (two calls at most), returns
+                                 {"say", "places", "evidence", "chirp", "intent", "item", "source"}.
+                                 No GEMINI_API_KEY: a rules parser, and "say" is null (the page
+                                 then speaks its own template sentence).
+  POST /api/chirp/<zone>         ask that zone's phone to beep; {"id", "phone": true if a phone
+                                 page for that zone checked in during the last 5 s}
+  GET  /api/chirp/<zone>         what a phone page polls: {"id"} of the latest chirp
+  GET  /sim                      the 3D room and guide (trace-sim/index.html)
+  GET  /phone?zone=<id>          the page a phone opens to beep for its zone
   POST /api/speech {"text", "voice": "female"|"male"}
                                  Trace's voice: a WAV of the line, made by tts.py (Kokoro,
                                  offline). 503 when kokoro isn't installed; the page then
                                  uses the browser's own voice instead.
 
 The live video is the raw camera picture; trace.html draws the item boxes on
-top itself. /api/ask is not served yet, so Trace answers from its built-in
-rules in the page.
+top itself.
+
+Without multicam.py (no cameras, e.g. replaying events.jsonl):  python trace_api.py
+then open http://localhost:8000/sim
 
 By default the server only listens on this computer (127.0.0.1). To open Trace
 on a phone, start multicam.py with --api-host 0.0.0.0 and browse to
@@ -51,6 +64,38 @@ LIVE_FPS = 8            # frames a second per viewer; phones on Wi-Fi cope well 
 JPEG_QUALITY = 72
 STALL_SECS = 8          # end a live stream after this long without a new frame
 SPEECH_MAX = 600        # characters per /api/speech request; Trace's lines are far shorter
+CHIRP_SEEN = 5.0        # a phone page that polled this recently counts as listening
+
+PHONE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Trace phone</title>
+<style>body{margin:0;font:18px system-ui,sans-serif;background:#0f1513;color:#e4ebe7;display:grid;place-items:center;min-height:100vh;text-align:center}
+button{font:inherit;padding:16px 26px;border-radius:12px;border:0;background:#6cb6d6;color:#0b1418;font-weight:700}
+.flash{animation:f .25s 6 alternate}@keyframes f{to{background:#f0a943}}p{color:#97a49d;max-width:22em;margin:12px auto}</style></head>
+<body><main><h1 id="z">Trace phone</h1><button id="go">Tap to turn sound on</button><p id="s">This phone beeps when Trace sends someone to its place.</p></main>
+<script>
+const zone = new URLSearchParams(location.search).get("zone") || "";
+document.getElementById("z").textContent = zone ? "Trace phone: " + zone : "Add ?zone=<id> to the address";
+let ctx = null, last = null;
+function beep() {
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  for (let k = 0; k < 3; k++) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 1320; o.connect(g); g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.0001, t + k * 0.35); g.gain.exponentialRampToValueAtTime(0.6, t + k * 0.35 + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + k * 0.35 + 0.25); o.start(t + k * 0.35); o.stop(t + k * 0.35 + 0.3);
+  }
+  document.body.classList.remove("flash"); void document.body.offsetWidth; document.body.classList.add("flash");
+}
+document.getElementById("go").onclick = () => { ctx = ctx || new AudioContext(); ctx.resume(); beep();
+  document.getElementById("go").textContent = "Sound on"; document.getElementById("s").textContent = "Listening for Trace. Keep this page open."; };
+async function poll() {
+  try { const r = await fetch("/api/chirp/" + encodeURIComponent(zone), { cache: "no-store" }); const j = await r.json();
+    if (last !== null && j.id !== last) beep(); last = j.id; } catch (e) { /* laptop not reachable: try again */ }
+  setTimeout(poll, 1000);
+}
+if (zone) poll();
+</script></body></html>"""
 
 
 def wav_bytes(audio, rate):
@@ -73,6 +118,8 @@ class TraceAPI:
         # Replaced wholesale by multicam.py (one assignment), so a request never sees half a list.
         self.items = []
         self.httpd = None
+        self.chirps = {}        # zone -> id of the latest chirp
+        self.polls = {}         # zone -> when a phone page last asked
 
     # ------------------------------------------------------------ data
     def cameras(self):
@@ -137,9 +184,34 @@ class TraceAPI:
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(min(n, 64 * 1024))
-                if urlparse(self.path).path == "/api/speech":
+                p = urlparse(self.path).path
+                if p == "/api/speech":
                     return self._speech(raw)
+                if p == "/api/ask":
+                    return self._ask(raw)
+                m = re.fullmatch(r"/api/chirp/([a-z0-9-]+)", p)
+                if m:
+                    z = m.group(1)
+                    api.chirps[z] = api.chirps.get(z, 0) + 1
+                    return self._json({"id": api.chirps[z], "phone": time.time() - api.polls.get(z, 0) < CHIRP_SEEN})
                 self._json({"error": "not available yet"}, 501)
+
+            def _ask(self, raw):
+                try:
+                    body = json.loads(raw or b"{}")
+                    bundle, said = body["bundle"], str(body.get("utterance", "")).strip()[:500]
+                    mode = body.get("mode") if body.get("mode") in ("default", "blind", "dementia") else "default"
+                except (ValueError, KeyError, AttributeError, TypeError):
+                    return self._json({"error": "bad json: needs bundle and utterance"}, 400)
+                import guide                   # imported here so multicam.py starts without it
+                try:
+                    res = guide.ask(bundle, said, mode)
+                except Exception as exc:
+                    print("guide: %s: %s" % (type(exc).__name__, exc))
+                    return self._json({"error": "guide failed"}, 500)
+                for e in res.get("errors") or []:
+                    print("guide:", e)
+                self._json(res)
 
             def _speech(self, raw):
                 if not VOICE:
@@ -166,6 +238,16 @@ class TraceAPI:
                 try:
                     if p in ("/", "/trace.html"):
                         return self._file(ROOT / "trace.html", "text/html; charset=utf-8")
+                    if p in ("/sim", "/sim/", "/trace-sim/", "/trace-sim/index.html"):
+                        return self._file(ROOT / "trace-sim" / "index.html", "text/html; charset=utf-8")
+                    if p == "/trace-sim/sample-events.jsonl":
+                        return self._file(ROOT / "trace-sim" / "sample-events.jsonl", "application/x-ndjson")
+                    if p == "/phone":
+                        return self._bytes(PHONE_PAGE.encode(), "text/html; charset=utf-8")
+                    m = re.fullmatch(r"/api/chirp/([a-z0-9-]+)", p)
+                    if m:
+                        api.polls[m.group(1)] = time.time()
+                        return self._json({"id": api.chirps.get(m.group(1), 0)})
                     if p == "/api/cameras":
                         return self._json(api.cameras())
                     if p == "/api/items":
@@ -237,3 +319,20 @@ class TraceAPI:
         if httpd:
             httpd.shutdown()
             httpd.server_close()
+
+
+if __name__ == "__main__":
+    # Standalone: the guide, the 3D page and phone chirps without cameras (multicam.py normally
+    # starts this server itself, with its cameras).
+    import argparse
+    ap = argparse.ArgumentParser(description="Trace's HTTP server without cameras")
+    ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 lets phones on your Wi-Fi reach /phone")
+    ap.add_argument("--port", type=int, default=8000)
+    a = ap.parse_args()
+    srv = TraceAPI([], ROOT / "memory", ROOT / "events.jsonl").start(a.host, a.port)
+    print("3D room and guide: http://localhost:%d/sim   phone beeper: http://<this-laptop>:%d/phone?zone=<id>" % (a.port, a.port))
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        srv.stop()

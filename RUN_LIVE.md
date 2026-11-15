@@ -53,6 +53,34 @@ as a webcam; if the laptop's own camera is 0, the phone is usually 1.
 Stop with Ctrl+C in each terminal. `events.jsonl` keeps growing across runs (it's git-ignored);
 delete it between demo runs if you want a clean start (`Remove-Item events.jsonl`).
 
+## The guide: ask Trace by voice or text (branch `demo`)
+
+```powershell
+copy .env.example .env      # then paste the team's GEMINI_API_KEY into .env (never commit it)
+python trace_api.py         # or multicam.py, which starts the same server with its cameras
+```
+
+Open **http://localhost:8000/sim** in Chrome (serving it from the same server avoids browser
+security prompts). Load events or press Connect live as above, then in **Ask Trace**: type, or
+press **🎤 Talk** and speak (allow the microphone). Pick the mode: Everyone, Blind / low vision,
+Dementia.
+
+- "not there", "found it" and "again" are handled in the page, no LLM.
+- Everything else goes to `POST /api/ask`: the LLM turns what you said into evidence ("I had a
+  quick look under the cushions" → sofa, covered, low) and words the answer from the updated plan.
+  At most two LLM calls. The page applies the evidence to its own model and checks the answer
+  (SPEC 5.2: only places in the plan, probability words that match the code, times from the model,
+  no "definitely", nobody named as moving things). If it fails, or there's no key, Trace says its
+  own template sentence instead. The note under the box says which happened and why.
+- Chirp: if the answer sends you to a watched zone, that zone's phone beeps. On each phone, open
+  `http://<laptop-ip>:8000/phone?zone=<zone id>` and tap "turn sound on" (start the server with
+  `python trace_api.py --host 0.0.0.0` so phones can reach it). With no phone page open, the
+  laptop beeps.
+- The orange patches on the floor are where you were since the item was last seen (from
+  person_here / person_left); the same trail goes to the LLM for memory prompts.
+
+Tests without a key or network: `python test_guide.py` and `node trace-sim/test-core.js`.
+
 ## Plugging in a different camera program
 
 1. Print one JSON object per detection per frame on stdout (stderr for everything else), and flush each frame.
