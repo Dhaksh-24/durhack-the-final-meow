@@ -7,7 +7,10 @@ numpy
 # YOLO-World's text encoder; ultralytics also installs this itself on first run
 clip @ git+https://github.com/ultralytics/CLIP.git
 
-# Trace's offline voice (tts.py)
+# Trace's natural voice (tts.py): Microsoft neural voices, online, no API key
+edge-tts>=7
+
+# Trace's offline voice (tts.py), used when there's no internet
 kokoro>=0.9.4
 soundfile
 sounddevice

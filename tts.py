@@ -1,6 +1,16 @@
-"""tts.py -- Trace's voice: calm, offline speech with Kokoro-82M.
+"""tts.py -- Trace's voice.
 
-No cloud, no API key, no rate limit. The model (~330 MB) downloads once
+Two engines:
+
+  edge    (default) Microsoft's neural voices through edge-tts: very natural, free,
+          no API key, about half a second a sentence. Needs internet, and the
+          text of each line goes to Microsoft's speech service (the camera video
+          never does). Voices: EDGE_VOICES.
+  kokoro  Kokoro-82M on this computer: offline, nothing leaves the machine, a
+          bit more synthetic. Used whenever edge is unavailable (no internet,
+          edge-tts not installed), or always with TRACE_VOICE=kokoro.
+
+Kokoro: no cloud, no API key, no rate limit. The model (~330 MB) downloads once
 from Hugging Face and is read from the local cache after that, so the voice
 keeps working with the network unplugged.
 
@@ -21,7 +31,9 @@ From the command line:
     python tts.py --samples                        # samples/<voice>.wav, one per candidate voice
     python tts.py --prerender                      # audio/<voice>/<slug>.wav for LINES
 
-    python tts.py --audition                       # samples/audition/*.wav: voices, blends, speeds
+    python tts.py --audition                       # samples/audition/*.wav: Kokoro voices, blends, speeds
+    python tts.py --audition-edge                  # samples/audition-edge/*.mp3: Microsoft voices
+    python tts.py "Found them." --engine kokoro    # force one engine
 
 Voices: ids starting "a" are American English, "b" British English; the
 first letter picks the Kokoro pipeline. Pre-rendered lines (--prerender) are
@@ -41,6 +53,7 @@ Kokoro needs Python 3.10 - 3.12 (its spaCy dependency has no 3.13+ build).
 """
 import argparse
 import importlib.util
+import io
 import os
 import queue
 import re
@@ -48,11 +61,22 @@ import sys
 import threading
 import time
 import warnings
+import wave
 
 import numpy as np
 
+# "edge" (natural, online) or "kokoro" (offline). TRACE_VOICE=kokoro keeps everything local.
+ENGINE = os.environ.get("TRACE_VOICE", "edge").strip().lower()
+# Microsoft's most conversational voices; see --audition-edge for others (Sonia, Ryan, Emma, ...)
+EDGE_VOICES = {"female": "en-US-AvaMultilingualNeural", "male": "en-US-AndrewMultilingualNeural"}
+EDGE_RATE = "+0%"            # e.g. "-5%" for a touch slower
+EDGE_AUDITION = ["en-US-AvaMultilingualNeural", "en-US-EmmaMultilingualNeural", "en-US-JennyNeural",
+                 "en-GB-SoniaNeural", "en-GB-LibbyNeural", "en-US-AndrewMultilingualNeural",
+                 "en-US-BrianMultilingualNeural", "en-US-GuyNeural", "en-GB-RyanNeural", "en-GB-ThomasNeural"]
+EDGE_RETRY_SECS = 60         # after a failure (no internet), use Kokoro this long before trying edge again
+
 REPO = "hexgrad/Kokoro-82M"
-RATE = 24000                 # Kokoro always outputs 24 kHz mono
+RATE = 24000                 # Kokoro always outputs 24 kHz mono; edge is asked for 24 kHz too
 
 # Blends picked from --audition (clips 03 and 14): af_heart is Kokoro's best voice,
 # af_bella adds warmth; am_puck darkens am_michael (and alone it peaks near clipping).
@@ -129,9 +153,187 @@ last_latency = None          # seconds from speak() to sound, for the last line
 
 
 def missing():
-    """Names of the packages the voice needs but cannot find, [] if none."""
+    """Names of the packages the offline (Kokoro) voice needs but cannot find, [] if none."""
     return [name for name in ("kokoro", "soundfile")
             if importlib.util.find_spec(name) is None]
+
+
+def edge_installed():
+    return importlib.util.find_spec("edge_tts") is not None
+
+
+def available():
+    """True when Trace can speak at all (edge or Kokoro)."""
+    return (ENGINE == "edge" and edge_installed()) or not missing()
+
+
+# --------------------------------------------------------------------------
+# Edge (Microsoft neural voices, online)
+# --------------------------------------------------------------------------
+
+_edge_cache = {}             # (text, voice, rate) -> mp3 bytes
+_edge_down_until = 0.0
+
+
+def _gender_of(voice):
+    """Kokoro voice id -> "female"/"male" when it is one of VOICES, else None."""
+    for gender, v in VOICES.items():
+        if v == voice:
+            return gender
+    return None
+
+
+def _edge_voice(voice):
+    """The edge voice to use for this Kokoro voice, or None to use Kokoro."""
+    if ENGINE != "edge" or time.time() < _edge_down_until or not edge_installed():
+        return None
+    gender = _gender_of(voice)
+    return EDGE_VOICES.get(gender) if gender else None
+
+
+def _edge_saved(text, voice):
+    """MP3 bytes of a pre-rendered online-voice line (works offline too), or None."""
+    gender = _gender_of(voice)
+    if ENGINE != "edge" or not gender or text not in LINES:
+        return None
+    path = os.path.join(AUDIO_DIR, "edge", EDGE_VOICES[gender], slug(text) + ".mp3")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _edge_failed(exc):
+    global _edge_down_until
+    _edge_down_until = time.time() + EDGE_RETRY_SECS
+    print("tts: online voice unavailable (%s: %s); using the offline voice for %ds"
+          % (type(exc).__name__, exc, EDGE_RETRY_SECS))
+
+
+def edge_stream(text, edge_voice, rate=None):
+    """Yield MP3 chunks (24 kHz mono) of text in a Microsoft neural voice as they arrive,
+    so playback can start after ~0.7 s instead of waiting for the whole clip. Cached and
+    pre-rendered lines come back in one piece. Raises before the first chunk on failure."""
+    rate = EDGE_RATE if rate is None else rate
+    key = (text, edge_voice, rate)
+    if key in _edge_cache:
+        yield _edge_cache[key]
+        return
+    path = os.path.join(AUDIO_DIR, "edge", edge_voice, slug(text) + ".mp3")
+    if text in LINES and rate == EDGE_RATE and os.path.exists(path):
+        with open(path, "rb") as f:          # pre-rendered: instant, and works offline
+            yield f.read()
+        return
+
+    import asyncio
+    import edge_tts
+    loop = asyncio.new_event_loop()
+    try:
+        err = None
+        # The multilingual voices now and then send nothing back for very short lines
+        # ("Okay.", "Found them."); the same words without the full stop usually work.
+        for attempt in dict.fromkeys([text, text.rstrip(".!?") or text]):
+            stream = edge_tts.Communicate(attempt, edge_voice, rate=rate,
+                                          connect_timeout=4, receive_timeout=15).stream()
+            got = bytearray()
+            try:
+                while True:
+                    try:
+                        chunk = loop.run_until_complete(stream.__anext__())
+                    except StopAsyncIteration:
+                        break
+                    if chunk["type"] == "audio" and chunk["data"]:
+                        got.extend(chunk["data"])
+                        yield chunk["data"]
+            except edge_tts.exceptions.NoAudioReceived as exc:
+                if got:
+                    break
+                err = exc
+                continue
+            if got:
+                if len(_edge_cache) >= CACHE_MAX:
+                    _edge_cache.pop(next(iter(_edge_cache)))
+                _edge_cache[key] = bytes(got)
+                return
+        raise err or RuntimeError("no audio came back")
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            loop.close()
+
+
+def edge_mp3(text, edge_voice, rate=None):
+    """The whole MP3 of text in a Microsoft neural voice. Raises on failure."""
+    return b"".join(edge_stream(text, edge_voice, rate))
+
+
+def _decode_mp3(data):
+    import soundfile as sf
+    audio, rate = sf.read(io.BytesIO(data), dtype="float32")
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if rate != RATE:                          # edge is asked for 24 kHz, but just in case
+        n = int(len(audio) * RATE / rate)
+        audio = np.interp(np.linspace(0, len(audio), n, endpoint=False), np.arange(len(audio)), audio).astype(np.float32)
+    return audio
+
+
+def wav_bytes(audio, rate=RATE):
+    """float32 mono samples -> a 16-bit WAV file in memory."""
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def speech_file(text, gender=None):
+    """(audio bytes, mime type, engine) for one line, for the web page.
+    Edge MP3 when it can, else Kokoro WAV. Raises when neither works."""
+    text = text.strip()
+    voice = _resolve(gender)
+    ev = _edge_voice(voice)
+    if ev:
+        try:
+            return edge_mp3(text, ev), "audio/mpeg", "edge"
+        except Exception as exc:
+            _edge_failed(exc)
+    saved = _edge_saved(text, voice)         # offline, but this line was pre-rendered: same voice
+    if saved:
+        return saved, "audio/mpeg", "edge"
+    if missing():
+        raise RuntimeError("no voice: the online voice failed and kokoro is not installed")
+    return wav_bytes(_kokoro_audio(text, voice)), "audio/wav", "kokoro"
+
+
+def speech_stream(text, gender=None):
+    """(mime type, engine, chunks): like speech_file(), but the online voice's audio comes
+    out as it's made. Falls back to speech_file() (Kokoro, in one piece) when it can't."""
+    import itertools
+    text = text.strip()
+    ev = _edge_voice(_resolve(gender))
+    if ev:
+        chunks = edge_stream(text, ev)
+        try:
+            first = next(chunks)              # no internet shows up here, before anything is sent
+            return "audio/mpeg", "edge", itertools.chain([first], chunks)
+        except StopIteration:
+            pass
+        except Exception as exc:
+            _edge_failed(exc)
+    data, mime, engine = speech_file(text, gender)
+    return mime, engine, iter([data])
+
+
+def current_engine():
+    """What Trace would speak with right now: "edge", "kokoro" or "none"."""
+    if _edge_voice(VOICES["female"]):
+        return "edge"
+    return "none" if missing() else "kokoro"
 
 
 # --------------------------------------------------------------------------
@@ -230,6 +432,10 @@ def warm_up(block=True):
     once; a failure there (say, the model was never downloaded and there is
     no internet) is printed as one line rather than raised.
     """
+    if missing():                         # no Kokoro: nothing to load (edge needs no warm-up)
+        print("voice: %s" % ("online (Microsoft %s)" % EDGE_VOICES["female"] if ENGINE == "edge" and edge_installed()
+                             else "none -- pip install -r requirements.txt"))
+        return None
     if not block:
         threading.Thread(target=_warm_up_quietly, daemon=True).start()
         return None
@@ -322,11 +528,25 @@ def _prerendered(text, voice):
 
 
 def audio(text, gender=None):
-    """Like synth(), but uses a pre-rendered file when there is one for this exact line."""
+    """Float32 samples at RATE: the online voice when it's up, else Kokoro
+    (pre-rendered lines straight from disk either way)."""
     return _audio_for(text.strip(), _resolve(gender))
 
 
 def _audio_for(text, voice):
+    ev = _edge_voice(voice)
+    if ev:
+        try:
+            return _decode_mp3(edge_mp3(text, ev))
+        except Exception as exc:          # offline, blocked, ...: the offline voice takes over
+            _edge_failed(exc)
+    saved = _edge_saved(text, voice)
+    if saved:
+        return _decode_mp3(saved)
+    return _kokoro_audio(text, voice)
+
+
+def _kokoro_audio(text, voice):
     """Pre-rendered file if there is one, else synthesise (both cached)."""
     key = (text, voice, SPEED)
     if key in _cache:
@@ -439,8 +659,44 @@ def audition():
     print("Listen, then put your favourites in VOICES (and CALM_SPEED) at the top of tts.py.")
 
 
+def prerender_edge():
+    """audio/edge/<voice>/<slug>.mp3 for LINES in both EDGE_VOICES: instant, and they
+    still play when the internet is down."""
+    for ev in EDGE_VOICES.values():
+        for line in LINES:
+            path = os.path.join(AUDIO_DIR, "edge", ev, slug(line) + ".mp3")
+            if os.path.exists(path):
+                continue
+            try:
+                data = edge_mp3(line, ev)
+            except Exception:                 # one retry: the service drops the odd request
+                time.sleep(1)
+                data = edge_mp3(line, ev)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+            print("wrote %s" % os.path.relpath(path, HERE))
+
+
+def audition_edge():
+    """samples/audition-edge/NN_<voice>.mp3: the same Trace answer in each EDGE_AUDITION voice."""
+    folder = os.path.join(SAMPLES_DIR, "audition-edge")
+    os.makedirs(folder, exist_ok=True)
+    for i, ev in enumerate(EDGE_AUDITION, 1):
+        path = os.path.join(folder, "%02d_%s.mp3" % (i, ev))
+        try:
+            data = edge_mp3(AUDITION_LINE, ev)
+        except Exception as exc:              # a voice Microsoft has retired, a network blip, ...
+            print("skipped %s (%s)" % (ev, type(exc).__name__))
+            continue
+        with open(path, "wb") as f:
+            f.write(data)
+        print("wrote %s" % os.path.relpath(path, HERE))
+    print("Listen, then put your favourites in EDGE_VOICES at the top of tts.py.")
+
+
 def main():
-    global SPEED
+    global SPEED, ENGINE
     parser = argparse.ArgumentParser(description="Trace's offline voice (Kokoro-82M).")
     parser.add_argument("text", nargs="?", help="what to say")
     parser.add_argument("--male", action="store_true", help="use %s" % VOICES["male"])
@@ -452,10 +708,20 @@ def main():
     parser.add_argument("--prerender", action="store_true",
                         help="write audio/<voice>/<slug>.wav for the fixed lines")
     parser.add_argument("--audition", action="store_true",
-                        help="write samples/audition/*.wav: voices, blends and speeds to pick from")
+                        help="write samples/audition/*.wav: Kokoro voices, blends and speeds to pick from")
+    parser.add_argument("--audition-edge", action="store_true",
+                        help="write samples/audition-edge/*.mp3: Microsoft neural voices to pick from")
+    parser.add_argument("--engine", choices=["edge", "kokoro"], help="force one engine (default: %s)" % ENGINE)
     args = parser.parse_args()
 
-    if missing():
+    if args.engine:
+        ENGINE = args.engine
+    if args.audition_edge:
+        if not edge_installed():
+            sys.exit("needs edge-tts: pip install edge-tts")
+        audition_edge()
+        return
+    if missing() and not (ENGINE == "edge" and edge_installed()):
         sys.exit("the voice needs %s: pip install \"kokoro>=0.9.4\" soundfile "
                  "sounddevice (Python 3.10-3.12)" % ", ".join(missing()))
     SPEED = args.speed
@@ -468,20 +734,25 @@ def main():
         audition()
         return
     if args.prerender:
-        prerender([args.voice] if args.voice else list(VOICES.values()))
+        if ENGINE == "edge" and edge_installed():
+            prerender_edge()
+        if not missing():
+            prerender([args.voice] if args.voice else list(VOICES.values()))
         return
     if not args.text:
         parser.error("give some text, or --samples / --prerender")
 
     t0 = time.perf_counter()
+    who = _edge_voice(voice) or voice
     if args.out:
-        save(args.text, args.out)
-        seconds = len(synth(args.text)) / RATE
+        import soundfile as sf
+        samples = audio(args.text)
+        sf.write(args.out, samples, RATE)
         print("wrote %s (%.1fs of audio, %s, in %.1fs)"
-              % (args.out, seconds, voice, time.perf_counter() - t0))
+              % (args.out, len(samples) / RATE, who, time.perf_counter() - t0))
     else:
         speak(args.text, block=True)
-        print("said it with %s in %.1fs" % (voice, time.perf_counter() - t0))
+        print("said it with %s in %.1fs" % (who, time.perf_counter() - t0))
 
 
 if __name__ == "__main__":

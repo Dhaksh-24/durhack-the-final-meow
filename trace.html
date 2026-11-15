@@ -410,6 +410,12 @@ button.cam:hover .watch { background: var(--teal); color: var(--navy); }
 .down-lbl { display: inline-flex; align-items: center; gap: 5px; color: var(--quiet); }
 .down-lbl .i { width: 14px; height: 14px; }
 .cam-count { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.cams > li.cams-empty {
+  flex: 1; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 11px 14px; background: var(--card);
+  border: 1px dashed var(--line); border-radius: 12px; font-size: 13.5px; color: var(--muted);
+}
+.cams-empty .cam-name .i { color: var(--quiet); }
+.cams-empty code { font-family: var(--font-mono); font-size: 12.5px; color: var(--text); }
 
 /* layout */
 .cols { display: grid; gap: 0 28px; grid-template-columns: minmax(0, 1fr); }
@@ -478,6 +484,12 @@ button.cam:hover .watch { background: var(--teal); color: var(--navy); }
 .state-card h3 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 18px; letter-spacing: -.01em; }
 .state-card p { margin: 0; color: var(--muted); max-width: 40ch; }
 .state-card .btn-quiet { margin-top: 12px; }
+/* "No items yet": one short row instead of a tall card, so an empty room doesn't leave a gap */
+.state-card.compact { flex-direction: row; align-items: center; text-align: left; gap: 18px; padding: 16px 20px; }
+.state-card.compact .art { width: 84px; height: 54px; margin: 0; flex: none; }
+.state-card.compact h3 { font-size: 15.5px; }
+.state-card.compact p { max-width: none; font-size: 13.5px; margin-top: 3px; }
+@media (max-width: 420px) { .state-card.compact .art { display: none; } }
 
 /* activity */
 .feed { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
@@ -1162,7 +1174,7 @@ function say(text, { itemId = null, log = true } = {}) {
 const voice = {
   on: store.get("trace.voice") !== "off",
   gender: store.get("trace.gender") === "male" ? "male" : "female",
-  gen: 0, last: "", speaking: false, stop: null, server: true,
+  gen: 0, last: "", speaking: false, stop: null, server: true, engine: null,
 };
 function setSpeaking(on) {
   voice.speaking = on;
@@ -1221,10 +1233,35 @@ async function fetchSpeech(text) {
     const r = await fetch(API_BASE + "/api/speech", {
       method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice: voice.gender }),
     });
-    if (r.ok) return await r.blob();
-    if (r.status === 503 || r.status === 404 || r.status === 501) voice.server = false;   // no Kokoro: browser from now on
+    if (r.ok) {
+      const engine = r.headers.get("X-Trace-Voice") || "kokoro";   // "edge" (Microsoft, online) or "kokoro" (offline)
+      if (engine !== voice.engine) { voice.engine = engine; renderVoiceBtn(); }
+      return await r.blob();
+    }
+    if (r.status === 503 || r.status === 404 || r.status === 501) voice.server = false;   // no voice on the server: browser from now on
   } catch { /* network: fall back */ } finally { clearTimeout(t); }
   return null;
+}
+/* Microsoft's voice, streamed: the audio element plays while the server is still receiving it,
+   so Trace starts talking in under a second. Resolves true when it played to the end. */
+function streamPlay(text) {
+  return new Promise((resolve) => {
+    const a = new Audio(`${API_BASE}/api/speech?${new URLSearchParams({ text, voice: voice.gender })}`);
+    let settled = false;
+    const done = (ok) => { if (settled) return; settled = true; voice.stop = null; resolve(ok); };
+    voice.stop = () => { a.pause(); a.removeAttribute("src"); a.load(); done(true); };   // also closes the stream
+    a.onended = () => done(true);
+    a.onerror = () => done(a.currentTime > 0.5);   // dropped part-way: don't say it all again
+    a.play().catch(() => done(false));
+  });
+}
+async function checkVoiceEngine() {
+  if (state.mode !== "live" || !voice.server) return;
+  try {
+    const { engine } = await api("/api/voice", { timeout: 2000 });
+    if (engine === "none") voice.server = false;
+    if (engine !== voice.engine) { voice.engine = engine; renderVoiceBtn(); }
+  } catch { /* old server without /api/voice: the POST path still reports it */ }
 }
 const sentences = (text) => (text.match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
 /* Speak a line. Long answers go sentence by sentence: the first one plays while the next is
@@ -1235,6 +1272,14 @@ async function speakOut(text) {
   const g = voice.gen;
   voice.last = text;
   setSpeaking(true);
+  // Microsoft's voice: the whole line in one piece (more natural phrasing), streamed so it starts at once.
+  if (state.mode === "live" && voice.server && voice.engine !== "kokoro") {
+    const ok = await streamPlay(text);
+    if (g !== voice.gen) return;
+    if (ok) { setSpeaking(false); return; }
+    checkVoiceEngine();                    // probably offline now: the paths below take over
+  }
+  // Kokoro (offline) is slow per sentence, so it goes one sentence at a time.
   const parts = sentences(text);
   let i = 0;
   if (state.mode === "live" && voice.server) {
@@ -1263,9 +1308,11 @@ function renderVoiceBtn() {
     r.setAttribute("aria-checked", String(on));
     r.tabIndex = on ? 0 : -1;               // one tab stop; arrow keys move between the two
   }
-  $("#voiceNote").textContent = state.mode === "live" && voice.server
-    ? "Spoken by Trace's own voice on your computer."
-    : "Using your browser's voice. Run multicam.py with kokoro installed for Trace's own voice.";
+  $("#voiceNote").textContent = !(state.mode === "live" && voice.server)
+    ? "Using your browser's voice. Run multicam.py for Trace's own voice."
+    : voice.engine === "kokoro"
+      ? "Trace's offline voice, made on your computer."
+      : "Microsoft's natural voice. It needs internet, and the words Trace says are sent to Microsoft to be spoken. Without internet Trace uses its offline voice.";
 }
 function toggleVoicePanel(open) {
   const p = $("#voicePanel"), b = $("#voiceBtn");
@@ -1785,6 +1832,7 @@ async function refresh(full, force = false) {
     else if (state.mode === "demo") state.events = mock.events();
   }
   if (state.mode === "demo" && !state.cameras.length) state.cameras = mock.cameras();
+  if (full) checkVoiceEngine();            // online voice, or the offline one while the internet is down
   render();
 }
 let pollGen = 0, pollTimer = 0, tickN = 0;
@@ -1845,7 +1893,7 @@ function renderCams() {
   el.camCount.textContent = cams.length ? `${live}/${cams.length} live` : "";
   if (!cams.length) {
     el.cams.dataset.html = "";
-    el.cams.innerHTML = `<li class="cam down"><div class="cam-name">${icon("cameraOff", "sm")}No cameras</div><div class="cam-foot"><span class="down-lbl">Add a phone in cameras.json</span></div></li>`;
+    el.cams.innerHTML = `<li class="cams-empty"><span class="cam-name">${icon("cameraOff", "sm")}No cameras connected</span><span>Add a phone in <code>cameras.json</code>, then run <code>python multicam.py</code>.</span></li>`;
     return;
   }
   const counts = {};
@@ -1940,13 +1988,14 @@ function renderItems() {
 
   if (list.length === 0) {
     for (const a of cards.values()) a.remove();
-    box.insertAdjacentHTML("beforeend", `<div class="state-card">
+    const noCams = !state.cameras.length;
+    box.insertAdjacentHTML("beforeend", `<div class="state-card compact">
       <svg class="art" viewBox="0 0 132 84" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <rect x="8" y="22" width="54" height="40" rx="8"/><path d="M62 36l16-9v30l-16-9"/><circle cx="35" cy="42" r="9"/>
         <path d="M94 62h30M100 62v-6h18v6" stroke="#2A4763"/><rect x="101" y="40" width="16" height="14" rx="3" stroke-dasharray="3 3"/>
         <path d="M84 30c6-4 12-4 18 0" stroke="#3A7277"/><path d="M88 22c8-5 18-5 26 0" stroke="#2A4763"/></svg>
-      <h3>No items yet – put something in view of a camera</h3>
-      <p>Trace remembers keys, wallets, phones, remotes, glasses, watches, headphones and bags.</p></div>`);
+      <div><h3>${noCams ? "No items yet – connect a camera to start" : "No items yet – put something in view of a camera"}</h3>
+      <p>Trace remembers keys, wallets, phones, remotes, glasses, watches, headphones and bags.</p></div></div>`);
     el.itemCount.textContent = "0";
     el.filterNote.textContent = "";
     return;
@@ -1985,7 +2034,8 @@ function renderFeed() {
     return;
   }
   const byName = new Map((state.items || []).map((it) => [nameOf(it).toLowerCase(), it.category]));
-  el.feed.innerHTML = evs.slice(0, 20).map((e) => {
+  // With nothing remembered the left column is one short row, so keep the feed short to match
+  el.feed.innerHTML = evs.slice(0, (state.items || []).length ? 20 : 5).map((e) => {
     const c = e.category || byName.get(String(e.item || "").toLowerCase()) || "item";
     const t = evtTime(e);
     return `<li><span class="ico">${icon(c)}</span><div><div class="what"><b>${esc(e.item || "Something")}</b>${e.zone ? ` at the ${esc(e.zone)}` : ""}</div>
@@ -2431,6 +2481,7 @@ async function wake() {
   if (!reduced()) { sonar(el.agent); el.bootStage.classList.remove("sonar-bg"); void el.bootStage.offsetWidth; el.bootStage.classList.add("sonar-bg"); await wait(750); }
 
   render();
+  await checkVoiceEngine();                // so the greeting already uses the right path
   state.power = true;
   document.body.classList.add("on");
   el.boot.inert = true;

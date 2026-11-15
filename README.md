@@ -12,8 +12,8 @@ the page (`trace.html`) through `trace_api.py`, with:
 - **Live cameras:** press **Watch live** on a camera to see it live, with Trace's boxes
   drawn on top. Opening `trace.html` as a file without `multicam.py` shows demo data
   and a drawing of the room instead.
-- **Voice:** Trace reads every answer aloud, using Kokoro (`tts.py`) when it's
-  installed and the browser's voice otherwise. The **Voice** button opens its settings:
+- **Voice:** Trace reads every answer aloud: Microsoft's neural voice (edge-tts) when
+  online, Kokoro (offline) without internet, and the browser's voice if neither works. The **Voice** button opens its settings:
   read aloud on/off and **Female / Male** (remembered per browser). You can also say
   or type "use the male voice".
 - **"Hey Trace":** turn on **Hey Trace** in the header. Then say "Hey Trace" (chime)
@@ -87,12 +87,22 @@ The detector only knows where an item was last *seen*. Three files turn that int
   It checks that the reasoning does what it's meant to, under idealised conditions:
   one person, people detected 92% of the time. Real-room accuracy will be lower.
 
-## Voice (offline)
+## Voice
 
-Trace speaks with [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), running
-locally on the CPU. There is no cloud TTS and no API key, so it has no rate limits and
-keeps working with the network unplugged. `tts.py` is the voice and `live_scene.py`
-uses it.
+`tts.py` has two engines:
+
+- **edge (default):** Microsoft's neural voices through
+  [edge-tts](https://github.com/rany2/edge-tts). Very natural, free, no API key, and
+  streamed so it starts in under a second. It needs internet, and **the text of each
+  line goes to Microsoft's speech service** (camera video never does).
+- **Kokoro (offline):** [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) on the
+  CPU. Nothing leaves the computer. It takes over automatically when edge fails (no
+  internet), for 60 s before edge is tried again. Set `TRACE_VOICE=kokoro` to use only
+  Kokoro, so no text leaves the machine.
+
+`python tts.py --audition-edge` writes the Microsoft voices to compare, and
+`EDGE_VOICES` at the top of `tts.py` picks the pair. The rest of this section is about
+Kokoro. `live_scene.py` uses it too.
 
 ### Install
 

@@ -12,10 +12,15 @@ plus OpenCV only; no keys, and nothing leaves your network.
   GET /api/snapshots/<id>.jpg    frame it was last seen in      (memory/snapshots)
   GET /api/live/<camera>.mjpg    live video of one camera (MJPEG, about LIVE_FPS frames a second)
   GET /api/live/<camera>.jpg     the latest single frame
-  POST /api/speech {"text", "voice": "female"|"male"}
-                                 Trace's voice: a WAV of the line, made by tts.py (Kokoro,
-                                 offline). 503 when kokoro isn't installed; the page then
-                                 uses the browser's own voice instead.
+  GET /api/speech?text=..&voice=female|male
+                                 Trace's voice, streamed: Microsoft's neural voice (edge-tts,
+                                 online) plays as it's made, so it starts in under a second.
+                                 Without internet: Kokoro (offline) WAV in one piece.
+  POST /api/speech {"text", "voice"}
+                                 The same, in one piece (the page uses it for Kokoro, one
+                                 sentence at a time). X-Trace-Voice says which engine spoke.
+                                 503 when neither works; the page then uses the browser's voice.
+  GET /api/voice                 {"engine": "edge"|"kokoro"|"none"}
 
   POST /api/ask {"message", "history"}
                                  "where are my keys?" -> {"reply", "item_id", "state", "by",
@@ -34,23 +39,20 @@ on a phone, start multicam.py with --api-host 0.0.0.0 and browse to
 http://<this-computer's-ip>:8000/ -- but anyone on the same Wi-Fi can then see
 the cameras, so only do that on a network you trust.
 """
-import io
 import json
 import re
 import threading
 import time
-import wave
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import cv2
-import numpy as np
 
-try:                    # Trace's offline voice; optional (kokoro needs Python 3.10 - 3.12)
+try:                    # Trace's voice: Microsoft neural (edge-tts, online) or Kokoro (offline)
     import tts
-    VOICE = not tts.missing()
+    VOICE = tts.available()
 except Exception:
     tts, VOICE = None, False
 
@@ -59,18 +61,6 @@ LIVE_FPS = 8            # frames a second per viewer; phones on Wi-Fi cope well 
 JPEG_QUALITY = 72
 STALL_SECS = 8          # end a live stream after this long without a new frame
 SPEECH_MAX = 600        # characters per /api/speech request; Trace's lines are far shorter
-
-
-def wav_bytes(audio, rate):
-    """float32 mono samples -> a 16-bit WAV file in memory."""
-    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(pcm)
-    return buf.getvalue()
 
 
 class TraceAPI:
@@ -121,6 +111,7 @@ class TraceAPI:
                 self.send_header("Content-Type", ctype)
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Expose-Headers", "X-Trace-Voice")
                 self.send_header("Cache-Control", "no-store")
                 if length is not None:
                     self.send_header("Content-Length", str(length))
@@ -181,11 +172,13 @@ class TraceAPI:
                 # only the two named voices (tts.VOICES) can be asked for from the page
                 gender = body.get("voice") if body.get("voice") in ("female", "male") else None
                 try:
-                    audio = tts.audio(text, gender)    # pre-rendered lines come straight from disk
-                except Exception as exc:       # model not downloaded, no espeak, ...
+                    # Microsoft neural MP3 when online, else Kokoro WAV; pre-rendered lines from disk
+                    data, mime, engine = tts.speech_file(text, gender)
+                except Exception as exc:       # offline and no Kokoro, model not downloaded, ...
                     print("tts: could not say %r: %s: %s" % (text, type(exc).__name__, exc))
                     return self._json({"error": "voice failed"}, 503)
-                self._bytes(wav_bytes(audio, tts.RATE), "audio/wav")
+                self._head(200, mime, len(data), {"X-Trace-Voice": engine})
+                self.wfile.write(data)
 
             def do_GET(self):
                 url = urlparse(self.path)
@@ -195,6 +188,10 @@ class TraceAPI:
                         return self._file(ROOT / "trace.html", "text/html; charset=utf-8")
                     if p == "/api/cameras":
                         return self._json(api.cameras())
+                    if p == "/api/voice":
+                        return self._json({"engine": tts.current_engine() if VOICE else "none"})
+                    if p == "/api/speech":
+                        return self._speech_stream(parse_qs(url.query))
                     if p == "/api/items":
                         return self._json(api.items)
                     if p == "/api/events":
@@ -230,6 +227,31 @@ class TraceAPI:
                     return self._json({"error": "not found"}, 404)
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     pass
+
+            def _speech_stream(self, q):
+                if not VOICE:
+                    return self._json({"error": "voice not installed (pip install -r requirements.txt)"}, 503)
+                text = (q.get("text") or [""])[0].strip()[:SPEECH_MAX]
+                if not text:
+                    return self._json({"error": "no text"}, 400)
+                v = (q.get("voice") or [""])[0]
+                gender = v if v in ("female", "male") else None
+                try:
+                    mime, engine, chunks = tts.speech_stream(text, gender)
+                except Exception as exc:
+                    print("tts: could not say %r: %s: %s" % (text, type(exc).__name__, exc))
+                    return self._json({"error": "voice failed"}, 503)
+                # no Content-Length: the audio is still being made; the end of the connection ends it
+                self.close_connection = True
+                self._head(200, mime, extra={"X-Trace-Voice": engine, "Connection": "close"})
+                try:
+                    for chunk in chunks:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass                          # the page moved on (Trace was interrupted)
+                except Exception as exc:          # the online voice dropped mid-line: end the clip there
+                    print("tts: stream ended early: %s: %s" % (type(exc).__name__, exc))
 
             def _still(self, cam):
                 f, _ = cam.latest()
@@ -270,10 +292,13 @@ class TraceAPI:
         print(f"Trace is at http://{shown}:{port}/" +
               ("  (cameras visible to anyone on this network)" if host == "0.0.0.0" else ""))
         if VOICE:
-            tts.warm_up(block=False)           # load Kokoro now so the first reply isn't slow
+            if tts.ENGINE == "edge" and tts.edge_installed():
+                print("Trace's voice: Microsoft %s / %s (online; the offline voice takes over without internet)"
+                      % (tts.EDGE_VOICES["female"], tts.EDGE_VOICES["male"]))
+            tts.warm_up(block=False)           # load Kokoro now (the fallback) so it's ready if needed
         else:
-            print("Trace's voice: kokoro not installed, the page will use the browser's voice "
-                  "(see README, Voice)")
+            print("Trace's voice: none installed, the page will use the browser's voice "
+                  "(pip install -r requirements.txt)")
         return self
 
     def stop(self):
