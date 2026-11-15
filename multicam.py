@@ -893,7 +893,8 @@ def main():
             import subprocess
             try:
                 bridge = subprocess.Popen([sys.executable, str(Path(__file__).with_name("bridge.py")),
-                                           "--file", str(TRACE_EVENTS_FILE)])
+                                           "--file", str(TRACE_EVENTS_FILE),
+                                           "--host", "0.0.0.0" if args.api_host == "0.0.0.0" else "localhost"])
                 print("  bridge.py started: open trace-sim/index.html (or /model) and press Connect live")
             except Exception as e:
                 print(f"  couldn't start bridge.py ({e}); run it yourself: python bridge.py --file {TRACE_EVENTS_FILE}")

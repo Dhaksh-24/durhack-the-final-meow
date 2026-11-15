@@ -1035,7 +1035,7 @@ function beginReal() {
 }
 function liveNote(msg) { $("#replayNote").textContent = msg; }
 function connectLive() {
-  const url = new URLSearchParams(location.search).get("ws") || "ws://localhost:8765";
+  const url = new URLSearchParams(location.search).get("ws") || ("ws://" + (/^https?:$/.test(location.protocol) && location.hostname ? location.hostname : "localhost") + ":8765");
   beginReal(); replay.name = "live";
   let ws;
   try { ws = new WebSocket(url); } catch (err) { liveNote("Live: couldn't open " + url + ": " + err.message); return; }
