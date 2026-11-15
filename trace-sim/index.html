@@ -127,6 +127,7 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
 #metricsCard td, #metricsCard th { padding: 5px 6px; }
 .pill { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
 .pill.off { background: var(--line); color: var(--muted); }
+.seedBadge { position: absolute; left: 10px; bottom: 10px; background: rgba(216,67,47,.9); color: #fff; font-size: 12px; padding: 3px 9px; border-radius: 999px; pointer-events: none; }
 .camgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
 .camtile { position: relative; border-radius: 9px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
 .camtile img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -166,7 +167,7 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
           </div>
         </div>
         <p class="lead" id="roomLead">Built automatically from the zone map: each zone becomes a piece of furniture, and each phone shows what it can see. The glowing columns show where Trace thinks the selected item is. Drag to turn, scroll to zoom.</p>
-        <div id="view3d"><canvas id="room3d" aria-label="3D view of the simulated room"></canvas><div id="labels" aria-hidden="true"></div></div>
+        <div id="view3d"><canvas id="room3d" aria-label="3D view of the simulated room"></canvas><div id="labels" aria-hidden="true"></div><div class="seedBadge" id="seedBadge" hidden>Heat map includes a simulated morning</div></div>
         <div id="camStrip" hidden>
           <div class="headrow"><h3 class="sub" style="margin:12px 0 6px">Cameras, live</h3><button class="btn" id="camToggle" type="button">Hide</button></div>
           <div class="camgrid" id="camGrid"></div>
@@ -212,7 +213,12 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
         <table id="learnTable"></table>
         <div class="controls" style="margin-top:6px"><button class="btn" id="resetLearn" type="button">Forget what it learned in this room</button></div>
         <h3 class="sub">Where people spend time</h3>
+        <p class="note" id="heatSeedNote" hidden style="margin-top:0"><b>Includes a simulated morning</b> (the simulator's person walking this room). Real time is added on top. Items and learned habits don't use it.</p>
         <table id="heatTable"></table>
+        <div class="controls" style="margin-top:6px">
+          <button class="btn" id="seedBtn" type="button">Add a simulated morning to the heat map</button>
+          <button class="btn" id="seedClear" type="button">Remove it</button>
+        </div>
         <h3 class="sub">How the model is doing today</h3>
         <table id="modelTable"></table>
         <div class="controls">
@@ -390,6 +396,7 @@ const S_PERSON = 0.95;      // checking hands and pockets finds it
 const S_OUT = 0.80;         // checking the car or bag finds it
 const T_PERSON = 5, T_OUT = 90;  // seconds each check takes
 const UNCOVER = 0.01;       // a covered item gets uncovered while someone is there
+const COVER_IN_PLACE = 0.08; // ...or covered where it lies (cushion, coat, box flap), times the zone's cover chance
 const LEAK = 0.0005;        // small mixing back to the prior each step (model humility)
 const LEAVE_P = 0.03;       // person leaves the room when they finish in a zone
 const MAX_CHECKS = 25;
@@ -584,8 +591,10 @@ function stepWorld(w) {
     for (const it of ITEMS) {
       const s = w.items[it.id];
       if (s.loc === z.id) {
-        if (rnd() < it.pick) { s.loc = "person"; s.covered = false; s.pocket = false; }
-        else if (s.covered && rnd() < UNCOVER) s.covered = false;
+        const r0 = rnd();
+        if (r0 < it.pick) { s.loc = "person"; s.covered = false; s.pocket = false; }
+        else if (s.covered) { if (rnd() < UNCOVER) s.covered = false; }
+        else if (r0 < it.pick + COVER_IN_PLACE * coverP(it, z)) s.covered = true;
       } else if (s.loc === "person") {
         const r = rnd();
         if (s.pocket) { if (r < it.unpocket) putDown(it, s, z); }
@@ -630,7 +639,8 @@ function filterStep(b, it, obs) {
     const pv = nb[2 * i] * it.pick, pc = nb[2 * i + 1] * it.pick;
     const d = nb[P] * dropEff(it, z), c = coverP(it, z);
     nb[2 * i] -= pv; nb[2 * i + 1] -= pc;
-    const u = nb[2 * i + 1] * UNCOVER; nb[2 * i + 1] -= u; nb[2 * i] += u;
+    const u = nb[2 * i + 1] * UNCOVER, cv = nb[2 * i] * COVER_IN_PLACE * coverP(it, z);
+    nb[2 * i + 1] += cv - u; nb[2 * i] += u - cv;
     nb[P] -= d; nb[2 * i] += d * (1 - c); nb[2 * i + 1] += d * c;
     nb[P] += pv + pc;
   }
@@ -886,6 +896,15 @@ function rank(b) {
     .map((x) => Object.assign(x, { score: x.f / x.t }))
     .sort((a, c) => c.score - a.score);
 }
+// The plan a person hears: as rank(), but the place they just checked isn't suggested again straight
+// away (Bayesian search may say re-check a cheap place; a person hears "it's ignoring me").
+// Except where a phone sees the item right now (seenAt): there againText() asks for a careful second
+// look, then says the phone may be wrong. Same rule as guide.py plan_now().
+function rankAfter(b, lastTried, seenAt) {
+  const r = rank(b);
+  if (lastTried && r.length > 1 && r[0].pl.name === lastTried && r[0].pl.id !== seenAt) { const x = r[0]; r[0] = r[1]; r[1] = x; }
+  return r;
+}
 function truePlace(s) { return s.loc; }
 function trueFound(w, it, pl) {
   const s = w.items[it.id];
@@ -942,7 +961,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { rankAfter, learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -1111,11 +1130,24 @@ function learnFrom(e) {
 }
 // Where people spent time this session, minutes per zone (simulation and real events alike).
 let heatCache = { at: -1, min: {}, max: 0 };
+// Optional simulated history for the heat map only (labelled everywhere it shows). It never touches
+// the item model, the trails or the learned habits, which stay built from what really happened.
+let seedLog = [], seedEnd = 0, seedMinutes = 0;
+function seedHeat(minutes) {
+  const w = newWorld(), n = Math.round(minutes * 60 / TICK_S);
+  seedLog = [];
+  for (let k = 0; k < n; k++) { const o = stepWorld(w); seedLog.push({ s: k * TICK_S, zone: o.person === "outside" ? "outside" : o.person }); }
+  seedEnd = n * TICK_S; seedMinutes = minutes; heatCache.at = -1;
+  $("#heatSeedNote").hidden = false; $("#seedBadge").hidden = false; $("#heatChk").checked = true;
+}
+function clearSeed() { seedLog = []; seedMinutes = 0; heatCache.at = -1; $("#heatSeedNote").hidden = true; $("#seedBadge").hidden = true; }
 function roomHeat() {
-  if (heatCache.at === personLog.length) return heatCache;
+  const key = personLog.length + ":" + seedLog.length;
+  if (heatCache.at === key) return heatCache;
   const min = {};
   for (const v of trailVisits(personLog, -Infinity, nowSecs())) min[v.zone] = (min[v.zone] || 0) + (v.to - v.from) / 60;
-  heatCache = { at: personLog.length, min, max: Math.max(0, ...Object.values(min)) };
+  for (const v of trailVisits(seedLog, -Infinity, seedEnd)) min[v.zone] = (min[v.zone] || 0) + (v.to - v.from) / 60;
+  heatCache = { at: key, min, max: Math.max(0, ...Object.values(min)) };
   return heatCache;
 }
 function applyObs(obs) {
@@ -1317,7 +1349,7 @@ function againText(it, x, tried, b) {
     ": " + probWord(x.p) + " there, about " + x.t + " seconds.";
 }
 function sentence(it, b, tried) {
-  const tries = tried.length, name = it.name.toLowerCase(), r = rank(b);
+  const tries = tried.length, name = it.name.toLowerCase(), r = planOf(b);
   if (!r.length) return "I don't have a good idea where " + (it.plural ? "they are" : "it is") + ".";
   const v = visibleAt(it.id);
   if (!tries && v) return "The " + MAP.zones[ZI[v]].name.toLowerCase() + " phone can see your " + name + " right now.";
@@ -1361,7 +1393,7 @@ function renderAsk() {
     $("#startAsk").onclick = () => handleUtterance("Where " + (it.plural ? "are" : "is") + " my " + it.name.toLowerCase() + "?");
     return;
   }
-  const sit = itemById(session.item), r = rank(session.b);
+  const sit = itemById(session.item), r = planOf(session.b);
   let html = '<div class="say">' + esc(currentSay()) + "</div>";
   if (session.result) {
     html += '<div class="result ' + (session.result.ok ? "good" : "warn") + '">' + esc(session.result.detail) + "</div>";
@@ -1410,7 +1442,7 @@ async function handleUtterance(text) {
   // the three simple commands never need the LLM
   if (/^(again|repeat|repeat that|say that again|say it again|what|pardon|sorry what)$/.test(n)) { speak(voice.last || currentSay()); return; }
   if (session && !session.result) {
-    const r = rank(session.b);
+    const r = planOf(session.b);
     if (/^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$/.test(n)) {
       failAt(r[0]); askInfo("Handled here: not there."); renderAll(); speak(currentSay()); return;
     }
@@ -1441,7 +1473,7 @@ async function handleUtterance(text) {
     const v = validateSay(res.say, res.places, session.b, session.tried, facts);
     if (v.ok) {
       session.say = res.say;
-      if (res.chirp && rank(session.b).slice(0, 2).some((x) => x.pl.id === res.chirp)) chirp(res.chirp);
+      if (res.chirp && planOf(session.b).slice(0, 2).some((x) => x.pl.id === res.chirp)) chirp(res.chirp);
     } else note += " · answer rejected (" + v.why + "), template used";
   }
   if (res && res.evidence && res.evidence.length) note += " · evidence: " + res.evidence.map((e) => (e.found ? "found at " : "not at ") + e.zone + (e.part !== "all" ? " (" + e.part + ")" : "") + (e.sure !== "high" ? ", " + e.sure : "")).join("; ");
@@ -1679,6 +1711,10 @@ function postModel() {
     .finally(() => { modelPost.busy = false; });
 }
 setInterval(postModel, 1500);   // the last change gets out even if nothing redraws afterwards
+function planOf(b) {   // the plan for the person searching now: their last failed check isn't first again
+  const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \(.*\)$/, "") : null;
+  return rankAfter(b, t, session && session.item ? visibleAt(session.item) : null);
+}
 function renderAll() {
   postModel();
   $("#clock").textContent = MAP.name + " · " + clockAt(world.tick);
@@ -2153,7 +2189,7 @@ function draw3D(now) {
   camera.lookAt(R3.target);
 
   const b = session ? session.b : beliefs[selected], it = itemById(selected);
-  const nextId = session && !session.result ? (rank(session.b)[0] || {}).pl : null;
+  const nextId = session && !session.result ? (planOf(session.b)[0] || {}).pl : null;
   const heatShown = $("#heatChk").checked, heatNow = heatShown ? roomHeat() : null;
   const trailShown = $("#trailChk").checked, trailMin = trailCache && trailCache.id === selected ? trailCache.minutes : {};
   const trailMax = Math.max(0, ...Object.values(trailMin));
@@ -2854,6 +2890,9 @@ if (QS.get("room") === "demo") loadMap(JSON.parse(JSON.stringify(DEFAULT_MAP)), 
 else try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved), false); } catch (e) { /* none saved, or unreadable */ }
 dFromMap();
 loadHab();
+$("#seedBtn").onclick = () => { seedHeat(120); renderHeat(); };
+$("#seedClear").onclick = () => { clearSeed(); renderHeat(); };
+if (QS.get("seed") === "morning") setTimeout(() => { seedHeat(120); renderHeat(); }, 500);
 $("#resetLearn").onclick = () => {
   HAB = {}; try { localStorage.removeItem(habKey()); } catch (e) { /* nothing saved */ }
   learnHabits(HAB); renderLearned();

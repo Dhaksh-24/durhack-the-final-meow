@@ -88,20 +88,31 @@ Windows asks, or temporarily allow them.
 
 ---
 
-## 5. The demo, step by step
+## 5. The demo, step by step (one top-down phone, keys + glasses)
 
-1. `python run_trace.py --present` before the judges arrive; room drawn, zones named, keys tested.
-   Big screen: the `/sim` tab (3D room + cameras). The presenter talks to the `/` tab (laptop or phone).
-2. Presenter puts the keys down in view (the room reacts), walks around, and the keys end up hidden
-   (pocketed and dropped elsewhere, or under a cushion) while no phone sees.
-3. Presenter is blindfolded, **a teammate stays beside them**, clear floor.
-4. "Where are my keys?" → Trace answers by voice; the target zone's phone beeps (open
-   `http://<laptop-ip>:8000/phone?zone=sofa` on that phone, or the laptop beeps).
-5. "Not there" → columns move, next suggestion. Found → done.
-6. Close on the numbers (simulated, say so): search time vs the "last seen" rule, calibration.
+**Set-up (before judges arrive):** phone taped high, pointing straight down at the taped rectangle;
+the box ("Table" or "Sofa", same name in "Draw the room" and in the multicam window) inside it;
+a cloth or box flap the keys disappear under completely. Keys and glasses on the box, apart.
+Camera laptop: `python run_trace.py --share --present`. Display laptop: the two printed addresses,
+`/sim` on the big screen (optionally `&seed=morning` for a labelled simulated heat map).
 
-**Fallback if live fails on stage:** "Real events" → "Load recorded events" → a session you recorded
-that morning (`trace-events.jsonl`, copy it somewhere first). Same 3D room, same voice.
+| Time | Who | Action | What the room / Trace does |
+|---|---|---|---|
+| 0:00 | Presenter | "Everyone loses things. For blind people and people with dementia it costs independence." | – |
+| 0:20 | Presenter | Points at the screen: keys and glasses on the box | both columns tall: "the camera can see them" |
+| 0:35 | Presenter | Sits at the box, slides the keys under the cloth, walks away | keys' column splits: **under the box** and **with you**; glasses don't move |
+| 0:50 | Teammate | Blindfolds the presenter, stays beside them | – |
+| 1:00 | Presenter | "Hey Trace, where are my keys?" | "Last seen on the table a minute ago. Check your pockets first: about 5 seconds. If not, under the table." |
+| 1:15 | Presenter | Checks pockets: "Not there" | columns move: "Check under the table next: very likely there." Table phone beeps if set up |
+| 1:30 | Presenter | Finds the keys: "Found them!" | done |
+| 1:40 | Presenter | "Where are my glasses?" | "The camera can see your glasses on the table right now." |
+| 1:50 | Presenter | Back to slides: how it works, results, responsible AI | – |
+
+**Checks in each rehearsal:** `disappeared keys-1` appears in the event log within ~4 s of hiding;
+you appear as `person_here` at the box (if not, `--no-people`); the glasses never disappear.
+
+**Fallback if live fails on stage:** "Real events" → "Load recorded events" → the `backup-run.jsonl`
+you recorded during a good rehearsal. Say "this is our recorded run from this morning".
 
 ---
 

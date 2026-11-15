@@ -430,7 +430,15 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         ses = sessions[want] = {"evidence": [], "tried": [], "used": now, "last": ""}
     ses["used"] = now
     base = places_of(bundle)
-    plan = rank(apply_evidence(base, ses["evidence"], S), S)
+
+    def plan_now():   # as rank(), but the place they just checked isn't suggested again straight away,
+        # unless a phone sees the item there now: then again_text() asks for a careful second look
+        p = rank(apply_evidence(base, ses["evidence"], S), S)
+        last = re.sub(r" \(.*\)$", "", ses["tried"][-1]) if ses["tried"] else None
+        if last and len(p) > 1 and p[0]["name"] == last and p[0]["zone"] != bundle.get("visible_now"):
+            p[0], p[1] = p[1], p[0]
+        return p
+    plan = plan_now()
 
     def turn(reply, state="searching", evidence=(), source="page", why="", chirp=None):
         ses["last"] = reply
@@ -450,7 +458,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         ev = {"zone": plan[0]["zone"], "part": "all", "found": False, "sure": "high"}
         ses["evidence"].append(ev)
         ses["tried"].append(plan[0]["name"])
-        plan = rank(apply_evidence(base, ses["evidence"], S), S)
+        plan = plan_now()
         return turn(template(bundle, plan, len(ses["tried"]), ses["tried"]), evidence=[ev])
     if FOUND_IT.match(n) and plan and ses["last"]:
         return found_at(plan[0]["zone"], plan[0]["name"])
@@ -464,7 +472,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         ses["evidence"].append(ev)
         nm = next((p["name"] for p in base if p["id"] == ev["zone"]), ev["zone"])
         ses["tried"].append(nm + {"low": " (quick look)", "medium": " (not sure)"}.get(ev["sure"], ""))
-    plan = rank(apply_evidence(base, ses["evidence"], S), S)
+    plan = plan_now()
     fallback = template(bundle, plan, len(ses["tried"]), ses["tried"])
     if not res.get("say"):
         return turn(fallback, evidence=res["evidence"], source=res["source"])
