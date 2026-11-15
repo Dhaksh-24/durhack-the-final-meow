@@ -28,3 +28,6 @@ baseline/
 samples/
 audio/
 out.wav
+
+# the room the page built (per laptop; the page saves it through /api/room)
+room.json

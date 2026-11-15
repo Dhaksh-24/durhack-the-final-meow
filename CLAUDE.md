@@ -1,5 +1,8 @@
 # Trace (DurHack 2026)
 
+Start with `HANDOVER.md` (how to run it, demo set-up, honest status). `python run_trace.py --demo`
+checks the page without cameras.
+
 Full spec: `SPEC.md` (product, architecture, data contracts, the maths, the LLM agent,
 and what "done" means for each remaining task). Read it before starting a task.
 
@@ -67,16 +70,9 @@ Event (one JSON object per line):
 - Results from the simulator are simulated; say so whenever they're shown.
 
 ## Next, in priority order
-1. ~~False alarms~~ done: the simulator emits false sightings (`FALSE_RATE`, per watched zone per
-   step) with a confidence; the filter multiplies `z-visible` by `D_vis·L + 1 − D_vis` with
-   `L = g(c) / (f·h(c))`. `g`, `h` are placeholder Betas: swap in the maths calibration with
-   `setCalibration({g, h, sampleTrue, sampleFalse})`. Tests: `node trace-sim/test-core.js`.
-2. `multicam.py` events: emit appeared / moved / disappeared / person_here with zone name and
-   confidence (today it only logs "out of sight", zone null). Zone names must match the map.
-3. Connect real events to the page: ~~replay an `events.jsonl`~~ done ("Replay a recorded
-   events.jsonl" in the Events card; `replayFromEvents` in the core; try
-   `trace-sim/sample-events.jsonl`). Next: live via a small local bridge (the hosted page
-   can't reach the laptop, so run the page locally).
-4. Most likely story (Viterbi) for the LLM to tell; LLM wiring; voice in/out in the browser.
-5. Detection: change detection on fixed phones + crop + YOLOE visual prompts of the user's
-   own items; drop boxes larger than ~15% of the frame.
+Done: false alarms, multicam → trace-events.jsonl, replay, live bridge, camera feeds beside the 3D
+room, Ask Trace (voice + LLM wording + validation + beep), run_trace.py, presentation view, room.json.
+1. Real-room test: phones on stands, real keys, `python run_trace.py`; fix what the camera can't see.
+2. Confidence calibration from ≥40 real placements → `setCalibration(...)` (maths teammate).
+3. Rehearse the blindfold demo ×5; record a session as the stage fallback.
+4. Nice to have: most likely story (Viterbi) for the LLM to tell; best yes/no question.
