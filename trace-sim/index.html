@@ -128,6 +128,11 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
 .pill { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
 .pill.off { background: var(--line); color: var(--muted); }
 .seedBadge { position: absolute; left: 10px; bottom: 10px; background: rgba(216,67,47,.9); color: #fff; font-size: 12px; padding: 3px 9px; border-radius: 999px; pointer-events: none; }
+ul.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+ul.feed li { padding: 6px 8px; border-radius: 8px; background: var(--bg); line-height: 1.35; }
+ul.feed li:first-child { background: var(--accent-soft); animation: feedin .5s ease-out; }
+ul.feed li b { font-family: var(--mono); font-weight: 600; margin-right: 6px; color: var(--muted); }
+@keyframes feedin { from { opacity: 0; transform: translateY(-6px); } }
 .camgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
 .camtile { position: relative; border-radius: 9px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
 .camtile img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -241,6 +246,12 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
     </div>
 
     <div class="col">
+      <section class="card keep" id="feedCard">
+        <h2>What just changed</h2>
+        <p class="lead" style="margin-bottom:6px">Every camera event, and how it moved the model's probabilities.</p>
+        <ul class="feed" id="feedList"><li class="note">Waiting for camera events (Real events → Connect live).</li></ul>
+      </section>
+
       <section class="card keep">
         <h2>Where Trace thinks it is</h2>
         <div class="tabs" id="itemTabs" role="group" aria-label="Item"></div>
@@ -254,7 +265,7 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
       <section class="card keep" id="askCard">
         <h2>Ask Trace</h2>
         <p class="lead">Pauses the room and plans a search: the best chance of finding it per second of effort.</p>
-        <div class="controls" style="margin-top:0"><label class="check"><input type="checkbox" id="sonarChk"> Sonar: beep faster as the person gets closer to where Trace sent them</label></div>
+        <div class="controls" style="margin-top:0"><label class="check"><input type="checkbox" id="sonarChk"> Sonar and spoken guidance: beeps faster as the person gets closer, and says when they've arrived</label></div>
         <p class="note" id="sonarNote" style="margin-top:4px"></p>
         <div class="controls askbar" style="margin-top:0">
           <input type="text" id="askText" placeholder="Ask, or say what you checked: &quot;not under the sofa&quot;" aria-label="Ask Trace">
@@ -1104,7 +1115,7 @@ function resetDay() {
   resetStats();
   world = newWorld(); beliefs = {}; lastSeen = {}; visHist = {}; events = [];
   for (const it of ITEMS) { beliefs[it.id] = Float64Array.from(PRIORS[it.id]); lastSeen[it.id] = null; visHist[it.id] = [null, null, null]; }
-  session = null; personPos = null; lastPersonZone = world.person.zone; personLog = []; storySteps = []; storyCache = {};
+  session = null; personPos = null; lastPersonZone = world.person.zone; personLog = []; storySteps = []; storyCache = {}; feed = []; feedDirty = true;
   logEvent({ time: clockAt(0), event: "person_here", zone: world.person.zone });
   panelDirty = true;
 }
@@ -1143,7 +1154,7 @@ function beginReal() {
   const d = new Date(); clock0 = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); events = [];
   world.items = {}; for (const it of ITEMS) world.items[it.id] = { loc: "unknown", covered: false, pocket: false };
   world.person = { zone: MAP.zones[DOOR].id, outside: false, dwell: 0, outsideFor: 0 };
-  lastPersonZone = null; session = null; running = true; personPos = null; personLog = []; storySteps = []; storyCache = {};
+  lastPersonZone = null; session = null; running = true; personPos = null; personLog = []; storySteps = []; storyCache = {}; feed = []; feedDirty = true;
   setReplayUI();
 }
 function liveNote(msg) { $("#replayNote").textContent = msg; }
@@ -1218,8 +1229,10 @@ function learnFrom(e) {
   if (e.event !== "appeared" && e.event !== "moved") return;
   const id = itemIdOf(e), z = e.zone == null ? null : String(e.zone);
   if (!id || z == null || ZI[z] == null) return;
+  const it = itemById(id), was = habitShares(it, false)[z];
   ((HAB[id] = HAB[id] || {})[z] = (HAB[id][z] || 0) + 1);
   learnHabits(HAB);
+  feedPush("learned: " + it.name.toLowerCase() + " get put on the " + MAP.zones[ZI[z]].name.toLowerCase() + " (habit " + pct(was) + " → " + pct(habitShares(it, false)[z]) + ")");
   try { localStorage.setItem(habKey(), JSON.stringify(HAB)); } catch (err) { /* not remembered */ }
 }
 // Where people spent time this session, minutes per zone (simulation and real events alike).
@@ -1264,9 +1277,30 @@ function beep(freq, ms) {
   g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + ms / 1000);
   o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + ms / 1000 + 0.02);
 }
+// Spoken turn prompts while guiding: when the target changes, and on arrival. The camera knows the
+// person's zone, not which way they face, so it never says "turn left": the beeps steer.
+function say(text) {
+  try { const u = new SpeechSynthesisUtterance(text); u.rate = 1.0; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) { /* no voice */ }
+}
+function sonarSpeak(t) {
+  const key = t ? t.zone : null;
+  if (key !== sonar.spokeFor) {
+    sonar.spokeFor = key; sonar.arrived = false;
+    if (t && t.kind === "zone") say("Head for the " + MAP.zones[ZI[t.zone]].name.toLowerCase() + ". Follow the beeping: faster means closer.");
+    else if (t && t.kind === "person") say("Check your pockets and hands.");
+    return;
+  }
+  if (t && t.kind === "zone" && curPersonZone === t.zone && !sonar.arrived) {
+    sonar.arrived = true;
+    const item = (sonar.target && sonar.target.item) || (session && session.item) || selected, b = beliefs[item], i = ZI[t.zone];
+    const under = b && b[2 * i + 1] > b[2 * i];
+    say("You're at the " + MAP.zones[ZI[t.zone]].name.toLowerCase() + ". " + (under ? "Feel under things there." : "Feel along the top of it."));
+  }
+}
 function sonarTick() {
   if (!sonar.on) return;
   const t = sonarTarget(); let wait = 1000, note = "Sonar on: waiting for a search.";
+  sonarSpeak(t);
   if (t && t.kind === "zone") {
     const tz = MAP.zones[ZI[t.zone]], pz = curPersonZone && ZI[curPersonZone] != null ? MAP.zones[ZI[curPersonZone]] : null;
     if (!pz) { wait = 1200; beep(440, 70); note = "Guiding to the " + tz.name.toLowerCase() + " · person not seen yet"; }
@@ -1287,8 +1321,45 @@ async function sonarPoll() {
   }
   setTimeout(sonarPoll, 1000);
 }
+// ---------- "what just changed": the model's weights moving, in words ----------
+let feed = [];
+function placeLabelOf(pl, b) {
+  if (pl.kind === "person") return "with you";
+  if (pl.kind === "outside") return "outside";
+  return (b[2 * pl.i + 1] > b[2 * pl.i] ? "under things on the " : "on the ") + pl.name.toLowerCase();
+}
+function feedPush(line) {
+  feed.unshift({ t: clockAt(world.tick).slice(0, 5), line });
+  if (feed.length > 8) feed.length = 8;
+  feedDirty = true;
+}
+let feedDirty = false;
+function describeEvent(e) {
+  const id = itemIdOf(e), z = e.zone != null && ZI[e.zone] != null ? MAP.zones[ZI[e.zone]].name.toLowerCase() : e.zone;
+  if (e.event === "person_here") return "you're at the " + z;
+  if (e.event === "person_left") return e.zone ? "you left the " + z : "you left the room";
+  if (!id) return null;
+  const nm = itemById(id).name.toLowerCase();
+  if (e.event === "appeared") return nm + " seen on the " + z + (e.confidence != null ? " (" + Math.round(e.confidence * 100) + "% sure)" : "");
+  if (e.event === "moved") return nm + " now on the " + z;
+  if (e.event === "disappeared") return nm + " gone from view on the " + z + (curPersonZone === e.zone ? " while you were there" : "");
+  return null;
+}
+function feedChanges(prev, events) {
+  const said = events.map(describeEvent).filter(Boolean);
+  const moves = [], named = new Set(events.map(itemIdOf).filter(Boolean));
+  for (const it of ITEMS) {
+    if (!named.has(it.id) && it.id !== selected) continue;   // only the item the event is about, or the one on screen
+    const a = prev[it.id], b = beliefs[it.id];
+    const rows = PLACES.map((pl) => ({ pl, was: placeP(a, pl), now: placeP(b, pl) }))
+      .filter((r) => Math.abs(r.now - r.was) >= (named.has(it.id) ? 0.05 : 0.1)).sort((x, y) => Math.abs(y.now - y.was) - Math.abs(x.now - x.was)).slice(0, 2);
+    if (rows.length) moves.push(it.name.toLowerCase() + ": " + rows.map((r) => placeLabelOf(r.pl, b) + " " + pct(r.was) + " → " + pct(r.now)).join(", "));
+  }
+  if (said.length || moves.length) feedPush((said.length ? said.join("; ") : "time passes") + (moves.length ? " ⇒ " + moves.join(" · ") : ""));
+}
 function applyObs(obs) {
   curPersonZone = obs.person == null || obs.person === "outside" ? null : obs.person;
+  const prevB = {}; for (const it of ITEMS) prevB[it.id] = beliefs[it.id];
   const before = {}; for (const it of ITEMS) before[it.id] = visibleAt(it.id);
   const time = clockAt(world.tick);
   if (replay) for (const e of obs.events) { logEvent(e); learnFrom(e); }
@@ -1318,6 +1389,7 @@ function applyObs(obs) {
     else if (!now && was) logEvent({ time, item: it.id + "-1", zone: was, event: "disappeared" });
     else if (now && was && now !== was) logEvent({ time, item: it.id + "-1", zone: now, event: "moved", confidence });
   }
+  if (replay && obs.events && obs.events.length) feedChanges(prevB, obs.events);
   panelDirty = true;
 }
 
@@ -1897,7 +1969,12 @@ function planOf(b) {   // the plan for the person searching now: their last fail
   const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \((quick look|not sure)\)$/, "") : null;
   return rankAfter(b, t, session && session.item ? visibleAt(session.item) : null);
 }
+function renderFeed() {
+  if (!feedDirty) return; feedDirty = false;
+  $("#feedList").innerHTML = feed.map((f) => "<li><b>" + esc(f.t) + "</b>" + esc(f.line) + "</li>").join("");
+}
 function renderAll() {
+  renderFeed();
   postModel();
   $("#clock").textContent = MAP.name + " · " + clockAt(world.tick);
   $("#play").textContent = session ? "Paused while searching" : running ? "Pause" : "Play";
