@@ -1179,7 +1179,9 @@ function beginReal() {
 }
 function liveNote(msg) { $("#replayNote").textContent = msg; }
 function connectLive() {
-  const url = new URLSearchParams(location.search).get("ws") || ("ws://" + (/^https?:$/.test(location.protocol) && location.hostname ? location.hostname : "localhost") + ":8765");
+  // the bridge sits on the page server's port + 765 (8000 -> 8765; run_trace.py --port moves both)
+  const served = /^https?:$/.test(location.protocol) && location.hostname, pagePort = served && location.port ? +location.port : 0;
+  const url = new URLSearchParams(location.search).get("ws") || ("ws://" + (served ? location.hostname : "localhost") + ":" + (pagePort && pagePort !== 80 ? pagePort + 765 : 8765));
   beginReal(); replay.name = "live";
   let ws;
   try { ws = new WebSocket(url); } catch (err) { liveNote("Live: couldn't open " + url + ": " + err.message); return; }
