@@ -383,7 +383,16 @@ class TraceAPI:
                     if p == "/api/nav":                  # live "turn left / right" from the top-down camera (nav.py)
                         import guide
                         import nav
-                        return self._json(nav.compute(dict(guide.TARGET)))
+                        why = None
+                        if api.lock.acquire(blocking=False):     # never wait behind a turn that is talking to the LLM
+                            try:
+                                why = guide.live_target(api.model, api.sessions)   # re-plan from the newest model state
+                            finally:
+                                api.lock.release()
+                        r = nav.compute(dict(guide.TARGET))
+                        if why:
+                            r = dict(r, replanned=True, say=(why + " " + r.get("say", "")).strip(), state="replan")
+                        return self._json(r)
                     if p == "/api/target":               # where Trace is sending the person (the sonar)
                         import guide
                         return self._json(dict(guide.TARGET))

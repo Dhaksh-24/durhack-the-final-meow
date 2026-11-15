@@ -191,3 +191,9 @@ camera window (green when you arrive). It aims at the item's own box if the came
 - `--view-width-m 2.5` = metres of floor across the camera image (for "about 2 steps").
 - If left and right come out swapped (mirrored camera), add `--nav-mirror`. Test once before judging.
 - Speaks through `http://localhost:8000/` (trace.html) after you ask "where are my glasses?".
+
+**The live loop.** Every directions poll (about once a second) re-plans from the newest model state
+(`guide.live_target`): if the camera sees the item somewhere else, or the place you were sent to
+drops below 5% while another unchecked place reaches 40%, Trace says "Change of plan: …" and walks
+you there. After 8 s standing at the target it asks "Anything there? Say found them, or not there",
+and your answer updates the model and picks the next place. Places you've checked aren't re-suggested.
