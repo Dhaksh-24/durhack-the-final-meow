@@ -9,7 +9,9 @@ plus OpenCV only; no keys, and nothing leaves your network.
   GET/POST /api/room             room.json: the room map the page built, loaded by every browser
   GET /api/cameras               [{"id", "name", "live", "frame_w", "frame_h"}]
   GET /api/items                 remembered items, refreshed by multicam about twice a second
-  GET /api/events?limit=20       latest sightings from events.jsonl, newest first
+                                 (without multicam: built from the model the /sim page posted)
+  GET /api/events?limit=20       latest sightings, newest first (events.jsonl with multicam,
+                                 trace-events.jsonl standalone: appeared / moved only)
   GET /api/thumbs/<id>.jpg       item thumbnail                 (memory/thumbs)
   GET /api/snapshots/<id>.jpg    frame it was last seen in      (memory/snapshots)
   GET /api/live/<camera>.mjpg    live video of one camera (MJPEG, about LIVE_FPS frames a second)
@@ -117,6 +119,14 @@ if (zone) poll();
 </script></body></html>"""
 
 
+def ago_secs(text):
+    """The page's agoText ("just now", "5 minutes ago", "2 h 10 min ago") back to seconds."""
+    t = str(text or "")
+    h = re.search(r"(\d+) h", t)
+    m = re.search(r"(\d+) min", t)
+    return (int(h.group(1)) * 3600 if h else 0) + (int(m.group(1)) * 60 if m else 0)
+
+
 class TraceAPI:
     def __init__(self, cams, mem_dir, events_file):
         self.cams = {c.id: c for c in cams}
@@ -142,17 +152,61 @@ class TraceAPI:
             out.append({"id": c.id, "name": c.name, "live": bool(c.ok), "frame_w": w, "frame_h": h})
         return out
 
+    def zone_names(self):
+        """zone id -> name, from the places in the model the page posted ({} before it has)."""
+        for b in ((self.model or {}).get("items") or {}).values():
+            return {p["id"]: p["name"] for p in b.get("places") or [] if "id" in p and "name" in p}
+        return {}
+
+    def model_items(self):
+        """Without multicam (run_trace.py --demo, a replay) nothing fills self.items, and trace.html
+        showed "No items yet" while Trace answered from the model. This builds the same item shape
+        from the model the /sim page posted: every item a phone has seen, in view or last seen."""
+        m = self.model or {}
+        received, names, out = m.get("received") or time.time(), self.zone_names(), []
+        for key, b in (m.get("items") or {}).items():
+            vis, ls = b.get("visible_now"), b.get("last_seen") or {}
+            zone = vis or ls.get("zone")
+            if not zone:
+                continue                        # never seen: nothing to remember yet
+            where, noun = names.get(zone, zone), b.get("item_name") or key
+            plural = bool(b.get("item_plural"))
+            if vis:
+                sentence, ago = "The %s phone can see your %s right now." % (where.lower(), noun), 0
+            else:
+                ago = ago_secs(ls.get("ago"))
+                sentence = "Your %s %s last seen on the %s%s." % (
+                    noun, "were" if plural else "was", where.lower(), " " + ls["ago"] if ls.get("ago") else "")
+                top = (b.get("search_plan") or [{}])[0]
+                if top.get("zone") and top["zone"] != zone:
+                    sentence += " Best place to look now: the %s (%s)." % (str(top.get("place", top["zone"])).lower(), top.get("word", "possibly"))
+            out.append({"id": b.get("item") or key, "name": noun[:1].upper() + noun[1:], "category": key,
+                        "camera": None, "camera_name": where + " phone", "zone": where,
+                        "last_time": received - ago, "box": None, "frame_w": None, "frame_h": None,
+                        "sentence": sentence, "confidence": None, "guess": False, "flag": None,
+                        "in_view": bool(vis)})
+        return out
+
     def events(self, limit):
         if not self.events_file.exists():
             return []
         with self.events_file.open() as f:
-            lines = deque(f, maxlen=limit)
-        out = []
+            lines = deque(f, maxlen=limit * 5)     # room for the person events skipped below
+        out, names = [], self.zone_names()
         for line in reversed(lines):
             try:
-                out.append(json.loads(line))
+                e = json.loads(line)
             except ValueError:
                 continue
+            if "event" in e:                       # trace-events.jsonl: keep sightings, readable
+                if e["event"] not in ("appeared", "moved") or not e.get("item"):
+                    continue
+                cat = e.get("category") or str(e["item"]).rsplit("-", 1)[0]
+                e = dict(e, item=cat[:1].upper() + cat[1:], category=cat,
+                         zone=names.get(e.get("zone"), e.get("zone")), camera_name=e.get("camera_name") or e.get("camera"))
+            out.append(e)
+            if len(out) >= limit:
+                break
         return out
 
     # ------------------------------------------------------------ server
@@ -334,7 +388,7 @@ class TraceAPI:
                     if p == "/api/speech":
                         return self._speech_stream(parse_qs(url.query))
                     if p == "/api/items":
-                        return self._json(api.items)
+                        return self._json(api.items or api.model_items())
                     if p == "/api/model":
                         return self._json(api.model or {})
                     if p == "/api/events":
@@ -459,7 +513,9 @@ if __name__ == "__main__":
     ap.add_argument("--host", default="127.0.0.1", help="0.0.0.0 lets phones on your Wi-Fi reach /phone")
     ap.add_argument("--port", type=int, default=8000)
     a = ap.parse_args()
-    srv = TraceAPI([], ROOT / "memory", ROOT / "events.jsonl").start(a.host, a.port)
+    # trace-events.jsonl: what run_trace.py --demo and the bridge use (cleared at each start),
+    # not multicam's old events.jsonl, which showed hours-old sightings
+    srv = TraceAPI([], ROOT / "memory", ROOT / "trace-events.jsonl").start(a.host, a.port)
     print("3D room and guide: http://localhost:%d/sim   phone beeper: http://<this-laptop>:%d/phone?zone=<id>" % (a.port, a.port))
     try:
         while True:

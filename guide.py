@@ -312,8 +312,26 @@ def where_text(r):
     return ("under things on the " if r["covered"] else "the ") + r["name"].lower()
 
 
-def template(bundle, plan, tries):
-    """The page's own sentence (trace-sim sentence()), in Python: what Trace says without the LLM."""
+def again_text(bundle, r0, tried, names):
+    """The top place was already checked (a phone still sees it there, or nothing else comes close):
+    say so, instead of "Check the sofa next" as if it were new. None if r0 wasn't checked."""
+    times = sum(str(t).lower().startswith(r0["name"].lower()) for t in tried or [])
+    if not times:
+        return None
+    s, noun = "", bundle.get("item_name") or "item"
+    if bundle.get("visible_now") == r0["zone"]:
+        where = names.get(r0["zone"], r0["zone"])
+        if times >= 2:      # checked properly twice: the phone may be seeing something else
+            return ("The %s phone still sees something that looks like your %s, but it may be something else. "
+                    "Feel around the %s once more." % (where, noun, where))
+        s = "The %s phone still sees something that looks like your %s. " % (where, noun)
+    careful = ", more carefully, under and around things" if r0["zone"] not in ("person", "outside") else ", more carefully"
+    return s + "Check %s again%s: %s there, about %s seconds." % (where_text(r0), careful, r0["word"], r0["seconds"])
+
+
+def template(bundle, plan, tries, tried=()):
+    """The page's own sentence (trace-sim sentence()), in Python: what Trace says without the LLM.
+    tries: how many checks so far; tried: their place names (to spot a place suggested again)."""
     name, plural = bundle.get("item_name") or "item", bool(bundle.get("item_plural"))
     names = {p["id"]: p["name"].lower() for p in places_of(bundle)}
     if not plan:
@@ -326,7 +344,8 @@ def template(bundle, plan, tries):
         s += ("Your %s %s last seen on the %s %s. " % (name, "were" if plural else "was", names.get(ls["zone"], ls["zone"]), ls.get("ago", ""))
               if ls else "No phone has seen your %s today. " % name)
     r0 = plan[0]
-    s += "Check %s %s: %s there, about %s seconds." % (where_text(r0), "next" if tries else "first", r0["word"], r0["seconds"])
+    s += again_text(bundle, r0, tried, names) or "Check %s %s: %s there, about %s seconds." % (
+        where_text(r0), "next" if tries else "first", r0["word"], r0["seconds"])
     if len(plan) > 1:
         s += " If not, try %s (%s)." % (where_text(plan[1]), plan[1]["word"])
     return s
@@ -426,10 +445,11 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
     ses["used"] = now
     base = places_of(bundle)
 
-    def plan_now():   # as rank(), but the place they just checked isn't suggested again straight away
+    def plan_now():   # as rank(), but the place they just checked isn't suggested again straight away,
+        # unless a phone sees the item there now: then again_text() asks for a careful second look
         p = rank(apply_evidence(base, ses["evidence"], S), S)
         last = re.sub(r" \((quick look|not sure)\)$", "", ses["tried"][-1]) if ses["tried"] else None
-        if last and len(p) > 1 and p[0]["name"] == last:
+        if last and len(p) > 1 and p[0]["name"] == last and p[0]["zone"] != bundle.get("visible_now"):
             p[0], p[1] = p[1], p[0]
         return p
     plan = plan_now()
@@ -474,7 +494,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         ses["evidence"].append(ev)
         ses["tried"].append(plan[0]["name"])
         plan = plan_now()
-        return turn(template(bundle, plan, len(ses["tried"])), evidence=[ev])
+        return turn(template(bundle, plan, len(ses["tried"]), ses["tried"]), evidence=[ev])
     if WHAT_HAPPENED.search(n) and bundle.get("story_text"):
         return turn(bundle["story_text"])
     if FOUND_IT.match(n) and plan and ses["last"]:
@@ -490,7 +510,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         nm = next((p["name"] for p in base if p["id"] == ev["zone"]), ev["zone"])
         ses["tried"].append(nm + {"low": " (quick look)", "medium": " (not sure)"}.get(ev["sure"], ""))
     plan = plan_now()
-    fallback = template(bundle, plan, len(ses["tried"]))
+    fallback = template(bundle, plan, len(ses["tried"]), ses["tried"])
     if not res.get("say"):
         return turn(fallback, evidence=res["evidence"], source=res["source"])
     ok, why = validate_say(res["say"], res.get("places"), plan, base, ses["tried"], json.dumps(bundle) + " " + fallback)

@@ -950,9 +950,11 @@ function rank(b) {
 }
 // The plan a person hears: as rank(), but the place they just checked isn't suggested again straight
 // away (Bayesian search may say re-check a cheap place; a person hears "it's ignoring me").
-function rankAfter(b, lastTried) {
+// Except where a phone sees the item right now (seenAt): there againText() asks for a careful second
+// look, then says the phone may be wrong. Same rule as guide.py plan_now().
+function rankAfter(b, lastTried, seenAt) {
   const r = rank(b);
-  if (lastTried && r.length > 1 && r[0].pl.name === lastTried) { const x = r[0]; r[0] = r[1]; r[1] = x; }
+  if (lastTried && r.length > 1 && r[0].pl.name === lastTried && r[0].pl.id !== seenAt) { const x = r[0]; r[0] = r[1]; r[1] = x; }
   return r;
 }
 // ---------- the one best question (expected value of information) ----------
@@ -1508,8 +1510,25 @@ function whereText(pl, b) {
   const p = placeP(b, pl), cov = b[2 * pl.i + 1] / Math.max(p, 1e-12);
   return (cov > 0.5 ? "under things on the " : "the ") + pl.name.toLowerCase();
 }
-function sentence(it, b, tries) {
-  const name = it.name.toLowerCase(), r = planOf(b);
+// The top place was already checked (a phone still sees it there, or nothing else comes close):
+// say so, instead of "Check the sofa next" as if it were new. Same as guide.py again_text().
+function againText(it, x, tried, b) {
+  const nm = x.pl.name.toLowerCase();
+  const times = tried.filter((t) => String(t).toLowerCase().startsWith(nm)).length;
+  if (!times) return null;
+  let s = "";
+  if (visibleAt(it.id) === x.pl.id) {
+    const noun = it.name.toLowerCase();
+    // checked properly twice: the phone may be seeing something else
+    if (times >= 2) return "The " + nm + " phone still sees something that looks like your " + noun + ", but it may be something else. Feel around the " +
+      nm + " once more.";
+    s = "The " + nm + " phone still sees something that looks like your " + noun + ". ";
+  }
+  return s + "Check " + whereText(x.pl, b) + " again, more carefully" + (x.pl.kind === "zone" ? ", under and around things" : "") +
+    ": " + probWord(x.p) + " there, about " + x.t + " seconds.";
+}
+function sentence(it, b, tried) {
+  const tries = tried.length, name = it.name.toLowerCase(), r = planOf(b);
   if (!r.length) return "I don't have a good idea where " + (it.plural ? "they are" : "it is") + ".";
   const v = visibleAt(it.id);
   if (!tries && v) return "The " + MAP.zones[ZI[v]].name.toLowerCase() + " phone can see your " + name + " right now.";
@@ -1518,7 +1537,7 @@ function sentence(it, b, tries) {
   if (!tries) s += ls ? "Your " + name + " " + (it.plural ? "were" : "was") + " last seen on the " + MAP.zones[ZI[ls.zone]].name.toLowerCase() + " " + agoText(world.tick - ls.tick) + ". "
                       : "No phone has seen your " + name + " today. ";
   // probability words, not numbers (SPEC 5.2); the percentages stay on screen in the plan
-  s += "Check " + whereText(r[0].pl, b) + (tries ? " next" : " first") + ": " + probWord(r[0].p) + " there, about " + r[0].t + " seconds.";
+  s += againText(it, r[0], tried, b) || "Check " + whereText(r[0].pl, b) + (tries ? " next" : " first") + ": " + probWord(r[0].p) + " there, about " + r[0].t + " seconds.";
   if (r[1]) s += " If not, try " + whereText(r[1].pl, b) + " (" + probWord(r[1].p) + ").";
   return s;
 }
@@ -1529,7 +1548,7 @@ function startSession(id) {
 function currentSay() {
   if (!session) return "";
   if (session.result) return session.result.text;
-  return session.say || sentence(itemById(session.item), session.b, session.tried.length);
+  return session.say || sentence(itemById(session.item), session.b, session.tried);
 }
 function failAt(x, part, sure) {
   if (!session || !x) return;
@@ -1876,7 +1895,7 @@ function postModel() {
 setInterval(postModel, 1500);   // the last change gets out even if nothing redraws afterwards
 function planOf(b) {   // the plan for the person searching now: their last failed check isn't first again
   const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \((quick look|not sure)\)$/, "") : null;
-  return rankAfter(b, t);
+  return rankAfter(b, t, session && session.item ? visibleAt(session.item) : null);
 }
 function renderAll() {
   postModel();
