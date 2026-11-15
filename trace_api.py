@@ -324,6 +324,9 @@ class TraceAPI:
                     if p == "/api/room":                 # the room the page last built, shared by every browser
                         f = ROOT / "room.json"
                         return self._file(f, "application/json") if f.exists() else self._json({"error": "no room yet"}, 404)
+                    if p == "/api/target":               # where Trace is sending the person (the sonar)
+                        import guide
+                        return self._json(dict(guide.TARGET))
                     if p == "/api/cameras":
                         return self._json(api.cameras())
                     if p == "/api/voice":

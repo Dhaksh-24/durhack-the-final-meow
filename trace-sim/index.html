@@ -247,12 +247,15 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
         <div class="lastseen" id="lastSeen"></div>
         <div class="trail" id="trailLine"></div>
         <div class="trail" id="storyLine"></div>
+        <div class="trail" id="questionLine"></div>
         <div class="bars" id="bars"></div>
       </section>
 
       <section class="card keep" id="askCard">
         <h2>Ask Trace</h2>
         <p class="lead">Pauses the room and plans a search: the best chance of finding it per second of effort.</p>
+        <div class="controls" style="margin-top:0"><label class="check"><input type="checkbox" id="sonarChk"> Sonar: beep faster as the person gets closer to where Trace sent them</label></div>
+        <p class="note" id="sonarNote" style="margin-top:4px"></p>
         <div class="controls askbar" style="margin-top:0">
           <input type="text" id="askText" placeholder="Ask, or say what you checked: &quot;not under the sofa&quot;" aria-label="Ask Trace">
           <button class="btn primary" id="askSend" type="button">Ask</button>
@@ -952,6 +955,46 @@ function rankAfter(b, lastTried) {
   if (lastTried && r.length > 1 && r[0].pl.name === lastTried) { const x = r[0]; r[0] = r[1]; r[1] = x; }
   return r;
 }
+// ---------- the one best question (expected value of information) ----------
+// Expected seconds to find it by searching in plan order from belief b (each failed check updates b).
+const T_ASK = 4;   // seconds a question costs
+function expSearchTime(b0) {
+  let b = Float64Array.from(b0), cost = 0, alive = 1, last = null;
+  for (let k = 0; k < 12 && alive > 1e-3; k++) {
+    const r = rankAfter(b, last)[0]; if (!r) break;
+    cost += alive * r.t; alive *= 1 - findP(b, r.pl);
+    b = failUpdate(b, r.pl); last = r.pl.name;
+  }
+  return cost + alive * 120;
+}
+// Candidate yes/no questions: G = the hidden states a "yes" points to, a = P(yes | in G), c = P(yes | not).
+function questionsFor(it, b, ctx) {
+  const them = it.plural ? "them" : "it", qs = [];
+  qs.push({ id: "pocket", text: "Did you put anything in your pocket or bag since you last had " + them + "?", G: [2 * Z], a: 0.8, c: 0.2 });
+  let zi = -1, best = 0; MAP.zones.forEach((z, i) => { if (b[2 * i + 1] > best) { best = b[2 * i + 1]; zi = i; } });
+  if (zi >= 0 && best > 0.05) qs.push({ id: "cover-" + MAP.zones[zi].id, text: "Did you put anything down on top of things on the " + MAP.zones[zi].name.toLowerCase() + "?", G: [2 * zi + 1], a: 0.75, c: 0.15 });
+  if (ctx && ctx.leftRoom) qs.push({ id: "left", text: "Did you take " + them + " out of the room with you?", G: [2 * Z + 1], a: 0.8, c: 0.1 });
+  return qs;
+}
+// Ask only if a question beats searching straight away by more than 3 s on average:
+// gain = E[time | search now] − (T_ASK + Σ_answer P(answer) · E[time | answer]).
+function bestQuestion(it, b, ctx) {
+  const base = expSearchTime(b); let best = null;
+  for (const q of questionsFor(it, b, ctx)) {
+    const inG = new Set(q.G), yes = new Float64Array(NS), no = new Float64Array(NS); let py = 0;
+    for (let k = 0; k < NS; k++) { const ly = inG.has(k) ? q.a : q.c; yes[k] = b[k] * ly; no[k] = b[k] * (1 - ly); py += yes[k]; }
+    if (py <= 0.02 || py >= 0.98) continue;
+    const e = T_ASK + py * expSearchTime(normalize(yes)) + (1 - py) * expSearchTime(normalize(no));
+    if (!best || base - e > best.gain) best = Object.assign({}, q, { gain: base - e, base, py });
+  }
+  if (best) best.worth = best.gain > 3;   // ask unprompted only when it beats looking by over 3 s
+  return best;
+}
+function factorsFor(q, yes) {   // the answer as per-place multipliers, for the server's search state
+  const inG = new Set(q.G), f = (k) => (inG.has(k) ? q.a : q.c), g = (k) => (yes ? f(k) : 1 - f(k));
+  return PLACES.map((pl) => pl.kind === "zone" ? { zone: pl.id, fv: g(2 * pl.i), fc: g(2 * pl.i + 1) }
+    : { zone: pl.id, fv: g(pl.kind === "person" ? 2 * Z : 2 * Z + 1), fc: 1 });
+}
 function truePlace(s) { return s.loc; }
 function trueFound(w, it, pl) {
   const s = w.items[it.id];
@@ -1008,7 +1051,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { viterbiStory, predictStep, updateStep, rankAfter, learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { bestQuestion, expSearchTime, factorsFor, viterbiStory, predictStep, updateStep, rankAfter, learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -1199,7 +1242,51 @@ function roomHeat() {
   heatCache = { at: key, min, max: Math.max(0, ...Object.values(min)) };
   return heatCache;
 }
+let curPersonZone = null;
+// ---------- sonar: a parking-sensor beep that guides someone who can't see the screen ----------
+// Follows where the guide (trace.html → /api/ask) is sending the person (GET /api/target), or this
+// page's own Ask session. Faster as the person's zone gets closer to the target; quick and high
+// when they're at it. Person position is zone-level, from the camera's person events.
+let sonar = { on: false, ctx: null, timer: null, target: null };
+function sonarTarget() {
+  if (session && !session.result) { const r = planOf(session.b)[0]; if (r) return { zone: r.pl.id, name: r.pl.name, kind: r.pl.kind }; }
+  const t = sonar.target;
+  if (t && t.zone && t.state !== "found" && Date.now() / 1000 - t.t < 300) return { zone: t.zone, name: t.name, kind: ZI[t.zone] != null ? "zone" : t.zone };
+  return null;
+}
+function beep(freq, ms) {
+  const c = sonar.ctx; if (!c) return;
+  const o = c.createOscillator(), g = c.createGain();
+  o.frequency.value = freq; o.type = "sine";
+  g.gain.setValueAtTime(0.0001, c.currentTime); g.gain.exponentialRampToValueAtTime(0.25, c.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + ms / 1000);
+  o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + ms / 1000 + 0.02);
+}
+function sonarTick() {
+  if (!sonar.on) return;
+  const t = sonarTarget(); let wait = 1000, note = "Sonar on: waiting for a search.";
+  if (t && t.kind === "zone") {
+    const tz = MAP.zones[ZI[t.zone]], pz = curPersonZone && ZI[curPersonZone] != null ? MAP.zones[ZI[curPersonZone]] : null;
+    if (!pz) { wait = 1200; beep(440, 70); note = "Guiding to the " + tz.name.toLowerCase() + " · person not seen yet"; }
+    else if (pz.id === tz.id) { wait = 160; beep(1320, 50); note = "At the " + tz.name.toLowerCase() + ": search here"; }
+    else {
+      const d = Math.hypot(pz.x + pz.w / 2 - tz.x - tz.w / 2, pz.y + pz.h / 2 - tz.y - tz.h / 2);
+      wait = Math.max(250, Math.min(1200, 250 + d * 180)); beep(660, 60);
+      note = "Guiding to the " + tz.name.toLowerCase() + " · " + d.toFixed(1) + " m away";
+    }
+  } else if (t) note = t.kind === "person" ? "Check your pockets and hands (no walking needed)" : "Outside the room: no sonar";
+  $("#sonarNote").textContent = note;
+  sonar.timer = setTimeout(sonarTick, wait);
+}
+async function sonarPoll() {
+  if (!sonar.on) return;
+  if (/^https?:$/.test(location.protocol)) {
+    try { const r = await fetch(API + "/api/target", { cache: "no-store" }); if (r.ok) sonar.target = await r.json(); } catch (e) { /* no server */ }
+  }
+  setTimeout(sonarPoll, 1000);
+}
 function applyObs(obs) {
+  curPersonZone = obs.person == null || obs.person === "outside" ? null : obs.person;
   const before = {}; for (const it of ITEMS) before[it.id] = visibleAt(it.id);
   const time = clockAt(world.tick);
   if (replay) for (const e of obs.events) { logEvent(e); learnFrom(e); }
@@ -1397,6 +1484,8 @@ function renderTrail(it) {
   $("#trailLine").innerHTML = parts.length ? (lastSeen[it.id] ? "Since then you were: " : "Today you were: ") + parts.join(" → ") : "";
   const st = storyFor(it);
   $("#storyLine").textContent = st.text;
+  const q = bestQuestion(it, beliefs[it.id], { leftRoom: trailFor(it.id).visits.some((v) => v.zone === "outside") });
+  $("#questionLine").textContent = q ? "Best question: “" + q.text + "” " + (q.gain >= 0 ? "saves about " + q.gain.toFixed(1) + " s on average" : "costs about " + (-q.gain).toFixed(1) + " s more than looking") + (q.worth ? ", so Trace asks it." : ", so Trace just looks (it asks above 3 s, or if you say “help me remember”).") : "";
 }
 function renderBars() {
   const it = itemById(selected), b = beliefs[selected];
@@ -1666,6 +1755,8 @@ function bundleFor(it, ownSession = true) {
     search_plan: rank(b).slice(0, 4).map((x) => ({ place: x.pl.name, zone: x.pl.id, probability: +x.p.toFixed(3), word: probWord(x.p), seconds: x.t })),
     // where the person went since it was last seen (SPEC 5.3 memory prompts); times from code
     story: storyFor(it).segments, story_text: storyFor(it).text,
+    best_question: (() => { const q = bestQuestion(it, b, { leftRoom: trailFor(it.id).visits.some((v) => v.zone === "outside") });
+      return q ? { id: q.id, text: q.text, gain_s: +q.gain.toFixed(1), worth_asking: q.worth, yes: factorsFor(q, true), no: factorsFor(q, false) } : null; })(),
     trail_since_last_seen: trailFor(it.id).visits.slice(-8).map((v) => ({ place: placeName(v.zone), from: hhmm(v.from), minutes: Math.max(1, Math.round((v.to - v.from) / 60)) })),
     // for the guide server's plan update (SPEC 4.4): what Trace believes, per place
     item_name: it.name.toLowerCase(),
@@ -1784,7 +1875,7 @@ function postModel() {
 }
 setInterval(postModel, 1500);   // the last change gets out even if nothing redraws afterwards
 function planOf(b) {   // the plan for the person searching now: their last failed check isn't first again
-  const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \(.*\)$/, "") : null;
+  const t = session && session.tried && session.tried.length ? String(session.tried[session.tried.length - 1]).replace(/ \((quick look|not sure)\)$/, "") : null;
   return rankAfter(b, t);
 }
 function renderAll() {
@@ -2962,6 +3053,13 @@ if (QS.get("room") === "demo") loadMap(JSON.parse(JSON.stringify(DEFAULT_MAP)), 
 else try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved), false); } catch (e) { /* none saved, or unreadable */ }
 dFromMap();
 loadHab();
+$("#sonarChk").onchange = (e) => {
+  sonar.on = e.target.checked; clearTimeout(sonar.timer);
+  if (sonar.on) {
+    try { sonar.ctx = sonar.ctx || new (window.AudioContext || window.webkitAudioContext)(); sonar.ctx.resume(); } catch (err) { /* no audio */ }
+    sonarPoll(); sonarTick();
+  } else $("#sonarNote").textContent = "";
+};
 $("#seedBtn").onclick = () => { seedHeat(120); renderHeat(); };
 $("#seedClear").onclick = () => { clearSeed(); renderHeat(); };
 if (QS.get("seed") === "morning") setTimeout(() => { seedHeat(120); renderHeat(); }, 500);

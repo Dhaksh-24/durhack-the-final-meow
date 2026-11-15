@@ -62,6 +62,10 @@ def apply_evidence(places, evidence, S):
         p = by_id.get(ev["zone"])
         if not p:
             continue
+        if "fv" in ev:   # an answer to Trace's question: Bayes factors for this place
+            p["pv"] *= float(ev["fv"])
+            p["pc"] *= float(ev.get("fc", 1.0))
+            continue
         w = SURE_W.get(ev.get("sure"), 1.0)
         kind = p.get("kind", "zone")
         if kind == "zone":
@@ -283,6 +287,8 @@ def ask(bundle, utterance, mode="default", llm=None):
 SESSION_IDLE = 15 * 60       # forget a search after this long without a word about it
 ITEM_ALIASES = {"keys": r"\b(keys?|keyring)\b", "wallet": r"\b(wallet|purse|cards?)\b",
                 "glasses": r"\b(glasses|specs|spectacles)\b"}
+YES = re.compile(r"^(yes|yeah|yep|yup|i did|i think so|maybe yes|probably)\b")
+NO = re.compile(r"^(no|nope|nah|i didn.?t|don.?t think so|not that i know)\b")
 WHAT_HAPPENED = re.compile(r"\b(what happened|how did i lose|where did i (put|leave)|what did i do with)\b")
 AGAIN = re.compile(r"^(again|repeat|repeat that|say (that|it) again|what|pardon|sorry what)$")
 NOT_THERE = re.compile(r"^(no |nope )?(it's |its |they're |theyre |it is |they are )?not (there|here)( either)?$|^(nope|no|nothing)$")
@@ -386,6 +392,10 @@ def validate_say(say, places_said, plan, all_places, tried, facts):
     return True, ""
 
 
+# Where Trace is sending the person right now, for the sonar on /sim: {item, zone, name, state, t}.
+TARGET = {}
+
+
 def chat(message, history, model, sessions, mode="default", llm=None, now=None):
     """One turn of trace.html's conversation. model: {"items": {id: bundle}} posted by the analytics
     page. sessions: a dict the server keeps between turns. Returns
@@ -418,7 +428,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
 
     def plan_now():   # as rank(), but the place they just checked isn't suggested again straight away
         p = rank(apply_evidence(base, ses["evidence"], S), S)
-        last = re.sub(r" \(.*\)$", "", ses["tried"][-1]) if ses["tried"] else None
+        last = re.sub(r" \((quick look|not sure)\)$", "", ses["tried"][-1]) if ses["tried"] else None
         if last and len(p) > 1 and p[0]["name"] == last:
             p[0], p[1] = p[1], p[0]
         return p
@@ -426,6 +436,10 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
 
     def turn(reply, state="searching", evidence=(), source="page", why="", chirp=None):
         ses["last"] = reply
+        top = plan[0] if plan and state != "found" else None
+        TARGET.clear()
+        TARGET.update({"item": want, "zone": top["zone"] if top else None, "name": top["name"] if top else None,
+                       "state": state, "t": time.time()})
         if state == "found":
             ses["found"] = True
         return {"reply": reply, "item": want, "state": state, "chirp": chirp,
@@ -435,6 +449,23 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None):
         return turn("Found %s: %s." % ("them" if bundle.get("item_plural") else "it", name.lower()), "found",
                     [{"zone": zone, "part": "all", "found": True, "sure": "high"}])
 
+    # Trace's one best question (the page's model picks it by expected value of information)
+    bq = bundle.get("best_question")
+    if ses.get("q") and (YES.match(n) or NO.match(n)):
+        q, yes = ses.pop("q"), bool(YES.match(n))
+        ses["evidence"].extend(q["yes"] if yes else q["no"])
+        plan = plan_now()
+        return turn("Thanks. " + template(bundle, plan, 0))
+    ses.pop("q", None)
+    asked_for = re.search(r"\b(help me remember|ask me|any questions?|question)\b", n)
+    if bq and asked_for:
+        ses["asked"] = True
+        ses["q"] = bq
+        return turn(bq["text"], why="best question: about %s s saved on average" % bq.get("gain_s"))
+    if bq and bq.get("worth_asking") and not ses.get("asked") and not ses["tried"] and re.search(r"\bwhere\b", n) and not bundle.get("visible_now"):
+        ses["asked"] = True
+        ses["q"] = bq
+        return turn("Before you look: " + bq["text"], why="best question, saves about %s s on average" % bq.get("gain_s"))
     # the three simple commands never need the LLM
     if AGAIN.match(n) and ses["last"]:
         return turn(ses["last"])
