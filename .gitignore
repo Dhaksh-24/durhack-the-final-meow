@@ -20,7 +20,10 @@ test_out/
 # multicam.py runtime output -- regenerated every run
 memory/
 events.jsonl
+trace-events.jsonl
 cameras.json
+zones.json
+baseline/
 
 # tts.py output -- regenerate with: python tts.py --samples / --prerender
 samples/
@@ -29,3 +32,8 @@ out.wav
 
 # whereabouts.py runtime log -- regenerated every run
 timeline.jsonl
+
+# the room the page built (per laptop; the page saves it through /api/room)
+room.json
+# room.py's camera places (per laptop; built by multicam.py / python room.py build)
+places.json

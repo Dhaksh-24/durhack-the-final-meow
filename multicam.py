@@ -51,6 +51,12 @@ import room as roommod
 import trace_api
 import whereabouts
 
+try:                    # turns detections into SPEC 3.2 events for the Trace model page
+    import events_adapter
+except Exception as e:  # keep the tracker usable without it
+    events_adapter = None
+    print(f"events_adapter.py not loaded ({e}): no trace-events.jsonl")
+
 # ---- tuning ----
 SAMPLE_SECS = 0.5      # each camera is analysed at most every this many seconds
 # s after last sighting (any camera) an item counts as "in view"
@@ -127,6 +133,98 @@ def atomic_write(path, text):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(text)
     os.replace(tmp, path)
+
+
+# ---- feeding the Trace model (trace-sim page) ----
+TRACE_EVENTS_FILE = Path("trace-events.jsonl")   # SPEC 3.2 events; bridge.py streams it to the page
+PERSON_CONF = 0.35      # YOLO-World "person" boxes below this are ignored
+PERSON_AT = 0.25        # a person box covering this much of a zone (or their feet in it) = at that zone
+MOTION_DIFF = 18        # grey-level change (0-255) that counts as movement (--no-people only)
+MOTION_FRAC = 0.02      # share of a zone that has to move for "someone is here" (--no-people only)
+PERSON_QUIET = 4.0      # s without a person at a zone before "person_left"
+
+
+def _area(r):
+    return max(0.0, r[2] - r[0]) * max(0.0, r[3] - r[1])
+
+
+def person_zone(box, zones):
+    """The one zone a person is at: the most covered zone, or the zone their feet are in.
+    The model keeps a single place for the person, so this picks one, never several."""
+    fx, fy = (box[0] + box[2]) / 2, box[3]
+    best, best_s = None, 0.0
+    for z in zones:
+        r = z["rect"]
+        inter = _area([max(r[0], box[0]), max(r[1], box[1]), min(r[2], box[2]), min(r[3], box[3])])
+        s = inter / max(1.0, min(_area(r), _area(box)))
+        if r[0] <= fx <= r[2] and r[1] <= fy <= r[3]:
+            s = max(s, PERSON_AT)
+        if s >= PERSON_AT and s > best_s:
+            best, best_s = z, s
+    return best
+
+
+class ZoneWatch:
+    """person_here / person_left per named zone. From YOLO-World "person" boxes found in the
+    same pass as the items (so a TV, a lamp or a shadow doesn't count as someone being there),
+    or from movement inside the zone when people aren't detected (--no-people).
+    No identity either way: only "a person is at this zone"."""
+
+    def __init__(self, feed):
+        self.feed, self.prev, self.state = feed, {}, {}
+
+    def zone_id(self, name):
+        return self.feed.zone_map.get(name) or events_adapter.slug(name)
+
+    def update(self, cam, frame, zones, now, people=None):
+        """people: [(box, conf)] from the detector, or None to fall back to movement."""
+        if people is None:
+            return self._motion(cam, frame, zones, now)
+        found = [person_zone(b, zones) for b, c in people if c >= PERSON_CONF]
+        at = {z["name"] for z in found if z is not None}
+        for z in zones:
+            self._mark(cam, z["name"], z["name"] in at, now)
+
+    def _mark(self, cam, name, present, now):
+        st = self.state.setdefault((cam, name), {"here": False, "last": 0.0})
+        if present:
+            st["last"] = now
+            if not st["here"]:
+                st["here"] = True
+                self.feed.person_event("person_here", self.zone_id(name), now, cam)
+        elif st["here"] and now - st["last"] > PERSON_QUIET:
+            st["here"] = False
+            self.feed.person_event("person_left", self.zone_id(name), now, cam)
+
+    def _motion(self, cam, frame, zones, now):
+        w = 240
+        small = cv2.resize(frame, (w, max(1, int(w * frame.shape[0] / frame.shape[1]))))
+        g = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        prev, self.prev[cam] = self.prev.get(cam), g
+        if prev is None or prev.shape != g.shape:
+            return
+        moved = cv2.absdiff(g, prev) > MOTION_DIFF
+        k = w / float(frame.shape[1])
+        for z in zones:
+            x1, y1, x2, y2 = [int(v * k) for v in z["rect"]]
+            roi = moved[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+            if roi.size == 0:
+                continue
+            self._mark(cam, z["name"], roi.mean() > MOTION_FRAC, now)
+
+
+def feed_frame(feed, cam, frame, dets, zones, now):
+    """One analysed frame -> the adapter, which applies SPEC 3.2's hysteresis
+    (appeared = 2 of 3 frames, disappeared = 5 missed, moved, boxes > 15% dropped).
+    Every analysed frame goes in, empty ones too, so misses are counted."""
+    h, w = frame.shape[:2]
+    rows = []
+    for cat, box, conf in dets:
+        zone = zone_for(box, zones)
+        rows.append({"item": cat, "box": [float(v) for v in box], "det_conf": float(conf),
+                     "image_w": w, "image_h": h, "camera_id": cam,
+                     "support": {"rel": "in", "anchor": zone} if zone else None})
+    feed.frame(cam, now, rows)
 
 
 def zone_for(box, zones):
@@ -748,12 +846,18 @@ def main():
                     help="detector input size (default from detect.py)")
     ap.add_argument("--conf", type=float, default=detect.CONF,
                     help="detector threshold (default from detect.py)")
+    ap.add_argument("--zone-map", default=None,
+                    help='JSON file renaming zones to the Trace room map ids, e.g. {"Hall table": "desk"}; '
+                         'without it a zone "Sofa" becomes "sofa"')
+    ap.add_argument("--no-people", action="store_true",
+                    help="don't look for people: someone at a zone comes from movement there, no heatmap, "
+                         "and Trace can't tell picked-up from covered")
+    ap.add_argument("--no-bridge", action="store_true",
+                    help="don't start bridge.py (which streams trace-events.jsonl to the Trace page)")
     ap.add_argument("--api-port", type=int, default=8000,
                     help="port for Trace (trace.html + live video); 0 turns it off")
     ap.add_argument("--api-host", default="127.0.0.1",
                     help="127.0.0.1 = this computer only; 0.0.0.0 = phones on your Wi-Fi too")
-    ap.add_argument("--no-people", action="store_true",
-                    help="don't look for people (no heatmap, and Trace can't tell picked-up from covered)")
     args = ap.parse_args()
 
     cams = load_cameras(args)
@@ -763,8 +867,8 @@ def main():
         c.start()
 
     print("Loading models (first run downloads weights)...")
-    # people ride along in the same YOLO-World pass (no extra cost); they feed the heatmap
-    # and whereabouts.py, never the item memory
+    # people ride along in the same YOLO-World pass at no extra cost; they feed
+    # person_here / person_left, the heatmap and whereabouts.py, never the item memory
     prompts = dict(detect.PROMPTS) if args.no_people else {**detect.PROMPTS, "person": ["person"]}
     detector = detect.Detector(prompts=prompts, conf=args.conf, imgsz=args.imgsz)
     mem = Memory(Embedder(), cam_names)
@@ -774,6 +878,25 @@ def main():
     brain.room.save()
     show_heat = False
     layout = Layout(len(cams))
+    feed = watch = bridge = None
+    if events_adapter is not None:
+        zmap = {}
+        if args.zone_map:
+            try:
+                zmap = json.loads(Path(args.zone_map).read_text())
+            except Exception as e:
+                print(f"  couldn't read --zone-map {args.zone_map}: {e}")
+        feed = events_adapter.Adapter(str(TRACE_EVENTS_FILE), zmap, echo=False)
+        watch = ZoneWatch(feed)
+        print(f"Trace model events -> {TRACE_EVENTS_FILE} (zones must match the room map in the page)")
+        if not args.no_bridge:
+            import subprocess
+            try:
+                bridge = subprocess.Popen([sys.executable, str(Path(__file__).with_name("bridge.py")),
+                                           "--file", str(TRACE_EVENTS_FILE)])
+                print("  bridge.py started: open trace-sim/index.html (or /model) and press Connect live")
+            except Exception as e:
+                print(f"  couldn't start bridge.py ({e}); run it yourself: python bridge.py --file {TRACE_EVENTS_FILE}")
     api = trace_api.TraceAPI(cams, MEM_DIR, EVENTS_FILE).start(
         args.api_host, args.api_port) if args.api_port else None
     if api:
@@ -824,12 +947,18 @@ def main():
         if batch:
             per_frame = detector.detect([f for _, f, _ in batch])
             for (c, f, ft), dets in zip(batch, per_frame):
-                people = [(box, conf) for cat, box, conf in dets if cat == "person"]
+                people = None if args.no_people else [(b, s) for cat, b, s in dets if cat == "person"]
                 dets = [d for d in dets if d[0] != "person"]
                 cz = [z for z in zones if z["camera"] == c.id]
                 c.assigned = mem.update(c.id, f, dets, now, cz)
+                if feed is not None:
+                    try:
+                        feed_frame(feed, c.id, f, dets, cz, now)
+                        watch.update(c.id, f, cz, now, people)
+                    except Exception as e:      # never let the model feed stop the tracker
+                        print(f"  [{c.name}] trace event error: {e}")
                 c.dets, c.debug = dets, dict(mem.debug_scores)
-                brain.frame(c.id, now, f.shape, people,
+                brain.frame(c.id, now, f.shape, people or [],
                             [(oid, mem.objs[oid].category, mem.objs[oid].label, dets[d][1])
                              for d, oid in c.assigned.items() if oid in mem.objs])
                 c.last_processed, c.processed_frame_time, c.processed_at = now, ft, now
@@ -993,6 +1122,8 @@ def main():
     mem.save()
     brain.save()
     print("Memory saved.")
+    if bridge is not None:
+        bridge.terminate()
     if api:
         api.stop()
     for c in cams:

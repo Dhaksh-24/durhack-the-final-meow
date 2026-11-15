@@ -1,4 +1,5 @@
-"""room.py -- Trace's model of the room, built once and then kept in room.json.
+"""room.py -- Trace's model of the room, built once and then kept in places.json
+(not room.json: that is the top-view room map trace-sim saves through /api/room).
 
 The tracker (multicam.py) sees boxes in pixels. People think in places: "on the
 coffee table", "down the side of the sofa". This file turns every camera's view
@@ -27,8 +28,8 @@ Build it before the demo (each camera needs one photo, or a scene.py JSON):
 
 The camera name before = is the camera id multicam.py uses (the camera name in
 lower case with dashes, e.g. "Living room" -> "living-room"). Running multicam.py
-without room.json still works: it falls back to your drawn zones plus the
-plain split, and writes room.json as it goes.
+without places.json still works: it falls back to your drawn zones plus the
+plain split, and writes places.json as it goes.
 """
 import argparse
 import json
@@ -38,7 +39,7 @@ import sys
 from pathlib import Path
 
 VIEW_W = 960           # multicam.py resizes every camera frame to this width
-ROOM_FILE = Path("room.json")
+ROOM_FILE = Path("places.json")
 ZONES_FILE = Path("zones.json")
 FLOOR_TOP = 0.78       # the plain floor band starts this far down the frame
 NEAR_GAP = 0.08        # places closer than this (fraction of frame width) are "near"
@@ -363,14 +364,14 @@ def draw(room, cam, src, out):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Build Trace's room model (room.json)")
+    ap = argparse.ArgumentParser(description="Build Trace's room model (places.json)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    b = sub.add_parser("build", help="build room.json from zones.json + photos / scene JSON")
+    b = sub.add_parser("build", help="build places.json from zones.json + photos / scene JSON")
     b.add_argument("--scene", action="append", help="CAMERA=scene.json (from scene.py / live_scene.py)")
     b.add_argument("--photo", action="append", help="CAMERA=photo.jpg (finds the furniture in it)")
     b.add_argument("--grab", action="append", help="CAMERA=webcam index or stream URL")
     b.add_argument("--out", default=str(ROOM_FILE))
-    s = sub.add_parser("show", help="print room.json")
+    s = sub.add_parser("show", help="print places.json")
     s.add_argument("--room", default=str(ROOM_FILE))
     d = sub.add_parser("draw", help="draw one camera's places on a photo")
     d.add_argument("camera")

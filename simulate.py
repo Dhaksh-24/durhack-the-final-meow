@@ -10,7 +10,7 @@ the view, nothing is perfect), and feeds them to whereabouts.py. Then we ask
     python simulate.py --runs 300 --seed 7
     python simulate.py --show          # one story + answer per way of losing them
     python simulate.py --show --llm    # ... with Gemini writing the answers
-    python simulate.py --room room.json  # your own room (needs >= 2 surfaces per camera)
+    python simulate.py --room places.json  # your own room (needs >= 2 surfaces per camera)
 
 The ways of losing things:
     covered    a jacket or post lands on them; nobody touched them
@@ -279,7 +279,7 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--show", action="store_true", help="print one story and answer per way")
     ap.add_argument("--llm", action="store_true", help="with --show: ask Gemini for the answers")
-    ap.add_argument("--room", help="room.json to use instead of the built-in flat")
+    ap.add_argument("--room", help="places.json (room.py) to use instead of the built-in flat")
     args = ap.parse_args()
     if args.room:
         # surfaces are taken from the room; knocked/slipped need a living-room sofa and floor

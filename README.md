@@ -39,7 +39,7 @@ For phones on the same Wi-Fi, run `python multicam.py --api-host 0.0.0.0`, then 
 The detector only knows where an item was last *seen*. Three files turn that into
 "where it probably is now":
 
-- **`room.py`: the room model** (`room.json`). Each camera view becomes named places
+- **`room.py`: the room model** (`places.json`). Each camera view becomes named places
   ("coffee table", "sofa", "hall floor") with a kind, how likely you are to put
   things down there, where small things hide there, and which places are next to each
   other. Places you drag out in `multicam.py` come first. Then furniture found in a
