@@ -23,3 +23,8 @@ events.jsonl
 cameras.json
 zones.json
 baseline/
+
+# tts.py output -- regenerate with: python tts.py --samples / --prerender
+samples/
+audio/
+out.wav
