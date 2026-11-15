@@ -190,6 +190,12 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
       <section class="card">
         <h2>Events</h2>
         <p class="lead">What the phones report, in the format agreed with the mapping stream. Trace only ever sees these, never the true positions.</p>
+        <div class="controls">
+          <label class="btn" for="replayFile">Replay a recorded events.jsonl</label>
+          <input type="file" id="replayFile" accept=".jsonl,.json,.txt,application/json" hidden>
+          <button class="btn" id="stopReplay" type="button" hidden>Stop replay</button>
+          <span class="note" id="replayNote"></span>
+        </div>
         <pre id="events"></pre>
       </section>
     </div>
@@ -520,6 +526,8 @@ function filterStep(b, it, obs) {
     if (obs.prev !== "outside") { nb[O] += nb[P]; nb[P] = 0; }
   } else {
     if (obs.prev === "outside") { const m = nb[O] * it.returnWith; nb[O] -= m; nb[P] += m; }
+  }
+  if (obs.person != null && obs.person !== "outside" && ZI[obs.person] != null) {   // null: in the room, zone unknown
     const i = ZI[obs.person], z = MAP.zones[i];
     const pv = nb[2 * i] * it.pick, pc = nb[2 * i + 1] * it.pick;
     const d = nb[P] * dropEff(it, z), c = coverP(it, z);
@@ -533,9 +541,8 @@ function filterStep(b, it, obs) {
   // 2. Update on what each phone did and didn't see.
   const sight = sightingsOf(obs, it.id);
   MAP.zones.forEach((z, i) => {
-    if (!z.camera) return;
     const r = sight[z.id];
-    if (r == null) { nb[2 * i] *= 1 - D_VIS; nb[2 * i + 1] *= 1 - D_COV; return; }
+    if (r == null) { if (z.camera) { nb[2 * i] *= 1 - D_VIS; nb[2 * i + 1] *= 1 - D_COV; } return; }
     // Likelihood of "a sighting at zone i with confidence c", divided by its value when the
     // item is elsewhere (f·h(c)), which is common to every other state and cancels:
     //   i-visible: (D_vis·g + (1−D_vis)·f·h) / (f·h) = D_vis·L + 1 − D_vis,  L = g / (f·h)
@@ -550,7 +557,85 @@ function filterStep(b, it, obs) {
       nb[2 * i] = v * D_VIS; nb[2 * i + 1] = cv * D_COV;
     }
   });
+  // Seen on the person (worn glasses, keys in hand): same likelihood ratio for the person state.
+  if (sight.person != null) {
+    const fh = FALSE_RATE * CALIB.h(sight.person);
+    if (fh > 0) nb[P] *= D_VIS * CALIB.g(sight.person) / fh + 1 - D_VIS;
+    else { const v = nb[P]; for (let k = 0; k < NS; k++) nb[k] = 0; nb[P] = v || 1; }
+  }
   return normalize(nb) || Float64Array.from(pr);
+}
+
+// ---------- replaying recorded events (SPEC 3.2) ----------
+// Turns the lines of an events.jsonl into one observation per 10 s tick, in time order, in the
+// same shape stepWorld returns, so filterStep can't tell a replay from the simulator.
+// An item stays "seen" from appeared/moved until disappeared (the phone keeps seeing it).
+// person_left with no zone, or zone "room"/"outside", means they left the room; with a zone it
+// means the zone is empty and where they are is unknown until the next person_here.
+function itemIdOf(e) {
+  const c = e.category != null ? String(e.category).toLowerCase() : String(e.item || "").toLowerCase().replace(/[-_ ]?\d+$/, "");
+  return ITEMS.some((it) => it.id === c) ? c : null;
+}
+function secondsOf(e) {
+  if (isFinite(e.t)) return +e.t;
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?$/.exec(String(e.time || "").trim());
+  return m ? +m[1] * 3600 + +m[2] * 60 + (+m[3] || 0) : null;
+}
+function clockSecondsOf(e) {   // local seconds since midnight, for the page's clock
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(e.time || "").trim());
+  if (m) return +m[1] * 3600 + +m[2] * 60 + (+m[3] || 0);
+  return isFinite(e.t) ? Math.floor(+e.t) % 86400 : null;
+}
+function parseEvents(text) {
+  const evs = [], problems = [];
+  String(text).split(/\r?\n/).forEach((line, n) => {
+    if (!line.trim()) return;
+    let e; try { e = JSON.parse(line); } catch (err) { problems.push("line " + (n + 1) + ": not JSON"); return; }
+    const s = secondsOf(e);
+    if (s == null) { problems.push("line " + (n + 1) + ": no t or time"); return; }
+    evs.push({ e, s, n });
+  });
+  evs.sort((a, b) => a.s - b.s || a.n - b.n);   // stable: same time keeps file order
+  return { evs, problems };
+}
+function replayFromEvents(text) {
+  const { evs, problems } = parseEvents(text);
+  if (!evs.length) return { ticks: [], problems: problems.concat(["no events"]), clock0: 0 };
+  const t0 = evs[0].s, MAXT = 8640 * 2;   // two days of ticks at most
+  const unknownZones = new Set(), unknownItems = new Set();
+  const seen = {}; for (const it of ITEMS) seen[it.id] = null;   // {zone, conf} while a phone can see it
+  let person = null, k = 0;
+  const ticks = [];
+  const nTicks = Math.min(MAXT, Math.floor((evs[evs.length - 1].s - t0) / TICK_S) + 1);
+  if (nTicks === MAXT) problems.push("recording longer than two days: cut at two days");
+  for (let tick = 0; tick < nTicks; tick++) {
+    const prev = person, these = [];
+    while (k < evs.length && Math.floor((evs[k].s - t0) / TICK_S) <= tick) {
+      const { e } = evs[k++]; these.push(e);
+      const z = e.zone == null ? null : String(e.zone);
+      const zoneOk = z == null || z === "person" || ZI[z] != null;
+      if (!zoneOk) unknownZones.add(z);
+      if (e.event === "person_here") { if (z && ZI[z] != null) person = z; continue; }
+      if (e.event === "person_left") { if (z == null || z === "room" || z === "outside") person = "outside"; else if (person === z) person = null; continue; }
+      if (e.event === "something_changed") continue;
+      const id = itemIdOf(e);
+      if (!id) { if (e.item != null) unknownItems.add(String(e.item)); continue; }
+      const conf = isFinite(e.confidence) ? Math.max(0, Math.min(1, +e.confidence)) : 0.8;
+      if (e.event === "appeared" || e.event === "moved") { if (z != null && zoneOk) seen[id] = { zone: z, conf }; }
+      else if (e.event === "disappeared") { if (!seen[id] || z == null || seen[id].zone === z) seen[id] = null; }
+    }
+    const det = {}, conf = {}, sightings = {};
+    for (const it of ITEMS) {
+      const s = seen[it.id];
+      sightings[it.id] = s ? [{ zone: s.zone, conf: s.conf }] : [];
+      det[it.id] = s && s.zone !== "person" ? s.zone : null;
+      conf[it.id] = s ? s.conf : null;
+    }
+    ticks.push({ prev: prev == null ? person : prev, person, det, conf, sightings, events: these });
+  }
+  if (unknownZones.size) problems.push("zones not in the room map (ignored): " + [...unknownZones].join(", "));
+  if (unknownItems.size) problems.push("items Trace doesn't track (ignored): " + [...unknownItems].join(", "));
+  return { ticks, problems, clock0: clockSecondsOf(evs[0].e) || 0, count: evs.length };
 }
 // Sightings by zone: {zoneId: confidence}. Accepts the simulator's list, or just det/conf
 // (a replayed event); a sighting with no confidence counts as 0.8.
@@ -638,7 +723,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, setFalseRate, setCalibration, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, setFalseRate, setCalibration, replayFromEvents, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -650,9 +735,10 @@ const OUT = 2.4, PAD = 0.25;
 
 let world, beliefs, lastSeen, visHist, events, running = true, speed = 1, selected = "keys", showTruth = true;
 let session = null, panelDirty = true, personPos = null, lastPersonZone = null;
+let replay = null, clock0 = 8 * 3600;   // replay: {ticks, i, name, problems} while playing back a recorded events.jsonl
 
 function clockAt(tick) {
-  const s = 8 * 3600 + tick * TICK_S, h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60, sec = s % 60;
+  const s = clock0 + tick * TICK_S, h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60, sec = s % 60;
   return [h, m, sec].map((v) => String(v).padStart(2, "0")).join(":");
 }
 function agoText(ticks) {
@@ -674,6 +760,7 @@ function topPlace(b) { let best = PLACES[0], bp = -1; for (const pl of PLACES) {
 function entropyBits(b) { let h = 0; for (const pl of PLACES) { const p = placeP(b, pl); if (p > 1e-12) h -= p * Math.log2(p); } return h; }
 
 function resetDay() {
+  replay = null; clock0 = 8 * 3600; setReplayUI();
   resetStats();
   world = newWorld(); beliefs = {}; lastSeen = {}; visHist = {}; events = [];
   for (const it of ITEMS) { beliefs[it.id] = Float64Array.from(PRIORS[it.id]); lastSeen[it.id] = null; visHist[it.id] = [null, null, null]; }
@@ -693,10 +780,44 @@ function visibleAt(id) {
 }
 
 function liveTick() {
+  if (replay) return replayTick();
+  applyObs(stepWorld(world));
+}
+// Recorded events: one tick of the recording drives the same model and views as the simulator.
+// There is no ground truth, so the true-position markers and "top guess right" are off.
+function replayTick() {
+  if (replay.i >= replay.ticks.length) { running = false; $("#replayNote").textContent = "Replay finished: " + replay.name + "."; panelDirty = true; return; }
+  const obs = replay.ticks[replay.i++];
+  world.tick++;
+  if (obs.person === "outside") world.person.outside = true;
+  else if (obs.person != null) { world.person.outside = false; world.person.zone = obs.person; }
+  applyObs(obs);
+}
+function startReplay(name, text) {
+  const r = replayFromEvents(text);
+  if (!r.ticks.length) { $("#replayNote").textContent = "Couldn't replay " + name + ": " + r.problems.join("; ") + "."; return; }
+  resetDay();
+  replay = { ticks: r.ticks, i: 0, name, problems: r.problems };
+  clock0 = r.clock0; events = [];
+  world.items = {}; for (const it of ITEMS) world.items[it.id] = { loc: "unknown", covered: false, pocket: false };
+  world.person = { zone: MAP.zones[DOOR].id, outside: false, dwell: 0, outsideFor: 0 };
+  lastPersonZone = null; session = null; running = true; personPos = null;
+  setReplayUI();
+  $("#replayNote").textContent = "Replaying " + name + ": " + r.count + " events over " + durText(r.ticks.length) + "." + (r.problems.length ? " Note: " + r.problems.join("; ") + "." : "");
+  renderAll();
+}
+function setReplayUI() {
+  const on = !!replay;
+  if (on !== $("#truth").disabled) { $("#truth").checked = !on; showTruth = !on; }   // no ground truth in a recording
+  $("#truth").disabled = on;
+  $("#stopReplay").hidden = !on;
+  if (!on) $("#replayNote").textContent = "";
+}
+function applyObs(obs) {
   const before = {}; for (const it of ITEMS) before[it.id] = visibleAt(it.id);
-  const obs = stepWorld(world);
   const time = clockAt(world.tick);
-  if (obs.person !== lastPersonZone) {
+  if (replay) for (const e of obs.events) logEvent(e);
+  else if (obs.person !== lastPersonZone) {
     logEvent(obs.person === "outside" ? { time, event: "person_left" } : { time, event: "person_here", zone: obs.person });
     lastPersonZone = obs.person;
   }
@@ -705,11 +826,14 @@ function liveTick() {
     beliefs[it.id] = filterStep(beliefs[it.id], it, obs);
     if (obs.det[it.id] && obs.conf[it.id] >= LAST_SEEN_MIN) { lastSeen[it.id] = { zone: obs.det[it.id], tick: world.tick }; ST.sight[obs.det[it.id]]++; ST.lastSight[obs.det[it.id]] = world.tick; }
     const st = world.items[it.id];
-    if (topPlace(beliefs[it.id]).pl.id === st.loc) ST.right[it.id]++;
-    if (st.loc !== "person" && st.loc !== "outside" && MAP.zones[ZI[st.loc]].camera && !st.covered) ST.vis[it.id]++;
+    if (!replay) {
+      if (topPlace(beliefs[it.id]).pl.id === st.loc) ST.right[it.id]++;
+      if (st.loc !== "person" && st.loc !== "outside" && MAP.zones[ZI[st.loc]].camera && !st.covered) ST.vis[it.id]++;
+    }
     visHist[it.id].push(obs.conf[it.id] >= LAST_SEEN_MIN ? obs.det[it.id] : null); visHist[it.id].shift();
     const now = visibleAt(it.id), was = before[it.id];
     visHist[it.id].cur = now;
+    if (replay) continue;   // the recording already has its own events
     const confidence = obs.conf[it.id] != null ? +obs.conf[it.id].toFixed(2) : undefined;
     if (now && !was) logEvent({ time, item: it.id + "-1", zone: now, event: "appeared", confidence });
     else if (!now && was) logEvent({ time, item: it.id + "-1", zone: was, event: "disappeared" });
@@ -886,11 +1010,11 @@ function renderAsk() {
       '</span><span class="meta">' + pct(x.p) + " · " + x.t + " s</span></div>").join("") + "</div>";
     if (session.tried.length) html += '<div class="tried">Already checked: ' + esc(session.tried.join(", ")) + "</div>";
     html += '<div class="controls">' +
-      '<button class="btn primary" type="button" id="simCheck">Check it in the simulation</button>' +
+      (replay ? "" : '<button class="btn primary" type="button" id="simCheck">Check it in the simulation</button>') +
       '<button class="btn" type="button" id="notThere">Not there</button>' +
       '<button class="btn good" type="button" id="foundIt">Found it</button>' +
       '<button class="btn" type="button" id="endAsk">Cancel</button></div>' +
-      '<p class="note">"Check it in the simulation" uses the true position, like a person actually looking. Searches find uncovered things 95% of the time and covered things 75%.</p>';
+      (replay ? '<p class="note">Replaying a recording: there is no true position, so say "Not there" or "Found it" after you look.</p>' : '<p class="note">"Check it in the simulation" uses the true position, like a person actually looking. Searches find uncovered things 95% of the time and covered things 75%.</p>');
   }
   el.innerHTML = html;
   const end = $("#endAsk"); if (end) end.onclick = () => { session = null; renderAll(); };
@@ -946,7 +1070,7 @@ function renderMetrics() {
     tile("Places", String(zs.length), "plus with you and outside") +
     tile("Phones", cams.length + " of " + zs.length, cams.length === zs.length ? "every zone watched" : (zs.length - cams.length) + " blind spot" + (zs.length - cams.length === 1 ? "" : "s")) +
     tile("Watched area", camArea.toFixed(1) + " m²", Math.round(camArea / Math.max(furnArea, 1e-9) * 100) + "% of the furniture") +
-    tile("Simulated time", durText(ST.ticks), clockAt(world.tick).slice(0, 5) + " now") +
+    tile(replay ? "Recorded time" : "Simulated time", durText(ST.ticks), clockAt(world.tick).slice(0, 5) + " now") +
     tile("Sightings", String(sightTotal), hours > 0.05 ? Math.round(sightTotal / hours) + " per hour" : "") +
     tile("Events", String(ST.ev.appeared + ST.ev.moved + ST.ev.disappeared), ST.ev.appeared + " appeared · " + ST.ev.moved + " moved · " + ST.ev.disappeared + " gone");
   $("#furnTable").innerHTML = "<tr><th>Place</th><th>Type</th><th class=\"num\">Size</th><th class=\"num\">Position</th><th>Phone</th></tr>" +
@@ -954,15 +1078,15 @@ function renderMetrics() {
       (z.x + z.w / 2).toFixed(1) + ", " + (z.y + z.h / 2).toFixed(1) + " m</td><td>" + (z.camera ? '<span class="pill">watched</span>' : '<span class="pill off">blind spot</span>') + "</td></tr>").join("");
   $("#phoneTable").innerHTML = cams.length
     ? "<tr><th>Phone</th><th>Status</th><th class=\"num\">Sightings</th><th>Last sighting</th></tr>" +
-      cams.map((z, k) => "<tr><td>Phone " + (k + 1) + " · " + esc(z.name) + '</td><td><span class="pill">online (simulated)</span></td><td class="num">' + ST.sight[z.id] + "</td><td>" +
+      cams.map((z, k) => "<tr><td>Phone " + (k + 1) + " · " + esc(z.name) + '</td><td><span class="pill">' + (replay ? "recorded" : "online (simulated)") + '</span></td><td class="num">' + ST.sight[z.id] + "</td><td>" +
         (ST.lastSight[z.id] == null ? "none yet" : agoText(world.tick - ST.lastSight[z.id])) + "</td></tr>").join("")
     : "<tr><td>No phones yet.</td></tr>";
   $("#modelTable").innerHTML = "<tr><th>Item</th><th>Most likely now</th><th class=\"num\">Top guess right</th><th class=\"num\">Uncertainty</th><th class=\"num\">In a phone's view</th></tr>" +
     ITEMS.map((it) => {
       const b = beliefs[it.id], t = topPlace(b), n = Math.max(ST.ticks, 1);
       return '<tr><td><span class="dot" style="background:' + it.color + '"></span>' + esc(it.name) + "</td><td>" + esc(t.pl.name) + " · " + pct(t.p) + '</td><td class="num">' +
-        (ST.ticks ? Math.round(ST.right[it.id] / n * 100) + "%" : "–") + '</td><td class="num">' + entropyBits(b).toFixed(1) + ' bits</td><td class="num">' +
-        (ST.ticks ? Math.round(ST.vis[it.id] / n * 100) + "%" : "–") + "</td></tr>";
+        (ST.ticks && !replay ? Math.round(ST.right[it.id] / n * 100) + "%" : "–") + '</td><td class="num">' + entropyBits(b).toFixed(1) + ' bits</td><td class="num">' +
+        (ST.ticks && !replay ? Math.round(ST.vis[it.id] / n * 100) + "%" : "–") + "</td></tr>";
     }).join("") +
     '<tr><td colspan="5" class="note">Top guess right: how much of the day the most likely place was the true one. Uncertainty: 0 bits means certain; ' + Math.log2(PLACES.length).toFixed(1) + " bits means no idea at all.</td></tr>";
 }
@@ -1873,6 +1997,13 @@ $("#play").onclick = () => { running = !running; renderAll(); };
 $("#speed").addEventListener("click", (e) => { const bt = e.target.closest("button[data-s]"); if (!bt) return; speed = +bt.dataset.s; document.querySelectorAll("#speed button").forEach((x) => x.setAttribute("aria-pressed", String(x === bt))); });
 $("#skip").onclick = () => { if (session) return; for (let k = 0; k < 360; k++) liveTick(); renderAll(); };
 $("#reset").onclick = () => { resetDay(); renderAll(); };
+$("#stopReplay").onclick = () => { resetDay(); renderAll(); };
+$("#replayFile").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { startReplay(f.name, String(rd.result)); e.target.value = ""; };
+  rd.readAsText(f);
+});
 $("#truth").onchange = (e) => { showTruth = e.target.checked; };
 $("#nDays").addEventListener("click", (e) => { const bt = e.target.closest("button[data-n]"); if (!bt) return; evalN = +bt.dataset.n; document.querySelectorAll("#nDays button").forEach((x) => x.setAttribute("aria-pressed", String(x === bt))); });
 $("#runEval").onclick = runEval;

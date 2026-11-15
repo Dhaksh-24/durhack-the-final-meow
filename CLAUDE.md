@@ -73,8 +73,10 @@ Event (one JSON object per line):
    `setCalibration({g, h, sampleTrue, sampleFalse})`. Tests: `node trace-sim/test-core.js`.
 2. `multicam.py` events: emit appeared / moved / disappeared / person_here with zone name and
    confidence (today it only logs "out of sight", zone null). Zone names must match the map.
-3. Connect real events to the page: replay an `events.jsonl` first, then live via a small
-   local bridge (the hosted page can't reach the laptop, so run the page locally).
+3. Connect real events to the page: ~~replay an `events.jsonl`~~ done ("Replay a recorded
+   events.jsonl" in the Events card; `replayFromEvents` in the core; try
+   `trace-sim/sample-events.jsonl`). Next: live via a small local bridge (the hosted page
+   can't reach the laptop, so run the page locally).
 4. Most likely story (Viterbi) for the LLM to tell; LLM wiring; voice in/out in the browser.
 5. Detection: change detection on fixed phones + crop + YOLOE visual prompts of the user's
    own items; drop boxes larger than ~15% of the frame.

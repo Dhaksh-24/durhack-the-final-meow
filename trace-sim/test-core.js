@@ -36,10 +36,11 @@ for (const f of [0, 0.05, 0.1, 0.3]) {
     const b = r.filter((x) => x.topP >= edges[i] && x.topP < edges[i + 1]);
     if (b.length < 100) continue;   // too few to judge (±5 points of sampling noise at n=100)
     const p = b.reduce((s, x) => s + x.topP, 0) / b.length, h = b.filter((x) => x.topHit).length / b.length;
-    worst = Math.max(worst, Math.abs(p - h));
+    // off by more than 10 points beyond sampling noise (2 standard errors of the hit rate)
+    worst = Math.max(worst, Math.abs(p - h) - 2 * Math.sqrt(h * (1 - h) / b.length));
     console.log(`  bin ${edges[i].toFixed(1)}–${Math.min(1, edges[i + 1]).toFixed(1)}: n=${b.length}  said ${pct(p)}  hit ${pct(h)}`);
   }
-  check(worst <= 0.10, `calibration within ±10 points (worst ${(100 * worst).toFixed(1)})`);
+  check(worst <= 0.10, `calibration within ±10 points, allowing for sampling noise (worst excess ${(100 * worst).toFixed(1)})`);
 }
 
 // One false sighting: keys believed to be on the desk, then a single sighting on the sofa.
@@ -58,6 +59,30 @@ for (const c of [0.1, 0.3, 0.5, 0.9]) {
   if (c <= 0.3) check(at(nb, "desk") > 0.5, `a ${c} sighting doesn't collapse the belief`);
   if (c === 0.9) check(at(nb, "sofa") > 0.5, "a 0.9 sighting moves the belief a lot");
 }
+
+// Task 3a: replay a recorded events.jsonl (sample-events.jsonl is a scripted demo session).
+console.log("\nreplaying sample-events.jsonl");
+const text = fs.readFileSync(path.join(__dirname, "sample-events.jsonl"), "utf8");
+const replayed = (txt) => {
+  const r = C.replayFromEvents(txt), B = {};
+  for (const it of C.ITEMS) B[it.id] = Float64Array.from(C.PRIORS[it.id]);
+  const trail = [];
+  r.ticks.forEach((o) => { for (const it of C.ITEMS) B[it.id] = C.filterStep(B[it.id], it, o); trail.push(C.rank(B.keys)[0].pl.id); });
+  return { r, B, trail };
+};
+const A = replayed(text);
+console.log(`  ${A.r.count} events → ${A.r.ticks.length} ticks; notes: ${A.r.problems.join("; ") || "none"}`);
+check(A.r.ticks.length === 91, "one tick per 10 s from the first event to the last");
+check(A.trail[3] === "desk" && at(A.B.wallet, "desk") > 0.9, "a sighting puts the keys and wallet on the desk");
+const topEnd = C.rank(A.B.keys)[0];
+console.log(`  keys at the end: ${C.rank(A.B.keys).slice(0, 3).map((x) => x.pl.id + " " + pct(x.p)).join(", ")}`);
+check(topEnd.pl.id === "hook", "after being carried to the unwatched coat hook, the hook is the top guess");
+check(A.r.problems.some((p) => /remote-1/.test(p)), "items Trace doesn't track are reported, not crashed on");
+const shuffled = text.trim().split("\n").reverse().join("\n");
+const S = replayed(shuffled);
+check(JSON.stringify(S.trail) === JSON.stringify(A.trail), "events are replayed in time order whatever the file order");
+const bad = C.replayFromEvents('not json\n{"time":"10:00:00","event":"appeared","item":"keys-1","zone":"garage","confidence":0.9}\n');
+check(bad.ticks.length === 1 && bad.problems.length === 2, "bad lines and unknown zones are reported: " + bad.problems.join("; "));
 
 console.log(ok ? "\nall checks passed" : "\nSOME CHECKS FAILED");
 process.exit(ok ? 0 : 1);
