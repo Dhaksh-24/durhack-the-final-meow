@@ -20,6 +20,7 @@ test_out/
 # multicam.py runtime output -- regenerated every run
 memory/
 events.jsonl
+trace-events.jsonl
 cameras.json
 zones.json
 baseline/
