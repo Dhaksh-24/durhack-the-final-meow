@@ -26,6 +26,7 @@ Controls (click the window first) - same as memory_demo.py:
   f                        find by name (type in terminal)
   1-9, 0                   highlight an item / clear
   d                        debug scores     c  clear zones of the camera under the mouse
+  h                        heatmap: where people walked, the places, and how long you've been at one
   Esc                      cancel mode      q  save and quit
 """
 
@@ -46,7 +47,9 @@ from PIL import Image
 
 # detection lives in detect.py (prompts, thresholds, model) - see its docstring
 import detect
+import room as roommod
 import trace_api
+import whereabouts
 
 # ---- tuning ----
 SAMPLE_SECS = 0.5      # each camera is analysed at most every this many seconds
@@ -574,8 +577,11 @@ def ibox(b):
     return (int(b[0]), int(b[1])), (int(b[2]), int(b[3]))
 
 
-def draw_tile(view, cam, mem, zones, now, focus, drag, debug):
+def draw_tile(view, cam, mem, zones, now, focus, drag, debug, brain=None):
     """Draw one camera's frame (at VIEW_W coordinates)."""
+    if brain is not None:          # 'h': the heatmap + places replace the zone drawing
+        brain.overlay(cam.id, view, now)
+        zones = []
     for z in zones:
         x1, y1, x2, y2 = z["rect"]
         ov = view.copy()
@@ -746,6 +752,8 @@ def main():
                     help="port for Trace (trace.html + live video); 0 turns it off")
     ap.add_argument("--api-host", default="127.0.0.1",
                     help="127.0.0.1 = this computer only; 0.0.0.0 = phones on your Wi-Fi too")
+    ap.add_argument("--no-people", action="store_true",
+                    help="don't look for people (no heatmap, and Trace can't tell picked-up from covered)")
     args = ap.parse_args()
 
     cams = load_cameras(args)
@@ -755,12 +763,21 @@ def main():
         c.start()
 
     print("Loading models (first run downloads weights)...")
-    detector = detect.Detector(conf=args.conf, imgsz=args.imgsz)
+    # people ride along in the same YOLO-World pass (no extra cost); they feed the heatmap
+    # and whereabouts.py, never the item memory
+    prompts = dict(detect.PROMPTS) if args.no_people else {**detect.PROMPTS, "person": ["person"]}
+    detector = detect.Detector(prompts=prompts, conf=args.conf, imgsz=args.imgsz)
     mem = Memory(Embedder(), cam_names)
     zones = load_zones(cams[0].id)
+    brain = whereabouts.Whereabouts(roommod.Room(), cam_names)
+    brain.room.set_drawn(zones, cam_names)
+    brain.room.save()
+    show_heat = False
     layout = Layout(len(cams))
     api = trace_api.TraceAPI(cams, MEM_DIR, EVENTS_FILE).start(
         args.api_host, args.api_port) if args.api_port else None
+    if api:
+        api.brain = brain
     last_pub = 0.0
 
     win = "FindIt - all cameras"
@@ -807,13 +824,19 @@ def main():
         if batch:
             per_frame = detector.detect([f for _, f, _ in batch])
             for (c, f, ft), dets in zip(batch, per_frame):
+                people = [(box, conf) for cat, box, conf in dets if cat == "person"]
+                dets = [d for d in dets if d[0] != "person"]
                 cz = [z for z in zones if z["camera"] == c.id]
                 c.assigned = mem.update(c.id, f, dets, now, cz)
                 c.dets, c.debug = dets, dict(mem.debug_scores)
+                brain.frame(c.id, now, f.shape, people,
+                            [(oid, mem.objs[oid].category, mem.objs[oid].label, dets[d][1])
+                             for d, oid in c.assigned.items() if oid in mem.objs])
                 c.last_processed, c.processed_frame_time, c.processed_at = now, ft, now
             processed += len(batch)
         if now - rate_t >= 2:
             rate, processed, rate_t = processed / (now - rate_t), 0, now
+        brain.tick(now)
 
         # ---- out-of-sight events (no camera sees it any more)
         for o in mem.objs.values():
@@ -843,7 +866,8 @@ def main():
                 if a and b and a[0] == k == b[0]:
                     drag = ((int(a[1]), int(a[2])), (int(b[1]), int(b[2])))
             draw_tile(view, c, mem, [
-                      z for z in zones if z["camera"] == c.id], now, focus, drag, debug)
+                      z for z in zones if z["camera"] == c.id], now, focus, drag, debug,
+                      brain if show_heat else None)
             layout.place(canvas, k, view)
             cv2.rectangle(canvas, (tx, ty), (tx + layout.tw - 1,
                           ty + layout.th - 1), (60, 60, 60), 1)
@@ -876,6 +900,7 @@ def main():
             elif mode == "forget":
                 print(f"  forgot {o.label}")
                 mem.forget(o.id)
+                brain.forget(o.id)
                 focus, mode = (None if focus == o.id else focus), None
             elif mode == "merge":
                 merge_first, mode = o.id, "merge2"
@@ -889,6 +914,7 @@ def main():
                     print(
                         f"  merged {o.label} into {mem.objs[merge_first].label}")
                     mem.merge(merge_first, o.id)
+                    brain.forget(o.id)
                     focus, mode = (None if focus == o.id else focus), None
             elif mode is None and o is not None and x >= GRID_W:
                 focus = o.id
@@ -902,6 +928,8 @@ def main():
                 zones.append(
                     {"name": name, "rect": rect, "camera": cams[k].id})
                 save_zones(zones)
+                brain.room.set_drawn(zones, cam_names)
+                brain.room.save()
 
         # ---- keys
         key = cv2.waitKey(1) & 0xFF
@@ -917,11 +945,15 @@ def main():
             mode = "forget"
         elif key == ord("d"):
             debug = not debug
+        elif key == ord("h"):
+            show_heat = not show_heat
         elif key == ord("c"):
             m = layout.to_cam(*ms["pos"])
             if m:
                 zones = [z for z in zones if z["camera"] != cams[m[0]].id]
                 save_zones(zones)
+                brain.room.set_drawn(zones, cam_names)
+                brain.room.save()
                 print(f"  cleared zones on {cams[m[0]].name}")
         elif key == ord("0"):
             focus, mode = None, None
@@ -953,11 +985,13 @@ def main():
             last_live = now
         if now - last_save > 10:
             mem.save()
+            brain.save()
             last_save = now
         if not batch:
             time.sleep(0.01)
 
     mem.save()
+    brain.save()
     print("Memory saved.")
     if api:
         api.stop()

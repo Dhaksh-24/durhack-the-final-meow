@@ -17,9 +17,17 @@ plus OpenCV only; no keys, and nothing leaves your network.
                                  offline). 503 when kokoro isn't installed; the page then
                                  uses the browser's own voice instead.
 
+  POST /api/ask {"message", "history"}
+                                 "where are my keys?" -> {"reply", "item_id", "state", "by",
+                                 "prediction"}, from whereabouts.py (Gemini, or its rules when
+                                 offline). An empty reply = not about a tracked item; the page
+                                 then answers from its own rules.
+  GET /api/whereabouts           every item's status, story and ranked places + the timeline
+  GET /api/predict?item=keys     one item's ranked places and the evidence behind them
+  GET /api/heatmap/<camera>.jpg  the camera's latest frame with the people heatmap and places
+
 The live video is the raw camera picture; trace.html draws the item boxes on
-top itself. /api/ask is not served yet, so Trace answers from its built-in
-rules in the page.
+top itself.
 
 By default the server only listens on this computer (127.0.0.1). To open Trace
 on a phone, start multicam.py with --api-host 0.0.0.0 and browse to
@@ -72,6 +80,7 @@ class TraceAPI:
         self.mem_dir, self.events_file = Path(mem_dir), Path(events_file)
         # Replaced wholesale by multicam.py (one assignment), so a request never sees half a list.
         self.items = []
+        self.brain = None       # whereabouts.Whereabouts, set by multicam.py
         self.httpd = None
 
     # ------------------------------------------------------------ data
@@ -137,9 +146,27 @@ class TraceAPI:
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(min(n, 64 * 1024))
-                if urlparse(self.path).path == "/api/speech":
+                p = urlparse(self.path).path
+                if p == "/api/speech":
                     return self._speech(raw)
+                if p == "/api/ask":
+                    return self._ask(raw)
                 self._json({"error": "not available yet"}, 501)
+
+            def _ask(self, raw):
+                if api.brain is None:
+                    return self._json({"error": "no whereabouts engine"}, 501)
+                try:
+                    body = json.loads(raw or b"{}")
+                    message = str(body.get("message", "")).strip()[:500]
+                    history = body.get("history") if isinstance(body.get("history"), list) else []
+                except (ValueError, AttributeError):
+                    return self._json({"error": "bad json"}, 400)
+                try:
+                    return self._json(api.brain.ask(message, history))
+                except Exception as exc:      # never take the page down; it has its own answers
+                    print("ask: %s: %s" % (type(exc).__name__, exc))
+                    return self._json({"reply": "", "item_id": None, "state": "idle"})
 
             def _speech(self, raw):
                 if not VOICE:
@@ -174,6 +201,23 @@ class TraceAPI:
                         q = parse_qs(url.query)
                         limit = max(1, min(200, int((q.get("limit") or ["20"])[0])))
                         return self._json(api.events(limit))
+                    if p == "/api/whereabouts" and api.brain:
+                        return self._json(api.brain.snapshot())
+                    if p == "/api/predict" and api.brain:
+                        q = (parse_qs(url.query).get("item") or [""])[0]
+                        oid = api.brain.find_item(q)
+                        if oid is None:
+                            return self._json({"error": "no tracked item matches %r" % q}, 404)
+                        return self._json(api.brain.predict(oid))
+                    m = re.fullmatch(r"/api/heatmap/([^/]+)\.jpg", p)
+                    if m and api.brain:
+                        cam = api.cams.get(m.group(1))
+                        f, _ = cam.latest() if cam else (None, None)
+                        if f is None:
+                            return self._json({"error": "no frame from that camera"}, 404)
+                        ok, jpg = cv2.imencode(".jpg", api.brain.overlay(cam.id, f.copy()),
+                                               [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+                        return self._bytes(jpg.tobytes(), "image/jpeg")
                     m = re.fullmatch(r"/api/(thumbs|snapshots)/(\d+)\.jpg", p)
                     if m:
                         return self._file(api.mem_dir / m.group(1) / f"{m.group(2)}.jpg", "image/jpeg")

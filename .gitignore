@@ -26,3 +26,6 @@ cameras.json
 samples/
 audio/
 out.wav
+
+# whereabouts.py runtime log -- regenerated every run
+timeline.jsonl
