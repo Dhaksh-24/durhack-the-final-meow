@@ -1503,7 +1503,8 @@ function intent(message) {
   const t = normText(message);
   if (convo.offer && YES.test(t)) { const o = convo.offer; convo.offer = null; return o.yes(); }
   if (convo.offer && NO.test(t)) { convo.offer = null; return { reply: "Okay." }; }
-  if (/^ (thats all|thats it|that is all|thank you|thanks|no thanks|nothing else|bye|goodbye|im done|all done|all good|never mind|nevermind|stop|cancel|no thats it|im good) /.test(t))
+  if (/^ (thats all|thats it|that is all|thank you|thanks|no thanks|nothing else|bye|goodbye|im done|all done|all good|never mind|nevermind|stop|cancel|no thats it|im good) /.test(t)
+      && !/ (found|got|have|here|there|where|keys|wallet|glasses) /.test(t))   // "thanks, found them" still reaches the guide
     return { reply: "Okay. I'm here if you need me.", end: true };
   if (/ (help|what can you do|what can i (say|ask)|commands) /.test(t) && !/ help me (remember|think|find) /.test(t))
     return { reply: "You can ask where something is, say open the hall camera, what can you see, or what do you remember. Say that's all when you're done." };

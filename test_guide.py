@@ -290,7 +290,9 @@ print("Trace's question (yes / no)")
 asky = {"items": {"keys": dict(DEMO_KEYS, best_question=dict(DEMO_KEYS["best_question"], worth_asking=True))}}
 s5 = {}
 r = talk(s5, "where are my keys", model=asky)
-check(r["reply"].startswith("Before you look: Did you put anything"), "worth asking: the question comes first")
+check(not r["reply"].startswith("Before you look"), "no unprompted question (demo opening stays as scripted)")
+r = talk(s5, "help me remember", model=asky)
+check(r["reply"].startswith("Did you put anything"), "'help me remember' asks it")
 r = talk(s5, "no", model=asky)
 check(r["reply"].startswith("Thanks. ") and s5["keys"]["evidence"], "'no' applies the question's factors")
 r = talk({}, "help me remember my keys", model=DEMO)

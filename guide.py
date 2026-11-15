@@ -508,6 +508,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None, 
     def turn(reply, state="searching", evidence=(), source="page", why="", chirp=None, target=True):
         ses["last"] = reply
         top = plan[0] if plan and state != "found" else None
+        ses["suggested"] = top["zone"] if (top and target) else ses.get("suggested")
         if target:          # the sonar on /sim follows where Trace sends the person
             TARGET.clear()
             TARGET.update({"item": want, "zone": top["zone"] if top else None, "name": top["name"] if top else None,
@@ -538,7 +539,7 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None, 
         ses["asked"] = True
         ses["q"] = bq
         return turn(bq["text"], why="best question: about %s s saved on average" % bq.get("gain_s"))
-    if bq and bq.get("worth_asking") and not ses.get("asked") and not ses["tried"] and re.search(r"\bwhere\b", n) and not bundle.get("visible_now"):
+    if False and bq and bq.get("worth_asking"):   # unprompted questions off for the demo: only "help me remember" asks
         ses["asked"] = True
         ses["q"] = bq
         return turn("Before you look: " + bq["text"], why="best question, saves about %s s on average" % bq.get("gain_s"))
@@ -546,9 +547,10 @@ def chat(message, history, model, sessions, mode="default", llm=None, now=None, 
     if AGAIN.match(n) and ses["last"]:
         return turn(ses["last"])
     if NOT_THERE.match(n) and plan and ses["last"]:
-        ev = {"zone": plan[0]["zone"], "part": "all", "found": False, "sure": "high"}
+        sug = next((r for r in plan if r["zone"] == ses.get("suggested")), plan[0])   # the place Trace last sent them to
+        ev = {"zone": sug["zone"], "part": "all", "found": False, "sure": "high"}
         ses["evidence"].append(ev)
-        ses["tried"].append(plan[0]["name"])
+        ses["tried"].append(sug["name"])
         plan = plan_now()
         return turn(template(bundle, plan, len(ses["tried"]), ses["tried"]), evidence=[ev])
     if WHAT_HAPPENED.search(n) and bundle.get("story_text"):
