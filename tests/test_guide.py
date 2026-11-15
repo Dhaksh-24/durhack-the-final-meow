@@ -1,7 +1,11 @@
-"""Tests for guide.py, no key or network needed:  python test_guide.py"""
+"""Tests for guide.py, no key or network needed:  python tests/test_guide.py"""
 import json
+import os
+import sys
 
-import guide
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repo folder
+sys.path.insert(0, ROOT)   # so the top-level modules (detect, targets, guide...) import
+import guide  # noqa: E402
 
 S = {"vis": 0.95, "cov": 0.75, "person": 0.95, "out": 0.8}
 PLACES = [

@@ -2,9 +2,9 @@
 
 Run it with the isolated interpreter, NOT plain python:
 
-    .venv-roboflow\\Scripts\\python.exe pull_data.py
-    .venv-roboflow\\Scripts\\python.exe pull_data.py samples-x5zfd/keys-jcx6v
-    .venv-roboflow\\Scripts\\python.exe pull_data.py some-workspace/some-project/3
+    .venv-roboflow\\Scripts\\python.exe research/pull_data.py
+    .venv-roboflow\\Scripts\\python.exe research/pull_data.py samples-x5zfd/keys-jcx6v
+    .venv-roboflow\\Scripts\\python.exe research/pull_data.py some-workspace/some-project/3
 
 No arguments pulls everything in DATASETS. An argument is the slug from a
 Universe URL (universe.roboflow.com/<workspace>/<project>), optionally with
@@ -25,12 +25,13 @@ try:
     from roboflow import Roboflow
 except ImportError:
     sys.exit("roboflow is not installed in this interpreter. Run:\n"
-             "  .venv-roboflow\\Scripts\\python.exe pull_data.py")
+             "  .venv-roboflow\\Scripts\\python.exe research/pull_data.py")
 
-from targets import TARGETS
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repo folder
+sys.path.insert(0, ROOT)   # so the top-level modules (detect, targets, guide...) import
+from targets import TARGETS  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(HERE, "data")
+DATA = os.path.join(ROOT, "data")
 
 # (workspace, project) -- found on Roboflow Universe, chosen to cover the
 # targets in targets.py. Add a line here to make a dataset part of the set.
@@ -49,7 +50,7 @@ def load_key():
     key = os.environ.get("ROBOFLOW_API_KEY", "").strip()
     if key:
         return key
-    path = os.path.join(HERE, ".env")
+    path = os.path.join(ROOT, ".env")
     if os.path.exists(path):
         with open(path, encoding="utf-8-sig") as fh:      # -sig: tolerate a BOM
             for line in fh:

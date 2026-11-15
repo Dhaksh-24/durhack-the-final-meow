@@ -1,11 +1,11 @@
 """test_scene.py -- run scene.py over the images in .\\test_images
 
-    python test_scene.py                      # every image, geometry only
-    python test_scene.py --gemini             # also run the optional Gemini pass
-    python test_scene.py --items=keys,phone   # what to look for
-    python test_scene.py room1.jpg            # a single image
-    python test_scene.py --anchor-conf=0.15   # fewer phantom sofas
-    python test_scene.py --item-conf=0.25     # fewer phantom books
+    python tests/test_scene.py                      # every image, geometry only
+    python tests/test_scene.py --gemini             # also run the optional Gemini pass
+    python tests/test_scene.py --items=keys,phone   # what to look for
+    python tests/test_scene.py room1.jpg            # a single image
+    python tests/test_scene.py --anchor-conf=0.15   # fewer phantom sofas
+    python tests/test_scene.py --item-conf=0.25     # fewer phantom books
 
 On first run, if .\\test_images is empty, three freely licensed room photos are
 downloaded from Wikimedia Commons. Annotated copies (anchor boxes, item boxes,
@@ -20,7 +20,8 @@ import urllib.request
 
 import cv2
 
-import scene
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the repo folder
+import scene  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMAGES = os.path.join(HERE, "test_images")

@@ -1,18 +1,18 @@
 """live_scene.py -- say where your things are, live from the webcam.
 
-    python live_scene.py --setup               # confirm the furniture once, save it
-    python live_scene.py                       # look for keys, wallet, glasses
-    python live_scene.py --items=keys
-    python live_scene.py --jsonl               # one JSON line per detection on stdout
-    python live_scene.py --jsonl --drop-guesses    # ... without the weak detections
-    python live_scene.py --json=scene.json     # keep a file updated for another program
-    python live_scene.py --camera-id=lounge    # the name written into the JSON
-    python live_scene.py --anchors=lounge.json # which furniture file to use
-    python live_scene.py --gemini              # name the anchors nicely at startup
-    python live_scene.py --anchor-conf=0.20 --item-conf=0.30
-    python live_scene.py --no-window --frames=30   # headless benchmark
-    python live_scene.py --no-voice            # silent (see tts.py for the voice)
-    python live_scene.py --male                # start with the male voice
+    python legacy/live_scene.py --setup               # confirm the furniture once, save it
+    python legacy/live_scene.py                       # look for keys, wallet, glasses
+    python legacy/live_scene.py --items=keys
+    python legacy/live_scene.py --jsonl               # one JSON line per detection on stdout
+    python legacy/live_scene.py --jsonl --drop-guesses    # ... without the weak detections
+    python legacy/live_scene.py --json=scene.json     # keep a file updated for another program
+    python legacy/live_scene.py --camera-id=lounge    # the name written into the JSON
+    python legacy/live_scene.py --anchors=lounge.json # which furniture file to use
+    python legacy/live_scene.py --gemini              # name the anchors nicely at startup
+    python legacy/live_scene.py --anchor-conf=0.20 --item-conf=0.30
+    python legacy/live_scene.py --no-window --frames=30   # headless benchmark
+    python legacy/live_scene.py --no-voice            # silent (see tts.py for the voice)
+    python legacy/live_scene.py --male                # start with the male voice
 
 Setup (--setup) detects the furniture once and shows each piece in turn:
     y / Enter   keep it
@@ -41,7 +41,7 @@ Without kokoro installed it prints how to get it and runs silently.
 
 With --jsonl, stdout carries JSON lines and nothing else -- every status
 message goes to stderr -- so it pipes straight into another program:
-    python live_scene.py --jsonl --no-window | python their_program.py
+    python legacy/live_scene.py --jsonl --no-window | python their_program.py
 The line format is at the top of scene.py. Detections under
 scene.CONFIG["guess_below"] (0.30) carry "guess": true; --drop-guesses
 discards them instead.
@@ -56,8 +56,10 @@ import time
 
 import cv2
 
-import scene
-import tts
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repo folder
+sys.path.insert(0, ROOT)   # scene.py and tts.py live there
+import scene  # noqa: E402
+import tts  # noqa: E402
 
 ITEMS = ["keys", "wallet", "glasses"]
 ITEM_IMGSZ = 640     # per-frame pass; anchors still use scene.CONFIG["imgsz"]
@@ -68,7 +70,7 @@ DARK_MEAN = 40       # below this (of 255) the lens is probably covered
 STEADY = 3           # frames an item must stay put before Trace says where it is
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 WINDOW = "where is it"
-ANCHORS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anchors.json")
+ANCHORS_FILE = os.path.join(ROOT, "anchors.json")
 
 ESC, ENTER, SPACE = 27, 13, 32
 KEEP_KEYS = (ord("y"), ENTER, SPACE)

@@ -6,11 +6,11 @@ noisy item and person boxes every 0.5 s per camera (items flicker, people block
 the view, nothing is perfect), and feeds them to whereabouts.py. Then we ask
 "where are my keys?" and check the answer against where the script put them.
 
-    python simulate.py                 # 100 runs of each way, accuracy table
-    python simulate.py --runs 300 --seed 7
-    python simulate.py --show          # one story + answer per way of losing them
-    python simulate.py --show --llm    # ... with Gemini writing the answers
-    python simulate.py --room places.json  # your own room (needs >= 2 surfaces per camera)
+    python tests/simulate.py                 # 100 runs of each way, accuracy table
+    python tests/simulate.py --runs 300 --seed 7
+    python tests/simulate.py --show          # one story + answer per way of losing them
+    python tests/simulate.py --show --llm    # ... with Gemini writing the answers
+    python tests/simulate.py --room places.json  # your own room (needs >= 2 surfaces per camera)
 
 The ways of losing things:
     covered    a jacket or post lands on them; nobody touched them
@@ -22,11 +22,15 @@ The ways of losing things:
     put_back   picked up, wandered, put back where they were but hidden
 """
 import argparse
+import os
 import random
+import sys
 from collections import defaultdict
 
-import room as roommod
-import whereabouts as wb
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repo folder
+sys.path.insert(0, ROOT)   # so the top-level modules (detect, targets, guide...) import
+import room as roommod  # noqa: E402
+import whereabouts as wb  # noqa: E402
 
 W, H, DT = 960, 540, 0.5
 SPEED = 260.0            # px per second, walking

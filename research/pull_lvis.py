@@ -1,8 +1,8 @@
 """pull_lvis.py -- build labelled test sets from LVIS. No account, no API key.
 
-    python pull_lvis.py                  # every target
-    python pull_lvis.py keys wallet      # just these
-    python pull_lvis.py --max=150 --neg=75
+    python research/pull_lvis.py                  # every target
+    python research/pull_lvis.py keys wallet      # just these
+    python research/pull_lvis.py --max=150 --neg=75
 
 LVIS labels 1,203 everyday object categories on COCO photos, and everything
 is a plain public download. It is also the benchmark YOLO-World reports its
@@ -35,8 +35,8 @@ import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-LVIS = os.path.join(HERE, "data", "lvis")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repo folder
+LVIS = os.path.join(ROOT, "data", "lvis")
 CACHE = os.path.join(LVIS, "_cache")                 # each photo downloaded once
 ANNOTATIONS = os.path.join(LVIS, "lvis_v1_val.json")
 ANNOTATIONS_URL = "https://dl.fbaipublicfiles.com/LVIS/lvis_v1_val.json.zip"

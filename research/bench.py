@@ -4,13 +4,13 @@ Every run appends one row per (weights, prompt) to results\\bench.csv, so
 prompt variants, model sizes and later fine-tuned weights all end up in one
 table you can sort.
 
-    python bench.py data\\coco128 --target=phone
-    python bench.py data\\keys --target=keys --prompts="keys,bunch of keys"
-    python bench.py data\\keys --target=keys --prompts="keys+keychain,keys"
-    python bench.py data\\keys --target=keys --weights=yolov8s-worldv2.pt,yolov8m-worldv2.pt
-    python bench.py data\\keys --target=keys --limit=0       # every image
-    python bench.py data\\keys --target=keys --together      # one pass, see below
-    python bench.py data\\keys --target=keys --label=Key     # dataset label override
+    python research/bench.py data\\coco128 --target=phone
+    python research/bench.py data\\keys --target=keys --prompts="keys,bunch of keys"
+    python research/bench.py data\\keys --target=keys --prompts="keys+keychain,keys"
+    python research/bench.py data\\keys --target=keys --weights=yolov8s-worldv2.pt,yolov8m-worldv2.pt
+    python research/bench.py data\\keys --target=keys --limit=0       # every image
+    python research/bench.py data\\keys --target=keys --together      # one pass, see below
+    python research/bench.py data\\keys --target=keys --label=Key     # dataset label override
 
 How it scores. A prediction is right when it overlaps a ground-truth box of
 the target at IoU >= 0.5; each ground-truth box can only be claimed once.
@@ -43,7 +43,9 @@ from ultralytics import YOLO, YOLOWorld
 # ultralytics ships its own YAML reader; PyYAML is not installed here.
 from ultralytics.utils import ROOT as ULTRALYTICS_ROOT, YAML
 
-from targets import TARGETS
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repo folder
+sys.path.insert(0, ROOT)   # so the top-level modules (detect, targets, guide...) import
+from targets import TARGETS  # noqa: E402
 
 IOU_MIN = 0.5
 IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")

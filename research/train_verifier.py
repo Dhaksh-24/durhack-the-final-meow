@@ -40,14 +40,15 @@ from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
 
-import detect
-from pull_lvis import merge_touching
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # the repo folder
+sys.path.insert(0, ROOT)   # so the top-level modules (detect, targets, guide...) import
+import detect  # noqa: E402
+from pull_lvis import merge_touching  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-LVIS_DIR = os.path.join(HERE, "data", "lvis")
-OUT = os.path.join(HERE, "data", "verifier")
+LVIS_DIR = os.path.join(ROOT, "data", "lvis")
+OUT = os.path.join(ROOT, "data", "verifier")
 IMAGES = os.path.join(OUT, "images")
-OWN = os.path.join(HERE, "data", "own")
+OWN = os.path.join(ROOT, "data", "own")
 SPLITS = ["lvis_v1_train.json.zip", "lvis_v1_val.json.zip"]
 STAGES = ["select", "web", "fetch", "mine", "embed", "train"]
 
