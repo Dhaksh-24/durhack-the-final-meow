@@ -35,7 +35,7 @@ the script does `module.exports = CORE`, so you can `vm.runInNewContext` it and 
 - **Search:** rank places by P(found here) / seconds to check; "not there" multiplies by the
   miss rate and renormalises.
 - **Evaluation:** Monte Carlo over simulated days vs "last seen, then habits" baseline,
-  plus a calibration table. Last run: first-check success 55% vs 30%, 2.0 vs 4.6 checks.
+  plus a calibration table. Last run (10% false alarms): first-check success 52% vs 20%, 2.4 vs 4.7 checks.
 - **3D view:** low-poly room built from the zone map (furniture type inferred from the name).
 - **Mapping from photos:** click a reference rectangle on the floor (homography), then the
   front edge of each piece of furniture; outputs the zone map and per-camera image→floor matrices.
@@ -67,9 +67,10 @@ Event (one JSON object per line):
 - Results from the simulator are simulated; say so whenever they're shown.
 
 ## Next, in priority order
-1. False alarms: the detector sees ~3 false keys per real one. Add false positives to the
-   simulator and make the model treat a sighting as evidence with a confidence-dependent
-   likelihood instead of certainty.
+1. ~~False alarms~~ done: the simulator emits false sightings (`FALSE_RATE`, per watched zone per
+   step) with a confidence; the filter multiplies `z-visible` by `D_vis·L + 1 − D_vis` with
+   `L = g(c) / (f·h(c))`. `g`, `h` are placeholder Betas: swap in the maths calibration with
+   `setCalibration({g, h, sampleTrue, sampleFalse})`. Tests: `node trace-sim/test-core.js`.
 2. `multicam.py` events: emit appeared / moved / disappeared / person_here with zone name and
    confidence (today it only logs "out of sight", zone null). Zone names must match the map.
 3. Connect real events to the page: replay an `events.jsonl` first, then live via a small

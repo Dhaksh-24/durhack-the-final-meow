@@ -313,6 +313,27 @@ const LEAK = 0.0005;        // small mixing back to the prior each step (model h
 const LEAVE_P = 0.03;       // person leaves the room when they finish in a zone
 const MAX_CHECKS = 25;
 
+// ---------- false alarms and detector confidence (SPEC 4.3) ----------
+// FALSE_RATE: chance per watched zone, per item, per tick that the detector reports the item
+// when it isn't there. Each sighting carries a confidence c. g(c) and h(c) are the confidence
+// densities for true and false sightings. Placeholders until the maths calibration lands:
+// true ~ Beta(5,2) (mean 0.71), false ~ Beta(2,5) (mean 0.29). Replace with setCalibration().
+let FALSE_RATE = 0.10;
+const LAST_SEEN_MIN = 0.5;   // the "last seen" baseline only trusts sightings at or above this
+function betaPdf(a, b) {
+  let lb = 0; for (let k = 1; k < a + b; k++) lb += Math.log(k);   // log((a+b-1)!)
+  for (let k = 1; k < a; k++) lb -= Math.log(k);
+  for (let k = 1; k < b; k++) lb -= Math.log(k);                    // 1/B(a,b) for integers
+  return (c) => { c = Math.min(1 - 1e-6, Math.max(1e-6, c)); return Math.exp(lb + (a - 1) * Math.log(c) + (b - 1) * Math.log(1 - c)); };
+}
+function betaSample(a, b) {   // a-th smallest of a+b-1 uniforms (integer a, b)
+  const u = Array.from({ length: a + b - 1 }, rnd).sort((x, y) => x - y);
+  return u[a - 1];
+}
+let CALIB = { g: betaPdf(5, 2), h: betaPdf(2, 5), sampleTrue: () => betaSample(5, 2), sampleFalse: () => betaSample(2, 5) };
+function setCalibration(c) { CALIB = Object.assign({}, CALIB, c); }
+function setFalseRate(f) { FALSE_RATE = Math.max(0, Math.min(0.9, +f || 0)); }
+
 const ITEMS = [
   { id: "keys", name: "Keys", plural: true, color: "#d98a1f", pick: 0.05, drop: 0.12, pocket: 0.05, unpocket: 0.02, coverMult: 1.0, returnWith: 0.85,
     habits: { hook: 5, desk: 3, kitchen: 2, counter: 2, table: 2, sofa: 1, shelf: 1, bed: 1, chair: 1 },
@@ -470,14 +491,24 @@ function stepWorld(w) {
     }
   }
   w.tick++;
-  const det = {};
+  // What the phones report: real sightings, plus false alarms in any watched zone.
+  // sightings[item] lists every report this tick ({zone, conf, real}); det[item] is the most
+  // confident one's zone (or null) and conf[item] its confidence, for the UI and "last seen".
+  const det = {}, conf = {}, sightings = {};
   for (const it of ITEMS) {
-    const s = w.items[it.id]; det[it.id] = null;
-    if (s.loc === "person" || s.loc === "outside") continue;
-    const z = MAP.zones[ZI[s.loc]];
-    if (z.camera && rnd() < (s.covered ? D_COV : D_VIS)) det[it.id] = z.id;
+    const s = w.items[it.id], list = [];
+    for (const z of MAP.zones) {
+      if (!z.camera) continue;
+      const here = s.loc === z.id;
+      if (here && rnd() < (s.covered ? D_COV : D_VIS)) list.push({ zone: z.id, conf: CALIB.sampleTrue(), real: true });
+      else if (rnd() < FALSE_RATE) list.push({ zone: z.id, conf: CALIB.sampleFalse(), real: false });
+    }
+    list.sort((a, c) => c.conf - a.conf);
+    sightings[it.id] = list;
+    det[it.id] = list.length ? list[0].zone : null;
+    conf[it.id] = list.length ? list[0].conf : null;
   }
-  return { prev, person: p.outside ? "outside" : p.zone, det };
+  return { prev, person: p.outside ? "outside" : p.zone, det, conf, sightings };
 }
 
 // ---------- Trace's model: a Bayesian filter over hidden locations ----------
@@ -500,17 +531,35 @@ function filterStep(b, it, obs) {
   const pr = PRIORS[it.id];
   for (let k = 0; k < NS; k++) nb[k] = nb[k] * (1 - LEAK) + LEAK * pr[k];
   // 2. Update on what each phone did and didn't see.
+  const sight = sightingsOf(obs, it.id);
   MAP.zones.forEach((z, i) => {
     if (!z.camera) return;
-    if (obs.det[it.id] === z.id) {
+    const r = sight[z.id];
+    if (r == null) { nb[2 * i] *= 1 - D_VIS; nb[2 * i + 1] *= 1 - D_COV; return; }
+    // Likelihood of "a sighting at zone i with confidence c", divided by its value when the
+    // item is elsewhere (f·h(c)), which is common to every other state and cancels:
+    //   i-visible: (D_vis·g + (1−D_vis)·f·h) / (f·h) = D_vis·L + 1 − D_vis,  L = g / (f·h)
+    //   i-covered: D_cov·L + 1 − D_cov;   every other state: 1.
+    const fh = FALSE_RATE * CALIB.h(r);
+    if (fh > 0) {
+      const L = CALIB.g(r) / fh;
+      nb[2 * i] *= D_VIS * L + 1 - D_VIS; nb[2 * i + 1] *= D_COV * L + 1 - D_COV;
+    } else {   // no false alarms possible: a sighting is certain to be real
       const v = nb[2 * i], cv = nb[2 * i + 1];
-      for (let k = 0; k < NS; k++) nb[k] *= 1e-4;
+      for (let k = 0; k < NS; k++) nb[k] = 0;
       nb[2 * i] = v * D_VIS; nb[2 * i + 1] = cv * D_COV;
-    } else {
-      nb[2 * i] *= 1 - D_VIS; nb[2 * i + 1] *= 1 - D_COV;
     }
   });
   return normalize(nb) || Float64Array.from(pr);
+}
+// Sightings by zone: {zoneId: confidence}. Accepts the simulator's list, or just det/conf
+// (a replayed event); a sighting with no confidence counts as 0.8.
+function sightingsOf(obs, id) {
+  const out = {};
+  const list = obs.sightings && obs.sightings[id];
+  if (list) { for (const s of list) out[s.zone] = Math.max(out[s.zone] || 0, s.conf); }
+  else if (obs.det && obs.det[id]) out[obs.det[id]] = obs.conf && obs.conf[id] != null ? obs.conf[id] : 0.8;
+  return out;
 }
 
 // ---------- search ----------
@@ -575,7 +624,7 @@ function runEpisode() {
   let obs = null;
   for (let t = 0; t < T; t++) {
     obs = stepWorld(w);
-    for (const it of ITEMS) { B[it.id] = filterStep(B[it.id], it, obs); if (obs.det[it.id]) last[it.id] = obs.det[it.id]; }
+    for (const it of ITEMS) { B[it.id] = filterStep(B[it.id], it, obs); if (obs.det[it.id] && obs.conf[it.id] >= LAST_SEEN_MIN) last[it.id] = obs.det[it.id]; }
   }
   const hidden = ITEMS.filter((it) => !obs.det[it.id]);
   const it = hidden.length ? hidden[Math.floor(rnd() * hidden.length)] : ITEMS[Math.floor(rnd() * ITEMS.length)];
@@ -589,7 +638,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, setFalseRate, setCalibration, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -633,7 +682,15 @@ function resetDay() {
   panelDirty = true;
 }
 function logEvent(e) { if (ST && ST.ev[e.event] != null) ST.ev[e.event]++; events.push(e); if (events.length > 60) events.shift(); }
-function visibleAt(id) { const h = visHist[id]; for (let k = h.length - 1; k >= 0; k--) if (h[k]) return h[k]; return null; }
+// Event rules from SPEC 3.2: "appeared" once a zone has a confident sighting in 2 of the last
+// 3 steps; it stays visible while that zone is seen at least once in the window.
+function visibleAt(id) {
+  const h = visHist[id], n = {};
+  for (const z of h) if (z) n[z] = (n[z] || 0) + 1;
+  if (h.cur && n[h.cur]) return h.cur;
+  for (const z in n) if (n[z] >= 2) return z;
+  return null;
+}
 
 function liveTick() {
   const before = {}; for (const it of ITEMS) before[it.id] = visibleAt(it.id);
@@ -646,15 +703,17 @@ function liveTick() {
   ST.ticks++;
   for (const it of ITEMS) {
     beliefs[it.id] = filterStep(beliefs[it.id], it, obs);
-    if (obs.det[it.id]) { lastSeen[it.id] = { zone: obs.det[it.id], tick: world.tick }; ST.sight[obs.det[it.id]]++; ST.lastSight[obs.det[it.id]] = world.tick; }
+    if (obs.det[it.id] && obs.conf[it.id] >= LAST_SEEN_MIN) { lastSeen[it.id] = { zone: obs.det[it.id], tick: world.tick }; ST.sight[obs.det[it.id]]++; ST.lastSight[obs.det[it.id]] = world.tick; }
     const st = world.items[it.id];
     if (topPlace(beliefs[it.id]).pl.id === st.loc) ST.right[it.id]++;
     if (st.loc !== "person" && st.loc !== "outside" && MAP.zones[ZI[st.loc]].camera && !st.covered) ST.vis[it.id]++;
-    visHist[it.id].push(obs.det[it.id]); visHist[it.id].shift();
+    visHist[it.id].push(obs.conf[it.id] >= LAST_SEEN_MIN ? obs.det[it.id] : null); visHist[it.id].shift();
     const now = visibleAt(it.id), was = before[it.id];
-    if (now && !was) logEvent({ time, item: it.id + "-1", zone: now, event: "appeared" });
+    visHist[it.id].cur = now;
+    const confidence = obs.conf[it.id] != null ? +obs.conf[it.id].toFixed(2) : undefined;
+    if (now && !was) logEvent({ time, item: it.id + "-1", zone: now, event: "appeared", confidence });
     else if (!now && was) logEvent({ time, item: it.id + "-1", zone: was, event: "disappeared" });
-    else if (now && was && now !== was) logEvent({ time, item: it.id + "-1", zone: now, event: "moved" });
+    else if (now && was && now !== was) logEvent({ time, item: it.id + "-1", zone: now, event: "moved", confidence });
   }
   panelDirty = true;
 }
@@ -959,6 +1018,9 @@ function renderAssumptions() {
     ["One simulation step", TICK_S + " seconds"],
     ["Phone spots an uncovered item in its zone", pct(D_VIS)],
     ["Phone spots a covered item", pct(D_COV)],
+    ["False alarm (reports an item that isn't there), per watched zone per step", pct(FALSE_RATE)],
+    ["Detector confidence, real / false sightings", "averages 71% / 29% (placeholder until calibrated)"],
+    ["Sightings the \"last seen\" baseline trusts", "confidence " + pct(LAST_SEEN_MIN) + " or more"],
     ["Searching a zone finds an uncovered / covered item", pct(S_VIS) + " / " + pct(S_COV)],
     ["Checking hands and pockets finds it", pct(S_PERSON) + " in " + T_PERSON + " s"],
     ["Checking the car or bag finds it", pct(S_OUT) + " in " + T_OUT + " s"],
