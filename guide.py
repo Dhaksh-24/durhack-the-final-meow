@@ -30,8 +30,8 @@ import re
 import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-MODEL = os.environ.get("GEMINI_MODEL") or "gemini-3.8-flash"
-TIMEOUT = 8.0            # seconds per LLM call
+MODEL = "gemini-3.8-flash"   # default; GEMINI_MODEL in the environment or .env overrides it
+TIMEOUT = 10.0           # seconds per LLM call (Gemini rejects deadlines under 10 s)
 SURE_W = {"high": 1.0, "medium": 0.5, "low": 0.3}
 PARTS = ("visible", "covered", "all")
 ITEMS = ("keys", "wallet", "glasses")
@@ -147,19 +147,23 @@ def rules_parse(utterance, places, item=None):
 
 
 # ------------------------------------------------------------------ the LLM
-def load_key():
-    """GEMINI_API_KEY from the environment, else from .env beside this file (as scene.py)."""
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if key:
-        return key
+def env_setting(var):
+    """var from the environment, else from .env beside this file (as scene.py)."""
+    val = os.environ.get(var, "").strip()
+    if val:
+        return val
     path = os.path.join(ROOT, ".env")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as f:
             for line in f:
                 name, _, value = line.partition("=")
-                if name.strip() == "GEMINI_API_KEY":
+                if name.strip() == var:
                     return value.strip().strip('"').strip("'")
     return ""
+
+
+def load_key():
+    return env_setting("GEMINI_API_KEY")
 
 
 _client = None
@@ -176,7 +180,7 @@ def gemini_json(system, user, timeout=TIMEOUT):
     if _client is None:
         _client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=int(timeout * 1000)))
     r = _client.models.generate_content(
-        model=MODEL, contents=user,
+        model=env_setting("GEMINI_MODEL") or MODEL, contents=user,
         config=types.GenerateContentConfig(system_instruction=system, temperature=0.2,
                                            response_mime_type="application/json"))
     out = json.loads(r.text)
