@@ -127,6 +127,17 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
 #metricsCard td, #metricsCard th { padding: 5px 6px; }
 .pill { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; background: var(--good-soft); color: var(--good); }
 .pill.off { background: var(--line); color: var(--muted); }
+.camgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.camtile { position: relative; border-radius: 9px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
+.camtile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camtile .cname { position: absolute; left: 6px; top: 6px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; padding: 2px 7px; border-radius: 6px; }
+.camtile .cstate { position: absolute; right: 6px; top: 6px; font-size: 11px; padding: 2px 7px; border-radius: 999px; background: #1f6b45; color: #fff; }
+.camtile .cstate.off { background: #6b6b6b; }
+[hidden] { display: none !important; }   /* author rules like canvas{display:block} must not un-hide things */
+/* Presentation view: only the room, the cameras, where Trace thinks it is, and Ask Trace */
+body.present header p, body.present .card:not(.keep), body.present .full { display: none !important; }
+body.present .grid { grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); }
+body.present #controls3d, body.present .legend, body.present #roomLead { display: none; }
 .progress { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .askbar input[type="text"] { flex: 1 1 220px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
 .askbar select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
@@ -141,11 +152,12 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
     <h1>Trace</h1>
     <p>A simulated room where people move objects around. Phones see some zones but not others. Trace keeps a probability for where each item is and updates it as evidence arrives.</p>
     <span class="clock" id="clock">08:00:00</span>
+    <button class="btn" id="presentBtn" type="button">Presentation view</button>
   </header>
 
   <div class="grid">
     <div class="col">
-      <section class="card">
+      <section class="card keep">
         <div class="headrow">
           <h2 id="mapTitle">The room</h2>
           <div class="seg" role="group" aria-label="View" id="viewSeg">
@@ -155,6 +167,10 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
         </div>
         <p class="lead" id="roomLead">Built automatically from the zone map: each zone becomes a piece of furniture, and each phone shows what it can see. The glowing columns show where Trace thinks the selected item is. Drag to turn, scroll to zoom.</p>
         <div id="view3d"><canvas id="room3d" aria-label="3D view of the simulated room"></canvas><div id="labels" aria-hidden="true"></div></div>
+        <div id="camStrip" hidden>
+          <div class="headrow"><h3 class="sub" style="margin:12px 0 6px">Cameras, live</h3><button class="btn" id="camToggle" type="button">Hide</button></div>
+          <div class="camgrid" id="camGrid"></div>
+        </div>
         <canvas id="room" aria-label="Top-down view of the simulated room" hidden></canvas>
         <div class="controls">
           <div class="seg" role="group" aria-label="What drives the room" id="modeSeg">
@@ -212,7 +228,7 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
     </div>
 
     <div class="col">
-      <section class="card">
+      <section class="card keep">
         <h2>Where Trace thinks it is</h2>
         <div class="tabs" id="itemTabs" role="group" aria-label="Item"></div>
         <div class="lastseen" id="lastSeen"></div>
@@ -220,7 +236,7 @@ h3.sub { font-size: 14px; margin: 16px 0 4px; }
         <div class="bars" id="bars"></div>
       </section>
 
-      <section class="card" id="askCard">
+      <section class="card keep" id="askCard">
         <h2>Ask Trace</h2>
         <p class="lead">Pauses the room and plans a search: the best chance of finding it per second of effort.</p>
         <div class="controls askbar" style="margin-top:0">
@@ -1658,7 +1674,7 @@ function showEval(res) {
 function mapToText() {
   return JSON.stringify({ name: MAP.name, width: MAP.width, height: MAP.height, zones: MAP.zones.map((z) => ({ id: z.id, name: z.name, type: z.type, camera: z.camera, cover: z.cover, check: z.check, x: +z.x.toFixed(2), y: +z.y.toFixed(2), w: +z.w.toFixed(2), h: +z.h.toFixed(2) })) }, null, 2);
 }
-function loadMap(obj) {
+function loadMap(obj, save = true) {
   if (!obj || !Array.isArray(obj.zones) || !obj.zones.length) throw new Error("Needs a \"zones\" list with at least one zone.");
   const ids = new Set();
   for (const z of obj.zones) {
@@ -1669,6 +1685,9 @@ function loadMap(obj) {
   if (!obj.zones.some((z) => z.camera)) throw new Error("At least one zone needs \"camera\": true, or Trace can never see anything.");
   setupMap(obj); resetDay(); build3D(); $("#mapTitle").textContent = MAP.name; $("#mapText").value = mapToText(); renderAll();
   try { localStorage.setItem("trace.map", mapToText()); } catch (e) { /* private window: not remembered */ }
+  if (save && /^https?:$/.test(location.protocol)) {   // served by trace_api: save it as room.json for every browser
+    fetch(API + "/api/room", { method: "POST", headers: { "Content-Type": "application/json" }, body: mapToText() }).catch(() => {});
+  }
 }
 
 // ---------- 3D low-poly room, built from the zone map ----------
@@ -2675,6 +2694,38 @@ $("#askSend").onclick = () => { const t = $("#askText").value; $("#askText").val
 $("#askText").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#askSend").click(); });
 $("#askMic").onclick = listenOnce;
 if (!SR) $("#askMic").title = "Voice input needs Chrome";
+// Live camera feeds beside the 3D room, when the page is served by multicam.py / trace_api.py
+// (http://localhost:8000/sim). Opened as a file, there's no camera server and the strip stays hidden.
+let camShown = true, camKnown = "";
+async function refreshCams() {
+  if (!/^https?:$/.test(location.protocol)) return;
+  let cams = null;
+  try { const r = await fetch("/api/cameras", { cache: "no-store" }); if (r.ok) cams = await r.json(); } catch (e) { cams = null; }
+  if (!Array.isArray(cams) || !cams.length) { $("#camStrip").hidden = true; return; }
+  $("#camStrip").hidden = false;
+  const key = cams.map((c) => c.id).join("|");
+  if (key !== camKnown) {
+    camKnown = key;
+    $("#camGrid").innerHTML = cams.map((c) =>
+      '<div class="camtile" data-cam="' + esc(c.id) + '"><img alt="Live view from ' + esc(c.name) + '" src="/api/live/' + encodeURIComponent(c.id) + '.mjpg">' +
+      '<span class="cname">' + esc(c.name) + '</span><span class="cstate">live</span></div>').join("");
+    $("#camGrid").hidden = !camShown;
+  }
+  for (const c of cams) {
+    const t = document.querySelector('.camtile[data-cam="' + CSS.escape(c.id) + '"]'); if (!t) continue;
+    const st = t.querySelector(".cstate"), img = t.querySelector("img");
+    st.textContent = c.live ? "live" : "no signal"; st.classList.toggle("off", !c.live);
+    if (!img.onerror) img.onerror = () => {   // stream dropped (camera reconnecting): try again shortly
+      setTimeout(() => { if (camShown) img.src = "/api/live/" + encodeURIComponent(c.id) + ".mjpg?" + Date.now(); }, 2000);
+    };
+  }
+}
+$("#camToggle").onclick = () => {
+  camShown = !camShown; $("#camGrid").hidden = !camShown; $("#camToggle").textContent = camShown ? "Hide" : "Show";
+  document.querySelectorAll("#camGrid img").forEach((img) => { if (!camShown) { img.dataset.src = img.src; img.removeAttribute("src"); } else if (img.dataset.src) img.src = img.dataset.src; });
+};
+refreshCams(); setInterval(refreshCams, 5000);
+
 $("#liveBtn").onclick = () => { if (live) { closeLive(); setReplayUI(); liveNote("Live: disconnected."); } else connectLive(); };
 $("#modeSeg").addEventListener("click", (e) => { const bt = e.target.closest("button[data-m]"); if (bt && (bt.dataset.m === "real") !== !!replay) setMode(bt.dataset.m); });
 $("#replayFile").addEventListener("change", (e) => {
@@ -2700,8 +2751,27 @@ if (HAS3D) { try { build3D(); } catch (err) { console.warn(err); } }
 if (!R3) { $("#viewSeg").hidden = true; }
 setView(R3 ? "3d" : "2d");
 // Reopen the last room loaded or mapped in this browser (the zone map only, never photos).
-try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved)); } catch (e) { /* none saved, or unreadable */ }
+const QS = new URLSearchParams(location.search);
+if (QS.get("room") === "demo") loadMap(JSON.parse(JSON.stringify(DEFAULT_MAP)), false);
+else try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved), false); } catch (e) { /* none saved, or unreadable */ }
 dFromMap();
+function setPresent(on) {
+  document.body.classList.toggle("present", on);
+  $("#presentBtn").textContent = on ? "Show everything" : "Presentation view";
+  if (R3) setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+}
+$("#presentBtn").onclick = () => setPresent(!document.body.classList.contains("present"));
+// Served by trace_api (run_trace.py): load the shared room.json, then go live if the URL says ?live.
+(async () => {
+  if (/^https?:$/.test(location.protocol) && QS.get("room") !== "demo") {
+    try {
+      const r = await fetch(API + "/api/room", { cache: "no-store" });
+      if (r.ok) { loadMap(await r.json(), false); dFromMap(); }
+    } catch (e) { /* no server or no room.json: keep what we have */ }
+  }
+  if (QS.has("live")) { try { connectLive(); } catch (e) { console.warn(e); } }
+  if (QS.get("view") === "present") setPresent(true);
+})();
 
 let lastT = performance.now(), acc = 0, lastPanel = 0;
 function frame(now) {

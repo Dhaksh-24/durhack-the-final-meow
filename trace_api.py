@@ -5,6 +5,8 @@ it can hand out the live frames the tracker already holds. Standard library
 plus OpenCV only; no keys, and nothing leaves your network.
 
   GET /                          trace.html
+  GET /model                     same as /sim: the model page (3D room, probabilities)
+  GET/POST /api/room             room.json: the room map the page built, loaded by every browser
   GET /api/cameras               [{"id", "name", "live", "frame_w", "frame_h"}]
   GET /api/items                 remembered items, refreshed by multicam about twice a second
   GET /api/events?limit=20       latest sightings from events.jsonl, newest first
@@ -200,6 +202,14 @@ class TraceAPI:
                     return self._speech(raw)
                 if p == "/api/ask":
                     return self._ask(raw)
+                if p == "/api/room":                 # the page saves the room it built
+                    try:
+                        room = json.loads(raw.decode("utf-8"))
+                        assert isinstance(room.get("zones"), list) and room["zones"]
+                    except Exception:
+                        return self._json({"error": "needs a zone map with a zones list"}, 400)
+                    (ROOT / "room.json").write_text(json.dumps(room, indent=2))
+                    return self._json({"saved": "room.json", "zones": len(room["zones"])})
                 if p == "/api/model":
                     try:
                         body = json.loads(raw or b"{}")
@@ -285,7 +295,7 @@ class TraceAPI:
                 try:
                     if p in ("/", "/trace.html"):
                         return self._file(ROOT / "trace.html", "text/html; charset=utf-8")
-                    if p in ("/sim", "/sim/", "/trace-sim/", "/trace-sim/index.html"):
+                    if p in ("/sim", "/sim/", "/model", "/model/", "/trace-sim/", "/trace-sim/index.html"):
                         return self._file(ROOT / "trace-sim" / "index.html", "text/html; charset=utf-8")
                     if p == "/trace-sim/sample-events.jsonl":
                         return self._file(ROOT / "trace-sim" / "sample-events.jsonl", "application/x-ndjson")
@@ -295,6 +305,9 @@ class TraceAPI:
                     if m:
                         api.polls[m.group(1)] = time.time()
                         return self._json({"id": api.chirps.get(m.group(1), 0)})
+                    if p == "/api/room":                 # the room the page last built, shared by every browser
+                        f = ROOT / "room.json"
+                        return self._file(f, "application/json") if f.exists() else self._json({"error": "no room yet"}, 404)
                     if p == "/api/cameras":
                         return self._json(api.cameras())
                     if p == "/api/items":

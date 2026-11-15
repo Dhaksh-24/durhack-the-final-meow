@@ -1,5 +1,35 @@
 # Running the live chain (camera → events → page)
 
+## Four phones: multicam.py (use this for the demo)
+
+```
+phones ─▶ multicam.py ─▶ trace-events.jsonl ─▶ bridge.py (started for you) ─▶ ws://localhost:8765 ─▶ trace-sim/index.html ("Connect live")
+            └─ also serves Adel's camera console + voice at http://localhost:8000/  and the model page at http://localhost:8000/sim
+```
+
+```powershell
+git fetch origin; git checkout demo; git pull
+pip install websockets
+python multicam.py --cam "Sofa=http://<phone1-ip>:4747/video" --cam "Desk=http://<phone2-ip>:4747/video"   # one --cam per phone
+```
+
+1. In the multicam window, **drag a zone on each camera tile and name it exactly like the room map**
+   in the page ("Sofa", "Desk", "Coat hook"…). A zone named "Sofa" becomes id `sofa`; to use other
+   names, pass `--zone-map zone_map.json` with e.g. `{"Hall table": "desk"}`. Zones are saved in `zones.json`.
+2. Open `http://localhost:8000/sim` (or `trace-sim\index.html`), make sure the room map has the same
+   zone ids (map the room or paste a zone map), press **Real events → Connect live**.
+3. Put your keys down in a zone: within ~1.5 s the event log shows `appeared` and the 3D room moves.
+   Opened from `http://localhost:8000/sim`, the page also shows every phone's live video under the 3D room
+   ("Cameras, live"), so you can watch the cameras and the model side by side.
+
+What multicam now writes to `trace-events.jsonl` (SPEC 3.2): `appeared` / `moved` / `disappeared` for
+keys, wallet, glasses (2-of-3 frames in, 5 missed frames out, boxes over 15% of the frame dropped),
+and `person_here` / `person_left` per zone from movement inside the zone (no person detector, no identity).
+`--no-bridge` if you run `bridge.py --file trace-events.jsonl` yourself. Delete `trace-events.jsonl`
+between demo runs for a clean start.
+
+## One camera: live_scene.py
+
 ```
 live_scene.py --jsonl  →  events_adapter.py  →  events.jsonl  →  bridge.py  →  ws://localhost:8765  →  trace-sim/index.html
 (raw detections)         (SPEC 3.2 events)                       (tails it)                           ("Connect live")
