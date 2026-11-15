@@ -48,6 +48,14 @@ It opens **two tabs**, and both matter:
 - **http://localhost:8000/**: `trace.html`, where you talk to Trace ("Hey Trace", the mascot, voice).
   Its answers come from the model running in the other tab.
 
+**Two laptops (recommended for the demo):** run `python run_trace.py --share --present` on the
+laptop with the cameras. It prints two addresses like `http://192.168.1.20:8000/sim?live&view=present`.
+Open them on the second laptop (same Wi-Fi or hotspot): `/sim` on the big screen, `/` for talking
+to Trace. The camera laptop then only does detection. `--share` makes the cameras' live video
+visible to anyone on that network, so use your own hotspot, not the venue Wi-Fi. If the second laptop
+can't connect, the camera laptop's firewall is blocking ports 8000 and 8765: allow Python when
+Windows asks, or temporarily allow them.
+
 ---
 
 ## 3. Set up the demo room (15 min, once)

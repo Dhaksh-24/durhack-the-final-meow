@@ -194,6 +194,7 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
           <button class="btn" id="resetView" type="button">Reset view</button>
           <label class="check"><input type="checkbox" id="spin"> Slowly turn</label>
           <label class="check"><input type="checkbox" id="trailChk" checked> Your trail since it was last seen</label>
+          <label class="check"><input type="checkbox" id="heatChk" checked> Where people spend time (heat map)</label>
         </div>
         <div class="legend" id="legend"></div>
       </section>
@@ -206,6 +207,12 @@ body.present #controls3d, body.present .legend, body.present #roomLead { display
         <table id="furnTable"></table>
         <h3 class="sub">Phone network</h3>
         <table id="phoneTable"></table>
+        <h3 class="sub">Learned from live data</h3>
+        <p class="note" style="margin-top:0">Every time a camera sees an item put down, its habits shift towards that place (a Dirichlet update: the starting habits count as 5 observations). Only real events teach it; the simulator never does.</p>
+        <table id="learnTable"></table>
+        <div class="controls" style="margin-top:6px"><button class="btn" id="resetLearn" type="button">Forget what it learned in this room</button></div>
+        <h3 class="sub">Where people spend time</h3>
+        <table id="heatTable"></table>
         <h3 class="sub">How the model is doing today</h3>
         <table id="modelTable"></table>
         <div class="controls">
@@ -486,6 +493,29 @@ function setupMap(m) {
   for (const it of ITEMS) PRIORS[it.id] = prior(it);
 }
 
+// Habits learned from live data. Each item's habit over zones is a Dirichlet: the starting habits
+// (common sense, or the LLM) count as LEARN_K pseudo-observations, and every real "put down here"
+// (appeared / moved in a zone) adds one. learned share = (K * prior share + count) / (K + total).
+const LEARN_K = 5;
+function learnHabits(counts) {   // counts: {itemId: {zoneId: n}}; the room must be set up
+  for (const it of ITEMS) {
+    if (!it.habits0) it.habits0 = Object.assign({}, it.habits);
+    const c = (counts && counts[it.id]) || {};
+    let tot0 = 0, n = 0;
+    const base = MAP.zones.map((z) => { const v = it.habits0[z.id] != null ? it.habits0[z.id] : it.habits0[z.type] != null ? it.habits0[z.type] : 1; tot0 += v; return v; });
+    MAP.zones.forEach((z) => { n += c[z.id] || 0; });
+    const h = Object.assign({}, it.habits0);
+    MAP.zones.forEach((z, i) => { h[z.id] = 10 * (LEARN_K * base[i] / (tot0 || 1) + (c[z.id] || 0)) / (LEARN_K + n); });
+    it.habits = h; it.learnedN = n;
+  }
+  for (const it of ITEMS) PRIORS[it.id] = prior(it);
+}
+function habitShares(it, useStart) {   // share of each zone in an item's habit, now or before learning
+  const src = useStart ? (it.habits0 || it.habits) : it.habits;
+  const v = MAP.zones.map((z) => (src[z.id] != null ? src[z.id] : src[z.type] != null ? src[z.type] : 1));
+  const t = v.reduce((a, x) => a + x, 0) || 1;
+  const out = {}; MAP.zones.forEach((z, i) => { out[z.id] = v[i] / t; }); return out;
+}
 function habitW(it, zid) {
   if (it.habits[zid] != null) return it.habits[zid];
   const z = MAP.zones[ZI[zid]], v = z && it.habits[z.type];
@@ -912,7 +942,7 @@ function runEpisode() {
 }
 // ================= CORE END =================
 
-const CORE = { setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
+const CORE = { learnHabits, habitShares, LEARN_K, setupMap, runEpisode, newWorld, stepWorld, filterStep, rank, failUpdate, checkUpdate, probWord, trailVisits, validateSay, placeP, SURE_W, setFalseRate, setCalibration, replayFromEvents, liveFeed, get FALSE_RATE() { return FALSE_RATE; }, ITEMS, DEFAULT_MAP, get PRIORS() { return PRIORS; }, get PLACES() { return PLACES; } };
 if (typeof window === "undefined" || !window.document) { module.exports = CORE; return; }
 
 // ================= UI =================
@@ -1005,7 +1035,7 @@ function beginReal() {
 }
 function liveNote(msg) { $("#replayNote").textContent = msg; }
 function connectLive() {
-  const url = new URLSearchParams(location.search).get("ws") || "ws://localhost:8765";
+  const url = new URLSearchParams(location.search).get("ws") || ("ws://" + (/^https?:$/.test(location.protocol) && location.hostname ? location.hostname : "localhost") + ":8765");
   beginReal(); replay.name = "live";
   let ws;
   try { ws = new WebSocket(url); } catch (err) { liveNote("Live: couldn't open " + url + ": " + err.message); return; }
@@ -1063,10 +1093,35 @@ function setReplayUI() {
   document.querySelectorAll("#modeSeg button").forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.m === "real") === on)));
   if (!on) $("#replayNote").textContent = "";
 }
+// What the room has taught the model: where each item was actually put down (real events only,
+// never the simulator, which would be learning from itself). Saved per room name.
+let HAB = {};
+function habKey() { return "trace.habits." + MAP.name; }
+function loadHab() {
+  HAB = {}; try { HAB = JSON.parse(localStorage.getItem(habKey()) || "{}") || {}; } catch (e) { HAB = {}; }
+  learnHabits(HAB);
+}
+function learnFrom(e) {
+  if (e.event !== "appeared" && e.event !== "moved") return;
+  const id = itemIdOf(e), z = e.zone == null ? null : String(e.zone);
+  if (!id || z == null || ZI[z] == null) return;
+  ((HAB[id] = HAB[id] || {})[z] = (HAB[id][z] || 0) + 1);
+  learnHabits(HAB);
+  try { localStorage.setItem(habKey(), JSON.stringify(HAB)); } catch (err) { /* not remembered */ }
+}
+// Where people spent time this session, minutes per zone (simulation and real events alike).
+let heatCache = { at: -1, min: {}, max: 0 };
+function roomHeat() {
+  if (heatCache.at === personLog.length) return heatCache;
+  const min = {};
+  for (const v of trailVisits(personLog, -Infinity, nowSecs())) min[v.zone] = (min[v.zone] || 0) + (v.to - v.from) / 60;
+  heatCache = { at: personLog.length, min, max: Math.max(0, ...Object.values(min)) };
+  return heatCache;
+}
 function applyObs(obs) {
   const before = {}; for (const it of ITEMS) before[it.id] = visibleAt(it.id);
   const time = clockAt(world.tick);
-  if (replay) for (const e of obs.events) logEvent(e);
+  if (replay) for (const e of obs.events) { logEvent(e); learnFrom(e); }
   else if (obs.person !== lastPersonZone) {
     logEvent(obs.person === "outside" ? { time, event: "person_left" } : { time, event: "person_here", zone: obs.person });
     lastPersonZone = obs.person;
@@ -1526,7 +1581,26 @@ function renderLegend() {
 }
 function tile(k, v, sub) { return '<div class="tile"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + "</div>" + (sub ? '<div class="s">' + esc(sub) + "</div>" : "") + "</div>"; }
 function durText(ticks) { const m = Math.round(ticks * TICK_S / 60); return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min"; }
+function renderLearned() {
+  const el = $("#learnTable"); if (!el || !MAP) return;
+  el.innerHTML = "<tr><th>Item</th><th>Put down (seen)</th><th>Most likely places now (before learning)</th></tr>" + ITEMS.map((it) => {
+    const now = habitShares(it, false), was = habitShares(it, true);
+    const top = MAP.zones.slice().sort((a, c) => now[c.id] - now[a.id]).slice(0, 3);
+    return '<tr><td><span class="dot" style="background:' + it.color + '"></span>' + esc(it.name) + '</td><td class="num">' + (it.learnedN || 0) + "</td><td>" +
+      top.map((z) => esc(z.name) + " " + Math.round(now[z.id] * 100) + '% <span class="note">(' + Math.round(was[z.id] * 100) + "%)</span>").join(" · ") + "</td></tr>";
+  }).join("");
+}
+function renderHeat() {
+  const el = $("#heatTable"); if (!el || !MAP) return;
+  const h = roomHeat(), tot = Object.values(h.min).reduce((a, v) => a + v, 0);
+  const rows = Object.entries(h.min).filter(([z]) => ZI[z] != null || z === "outside").sort((a, c) => c[1] - a[1]);
+  el.innerHTML = rows.length
+    ? "<tr><th>Place</th><th class=\"num\">Time</th><th class=\"num\">Share</th></tr>" + rows.map(([z, m]) =>
+      "<tr><td>" + esc(z === "outside" ? "Outside the room" : MAP.zones[ZI[z]].name) + '</td><td class="num">' + (m < 1 ? "<1" : Math.round(m)) + ' min</td><td class="num">' + Math.round(m / (tot || 1) * 100) + "%</td></tr>").join("")
+    : "<tr><td>No one seen yet.</td></tr>";
+}
 function renderMetrics() {
+  renderLearned(); renderHeat();
   const W = MAP.width, H = MAP.height, zs = MAP.zones, cams = zs.filter((z) => z.camera);
   const furnArea = zs.reduce((a, z) => a + z.w * z.h, 0), camArea = cams.reduce((a, z) => a + z.w * z.h, 0);
   const sightTotal = Object.values(ST.sight).reduce((a, v) => a + v, 0), hours = ST.ticks * TICK_S / 3600;
@@ -1692,6 +1766,7 @@ function mapToText() {
   return JSON.stringify({ name: MAP.name, width: MAP.width, height: MAP.height, zones: MAP.zones.map((z) => ({ id: z.id, name: z.name, type: z.type, camera: z.camera, cover: z.cover, check: z.check, x: +z.x.toFixed(2), y: +z.y.toFixed(2), w: +z.w.toFixed(2), h: +z.h.toFixed(2) })) }, null, 2);
 }
 function loadMap(obj, save = true) {
+  setTimeout(() => { try { loadHab(); renderLearned(); } catch (e) { /* room not ready */ } }, 0);
   if (!obj || !Array.isArray(obj.zones) || !obj.zones.length) throw new Error("Needs a \"zones\" list with at least one zone.");
   const ids = new Set();
   for (const z of obj.zones) {
@@ -1965,8 +2040,12 @@ function build3D() {
     const trailM = new THREE.MeshBasicMaterial({ color: P.next, transparent: true, opacity: 0, depthWrite: false });
     const trail = new THREE.Mesh(new THREE.CircleGeometry(0.6, 24), trailM);
     trail.rotation.x = -Math.PI / 2; trail.position.copy(standSpot(f, W, H)); trail.position.y = 0.009; trail.renderOrder = 1; root.add(trail);
+    // where people spend time: a red patch over the whole zone, stronger the more minutes spent there
+    const heatM = new THREE.MeshBasicMaterial({ color: 0xd8432f, transparent: true, opacity: 0, depthWrite: false });
+    const heat = new THREE.Mesh(new THREE.PlaneGeometry(z.w + 0.5, z.h + 0.5), heatM);
+    heat.rotation.x = -Math.PI / 2; heat.position.set(f.cx, 0.004, f.cz); heat.renderOrder = 0; root.add(heat);
     const lbl = document.createElement("div"); lbl.className = "lbl";
-    return { z, f, glowM, beam: bm, phone, lbl, base: TOP[z.type], trailM };
+    return { z, f, glowM, beam: bm, phone, lbl, base: TOP[z.type], trailM, heatM };
   });
 
   // person
@@ -2075,6 +2154,7 @@ function draw3D(now) {
 
   const b = session ? session.b : beliefs[selected], it = itemById(selected);
   const nextId = session && !session.result ? (rank(session.b)[0] || {}).pl : null;
+  const heatShown = $("#heatChk").checked, heatNow = heatShown ? roomHeat() : null;
   const trailShown = $("#trailChk").checked, trailMin = trailCache && trailCache.id === selected ? trailCache.minutes : {};
   const trailMax = Math.max(0, ...Object.values(trailMin));
   R3.outTrailM.opacity = trailShown && trailMax > 0 && trailMin.outside ? (0.12 + 0.5 * trailMin.outside / trailMax) * built : 0;
@@ -2095,6 +2175,7 @@ function draw3D(now) {
     zo.glowM.opacity = Math.min(0.5, p * 0.55) * built;
     zo.trailM.opacity = trailShown && trailMax > 0 ? (0.12 + 0.5 * (trailMin[zo.z.id] || 0) / trailMax) * ((trailMin[zo.z.id] || 0) > 0 ? 1 : 0) * built : 0;
     zo.glowM.color.setHex(isNext ? P.next : P.accent);
+    zo.heatM.opacity = heatShown && heatNow.max > 0 ? 0.55 * Math.pow((heatNow.min[zo.z.id] || 0) / heatNow.max, 0.7) * built : 0;
     setBeam(zo.beam, zo.base, p, zo.f.cx, zo.f.cz, isNext, P, built);
     if (zo.phone) {
       const sees = seen === zo.z.id;
@@ -2772,6 +2853,11 @@ const QS = new URLSearchParams(location.search);
 if (QS.get("room") === "demo") loadMap(JSON.parse(JSON.stringify(DEFAULT_MAP)), false);
 else try { const saved = localStorage.getItem("trace.map"); if (saved) loadMap(JSON.parse(saved), false); } catch (e) { /* none saved, or unreadable */ }
 dFromMap();
+loadHab();
+$("#resetLearn").onclick = () => {
+  HAB = {}; try { localStorage.removeItem(habKey()); } catch (e) { /* nothing saved */ }
+  learnHabits(HAB); renderLearned();
+};
 function setPresent(on) {
   document.body.classList.toggle("present", on);
   $("#presentBtn").textContent = on ? "Show everything" : "Presentation view";

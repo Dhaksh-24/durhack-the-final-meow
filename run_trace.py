@@ -4,6 +4,7 @@
     python run_trace.py --video keys_test.mp4   # a phone video instead of live phones (for testing)
     python run_trace.py --demo                  # no cameras at all: a fake session, to check the page
     python run_trace.py --present               # open the page in presentation view (for the judges)
+    python run_trace.py --share                 # let a second laptop on the same Wi-Fi open the pages
 
 What it starts:
   cameras / --video  ->  multicam.py   (detects items; serves the page on :8000; starts bridge.py)
@@ -46,7 +47,28 @@ def wait_for_server(seconds):
     return False
 
 
+def lan_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))   # no packet is sent; just picks the Wi-Fi address
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return None
+
+
+SHARE = False
+
+
 def open_pages(url):
+    if SHARE:
+        ip = lan_ip() or "<this-laptop-ip>"
+        q = url.split("?", 1)[1] if "?" in url else ""
+        print("\nSecond laptop (same Wi-Fi): open")
+        print(f"  http://{ip}:8000/sim?{q}&view=present   (big screen)")
+        print(f"  http://{ip}:8000/                     (talk to Trace)")
     webbrowser.open(url)
     time.sleep(1)
     webbrowser.open("http://localhost:8000/")
@@ -64,8 +86,12 @@ def main():
     ap.add_argument("--video", help="a video file to use as the camera (test without phones)")
     ap.add_argument("--demo", action="store_true", help="no cameras: a fake session to check the page works")
     ap.add_argument("--present", action="store_true", help="open the page in presentation view")
+    ap.add_argument("--share", action="store_true",
+                    help="open the server and live feed to this Wi-Fi, so a second laptop can show the pages")
     ap.add_argument("--keep-events", action="store_true", help="don't clear trace-events.jsonl first")
     a = ap.parse_args()
+    global SHARE
+    SHARE = a.share
 
     need = ["websockets", "cv2", "numpy"] + ([] if a.demo else ["ultralytics", "torch", "clip"])
     gone = missing(need)
@@ -90,8 +116,9 @@ def main():
     try:
         if a.demo:
             url += "&room=demo"
-            procs.append(start([PY, str(ROOT / "trace_api.py")]))
-            procs.append(start([PY, str(ROOT / "bridge.py"), "--file", str(EVENTS)]))
+            host = ["--host", "0.0.0.0"] if a.share else []
+            procs.append(start([PY, str(ROOT / "trace_api.py")] + host))
+            procs.append(start([PY, str(ROOT / "bridge.py"), "--file", str(EVENTS)] + host))
             if not wait_for_server(20):
                 print("The page server didn't start: look for an error above.")
                 return
@@ -106,6 +133,8 @@ def main():
             cmd = [PY, str(ROOT / "multicam.py")]
             if a.video:
                 cmd += ["--cam", "Test=" + str(Path(a.video).resolve())]
+            if a.share:
+                cmd += ["--api-host", "0.0.0.0"]
             procs.append(start(cmd))
             print("Loading the models (the first run downloads them; up to a minute)...")
             if not wait_for_server(180):
