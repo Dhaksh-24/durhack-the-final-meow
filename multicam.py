@@ -18,6 +18,12 @@ Setup
 What it looks for (prompts, threshold, model) is set in detect.py, which must sit in the
 same folder. --conf / --imgsz here override detect.py's defaults.
 
+Events for the Trace page (trace_events.py, SPEC.md 3.2) go to events.jsonl: appeared /
+moved / disappeared per item per zone, person_here / person_left from motion in a zone.
+Name each zone you draw exactly as in the page's room map (the id is the name lower-cased
+and hyphenated, e.g. "Coat hook" -> coat-hook). Only items inside a zone produce events.
+With baseline/calibration.json (exported by the page) each sighting gets "floor" in metres.
+
 Controls (click the window first) - same as memory_demo.py:
   drag on a camera tile    draw a zone for THAT camera (e.g. "Hall table")
   n / m / x + click        name / merge / forget an item (click its box or its panel row)
@@ -44,6 +50,8 @@ from PIL import Image
 
 # detection lives in detect.py (prompts, thresholds, model) - see its docstring
 import detect
+# events.jsonl for the Trace page (SPEC.md 3.2) - see its docstring
+import trace_events
 
 # ---- tuning ----
 SAMPLE_SECS = 0.5      # each camera is analysed at most every this many seconds
@@ -141,12 +149,8 @@ def view_score(box, zone, frame_shape):
 
 class Embedder:
     def __init__(self):
-        import clip
-        from ultralytics.utils import WEIGHTS_DIR
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model, self.pre = clip.load(
-            "ViT-B/32", device=self.device, download_root=str(WEIGHTS_DIR / "clip"))
-        self.model.eval()
+        # the same CLIP model detect.py's verifier uses, loaded once
+        self.model, self.pre, self.device = detect.load_clip()
 
     @torch.no_grad()
     def __call__(self, crops_bgr):
@@ -314,8 +318,9 @@ class Memory:
         self.load()
         self.edits_pos = EDITS_FILE.stat().st_size if EDITS_FILE.exists() else 0
 
-    def update(self, cam, frame, dets, now, zones):
-        """One camera's detections. dets: [(category, box, conf)]. Returns {det_idx: obj_id}."""
+    def update(self, cam, frame, dets, now, zones, pre_embs=None):
+        """One camera's detections. dets: [(category, box, conf)]. Returns {det_idx: obj_id}.
+        pre_embs: CLIP embeddings aligned with dets (from the detector's verifier), if any."""
         self.frame_i += 1
         self.debug_scores = {}
         assigned = {}
@@ -336,8 +341,11 @@ class Memory:
         # 2) fingerprints
         refresh = self.frame_i % GALLERY_EVERY == 0
         need = [i for i in range(len(dets)) if i not in assigned or refresh]
-        embs = dict(zip(need, self.embed(
-            [crop(frame, dets[i][1]) for i in need])))
+        if pre_embs is not None and len(pre_embs) == len(dets):
+            embs = {i: pre_embs[i] for i in need}
+        else:
+            embs = dict(zip(need, self.embed(
+                [crop(frame, dets[i][1]) for i in need])))
 
         # 3) re-identify by appearance - including objects another camera sees right now
         #    (overlapping views: the same keys can be in two cameras at once)
@@ -379,7 +387,7 @@ class Memory:
                 t.box, t.last, t.hits, t.frame = box, now, t.hits + 1, frame
                 t.embs.append(e)
                 if t.hits >= NEW_HITS:
-                    self.promote(t, now, zones, taken)
+                    assigned[i] = self.promote(t, now, zones, taken).id
             else:
                 self.tents.append(Tentative(cam, cat, box, e, now, frame))
         self.tents = [t for t in self.tents if now -
@@ -404,6 +412,7 @@ class Memory:
             o.add_view(e)
         o.observe(t.cam, t.frame, t.box, now, zones)
         taken.add(o.id)
+        return o
 
     # ---------------------------------------------------------- edits
     def merge(self, keep, drop):
@@ -511,13 +520,19 @@ class Memory:
         print(f"Loaded {len(self.objs)} remembered objects.")
 
 
-def log_event(o, now, cam_names):
-    rec = {"id": o.id, "item": o.label, "category": o.category, "zone": o.zone, "source": "camera",
-           "camera": o.cam, "camera_name": cam_names.get(o.cam, o.cam),
-           "box": [int(v) for v in o.box] if o.box else None, "t": o.last_time,
-           "time": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(o.last_time or now))}
-    with EVENTS_FILE.open("a") as f:
-        f.write(json.dumps(rec) + "\n")
+def sightings_for(mem, dets, assigned, zones):
+    """What one camera saw this frame, in the shape trace_events.EventWriter.frame() takes."""
+    out = []
+    for d, oid in assigned.items():
+        o = mem.objs.get(oid)
+        if o is None:
+            continue
+        cat, box, conf = dets[d]
+        z = zone_for(box, zones)
+        out.append({"item": f"{o.category}-{o.id}", "category": o.category, "name": o.name,
+                    "zone": trace_events.slug(z) if z else None, "conf": float(conf),
+                    "box": [float(v) for v in box]})
+    return out
 
 
 # ============================================================== zones ====
@@ -727,8 +742,10 @@ def main():
                     help='NAME=SOURCE, e.g. "Hall=http://192.168.1.23:8080/video" or "Laptop=0"')
     ap.add_argument("--imgsz", type=int, default=detect.IMGSZ,
                     help="detector input size (default from detect.py)")
-    ap.add_argument("--conf", type=float, default=detect.CONF,
-                    help="detector threshold (default from detect.py)")
+    ap.add_argument("--conf", type=float, default=None,
+                    help="YOLO-World threshold (default from detect.py: PROPOSE_CONF with the verifier)")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip the CLIP check (verifier.json) on each box")
     args = ap.parse_args()
 
     cams = load_cameras(args)
@@ -738,10 +755,17 @@ def main():
         c.start()
 
     print("Loading models (first run downloads weights)...")
-    detector = detect.Detector(conf=args.conf, imgsz=args.imgsz)
+    detector = detect.Detector(conf=args.conf, imgsz=args.imgsz, verify=not args.no_verify)
     mem = Memory(Embedder(), cam_names)
     zones = load_zones(cams[0].id)
     layout = Layout(len(cams))
+    calib = trace_events.load_calibration()
+    events = trace_events.EventWriter(EVENTS_FILE, calib)
+    motion = {c.id: trace_events.Motion() for c in cams}
+    print("Events -> " + str(EVENTS_FILE) + ". Zone ids: "
+          + (", ".join(sorted({trace_events.zone_id(z) for z in zones})) or "none yet (drag on a tile)"))
+    print("Floor calibration: " + (", ".join(c.name for c in cams if c.id in calib)
+                                   or "none (export baseline/calibration.json from the page)"))
 
     win = "FindIt - all cameras"
     cv2.namedWindow(win)
@@ -786,10 +810,14 @@ def main():
                 batch.append((c, f, ft))
         if batch:
             per_frame = detector.detect([f for _, f, _ in batch])
-            for (c, f, ft), dets in zip(batch, per_frame):
+            for (c, f, ft), dets, pe in zip(batch, per_frame, detector.last_embeddings):
                 cz = [z for z in zones if z["camera"] == c.id]
-                c.assigned = mem.update(c.id, f, dets, now, cz)
+                c.assigned = mem.update(c.id, f, dets, now, cz, pe)
                 c.dets, c.debug = dets, dict(mem.debug_scores)
+                if cz:
+                    events.frame(c.id, now, sightings_for(mem, dets, c.assigned, cz),
+                                 [trace_events.zone_id(z) for z in cz],
+                                 motion[c.id].zones(f, cz), f.shape)
                 c.last_processed, c.processed_frame_time, c.processed_at = now, ft, now
             processed += len(batch)
         if now - rate_t >= 2:
@@ -799,7 +827,6 @@ def main():
         for o in mem.objs.values():
             vis = o.visible(now)
             if o.was_visible and not vis:
-                log_event(o, now, cam_names)
                 mem.save_snapshot(o)
                 print(f"[{time.strftime('%H:%M:%S')}] {o.label} out of sight - last seen"
                       + (f" in {o.zone}" if o.zone else "") + f" ({cam_names.get(o.cam, o.cam)})")
