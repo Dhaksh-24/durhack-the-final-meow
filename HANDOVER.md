@@ -178,3 +178,16 @@ Before `git add`, run `git status` and check nothing from that list appears.
 **Bottom line:** the software is built and each piece is tested; what's unproven is the physical
 part: phones seeing real keys in the real room. Everything above is about 85% of the build; the
 remaining 15% is real-room testing, rehearsal and the pitch, which is a morning's work.
+
+## 6. Live walking directions (top-down camera)
+
+While Trace is sending you somewhere, `nav.py` uses the top-down camera to say "bear left",
+"keep going straight", "stop, reach down", and draws a yellow arrow from you to the target on the
+camera window (green when you arrive). It aims at the item's own box if the camera sees it
+(glasses on the desk), otherwise at the zone Trace sent you to (keys under the cloth on the sofa).
+
+- Needs person detection: don't use `--no-people`; if it says "I can't see you", try `--person-conf 0.1`.
+- Left/right comes from the way you walked in the last ~2 s: take two steps forward first.
+- `--view-width-m 2.5` = metres of floor across the camera image (for "about 2 steps").
+- If left and right come out swapped (mirrored camera), add `--nav-mirror`. Test once before judging.
+- Speaks through `http://localhost:8000/` (trace.html) after you ask "where are my glasses?".

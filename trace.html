@@ -1743,6 +1743,35 @@ async function closeChat(returnFocus = true) {
   if (returnFocus && hadFocus) el.agent.focus();
 }
 
+/* ------------------------------------------------------------ walking directions (nav.py, GET /api/nav)
+   While Trace is sending you somewhere, the top-down camera sees where you are and which way you're
+   walking, and Trace says "bear left", "keep going straight", "stop, reach down". It speaks when the
+   instruction changes (and repeats a standing one every few seconds); "stop" is said once. */
+const walk = { on: false, timer: null, state: "", at: 0, quietUntil: 0 };
+function walkStart() {
+  walkStop();
+  if (state.mode !== "live") return;
+  Object.assign(walk, { on: true, state: "", at: 0, quietUntil: Date.now() + 4000 });   // let the answer finish first
+  walk.timer = setInterval(walkTick, 800);
+}
+function walkStop() { walk.on = false; if (walk.timer) clearInterval(walk.timer); walk.timer = null; }
+async function walkTick() {
+  if (!walk.on || !state.power || state.busy) return;
+  let r;
+  try { r = await api("/api/nav", { timeout: 1500 }); } catch { return; }
+  if (!r || !r.available) return;
+  if (r.state === "no_target") { walkStop(); return; }
+  if (!r.say) return;
+  const now = Date.now();
+  if (now < walk.quietUntil || voice.speaking) return;
+  const same = r.state === walk.state;
+  if (r.state === "arrived" && same) return;                         // "stop" once
+  if (same && now - walk.at < (r.state === "no_person" ? 15000 : 6000)) return;
+  if (!same && now - walk.at < 1500) return;
+  walk.state = r.state; walk.at = now;
+  say(r.say, { log: false });
+}
+
 async function ask(message, { voice: byVoice = false } = {}) {
   message = message.trim();
   if (!message || state.busy || !state.power) return;
@@ -1801,6 +1830,7 @@ async function ask(message, { voice: byVoice = false } = {}) {
   }
   // mid-search ("check your pockets first"), no "Anything else?": Trace just listens for "not there"
   await reply(res.reply, { itemId: it ? it.id : null, offer, prompt: res.state !== "searching" });
+  if (res.state === "searching") walkStart(); else walkStop();
 }
 
 /* ------------------------------------------------------------ data refresh + polling */

@@ -47,6 +47,7 @@ from PIL import Image
 
 # detection lives in detect.py (prompts, thresholds, model) - see its docstring
 import detect
+import nav
 import room as roommod
 import trace_api
 import whereabouts
@@ -679,6 +680,12 @@ def ibox(b):
 
 def draw_tile(view, cam, mem, zones, now, focus, drag, debug, brain=None):
     """Draw one camera's frame (at VIEW_W coordinates)."""
+    nv = nav.last(cam.id)          # live walking directions: an arrow from the person to the target
+    if nv is not None:
+        col = GREEN if nv.get("state") == "arrived" else YELLOW
+        cv2.circle(view, (nv["px"], nv["py"]), 10, col, 2)
+        cv2.arrowedLine(view, (nv["px"], nv["py"]), (nv["tx"], nv["ty"]), col, 3, cv2.LINE_AA, tipLength=0.08)
+        tag(view, nv.get("say", ""), (8, view.shape[0] - 12), col, 0.6)
     if brain is not None:          # 'h': the heatmap + places replace the zone drawing
         brain.overlay(cam.id, view, now)
         zones = []
@@ -850,6 +857,10 @@ def main():
     ap.add_argument("--conf", type=float, default=None,
                     help="YOLO-World threshold (default from detect.py: PROPOSE_CONF with verifier.json, "
                          "the same value the verifier was trained on; CONF without it)")
+    ap.add_argument("--view-width-m", type=float, default=nav.VIEW_WIDTH_M,
+                    help="metres of floor across the camera image, for 'about 2 steps' (default 3.0)")
+    ap.add_argument("--nav-mirror", action="store_true",
+                    help="the camera image is mirrored: swap left and right in the spoken directions")
     ap.add_argument("--min-prob", action="append", default=[], metavar="ITEM=P",
                     help="override verifier.json's threshold for one item, e.g. --min-prob keys=0.7 "
                          "(keys default 0.86 is strict: lower it if the real keys never get a box)")
@@ -883,6 +894,7 @@ def main():
     prompts = dict(detect.PROMPTS) if args.no_people else {**detect.PROMPTS, "person": ["person"]}
     detector = detect.Detector(prompts=prompts, conf=args.conf, imgsz=args.imgsz)
     PERSON_CONF = args.person_conf
+    nav.VIEW_WIDTH_M, nav.MIRROR = args.view_width_m, args.nav_mirror
     for spec in args.min_prob:
         item, _, p = spec.partition("=")
         if detector.verifier is None:
@@ -981,6 +993,14 @@ def main():
                     except Exception as e:      # never let the model feed stop the tracker
                         print(f"  [{c.name}] trace event error: {e}")
                 c.dets, c.debug = dets, dict(mem.debug_scores)
+                if people is not None:          # live "turn left / right" for trace.html (nav.py)
+                    try:
+                        nav.update(c.id, f.shape[1], f.shape[0],
+                                   [(b, sc) for b, sc in people if sc >= PERSON_CONF], dets,
+                                   {(watch.zone_id(z["name"]) if feed is not None else events_adapter.slug(z["name"])):
+                                    (z["name"], z["rect"]) for z in cz}, now)
+                    except Exception as e:
+                        print(f"  [{c.name}] nav error: {e}")
                 brain.frame(c.id, now, f.shape, people or [],
                             [(oid, mem.objs[oid].category, mem.objs[oid].label, dets[d][1])
                              for d, oid in c.assigned.items() if oid in mem.objs])
